@@ -1,0 +1,4 @@
+[submodule "lib/McuTemplateLibrary"]
+	path = lib/McuTemplateLibrary
+	url = https://github.com/alexanderwachter/McuTemplateLibrary.git
+	branch = statemachine
