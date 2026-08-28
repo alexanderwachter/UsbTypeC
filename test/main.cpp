@@ -1,0 +1,19 @@
+/*
+ * Copyright (c) 2026 Alexander Wachter
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <print>
+
+int tcpc_tests();
+
+int main(int argc, const char* argv[]) {
+    int const failures = tcpc_tests();
+    if (failures != 0) {
+        std::print("{} check(s) FAILED\n", failures);
+        return 1;
+    }
+    std::print("all checks passed\n");
+    return 0;
+}

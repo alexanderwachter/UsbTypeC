@@ -1,0 +1,4 @@
+name: usb-typec
+build:
+  cmake: zephyr
+  kconfig: zephyr/Kconfig

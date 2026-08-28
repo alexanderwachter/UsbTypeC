@@ -1,0 +1,11 @@
+# Copyright (c) 2026 Alexander Wachter
+#
+# SPDX-License-Identifier: Apache-2.0
+
+config USB_TYPEC_STACK
+	bool "USB Type-C stack with Power Delivery"
+	select CPP
+	help
+	  Enable the UsbTypeC library: USB Type-C connection state machines
+	  and USB Power Delivery according to the USB Type-C Cable and
+	  Connector Specification and the USB PD Specification.
