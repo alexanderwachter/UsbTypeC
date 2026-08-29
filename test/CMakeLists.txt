@@ -10,6 +10,7 @@ project(UsbTypeCTests VERSION 0.0.1
 
 add_executable(${PROJECT_NAME}
     ${CMAKE_CURRENT_LIST_DIR}/tcpc.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/protocol_layer.cpp
     ${CMAKE_CURRENT_LIST_DIR}/main.cpp
 )
 

@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "mocks.hpp"
+
 #include <usbc/SinkLoad.hpp>
 #include <usbc/SourceSupply.hpp>
 #include <usbc/Tcpc.hpp>
@@ -15,111 +17,6 @@
 #include <source_location>
 
 namespace {
-
-// --- mock TCPC driver (host/test implementation) ----------------------------
-struct mock_tcpc {
-    bool initialized              = false;
-    usbc::alert_callback callback = nullptr;
-    void* context                 = nullptr;
-    usbc::alert_status alerts = usbc::alert_status::none;
-    usbc::cc_pull pull            = usbc::cc_pull::open;
-    usbc::rp_value rp             = usbc::rp_value::usb_default;
-    usbc::cc_status line_state{usbc::cc_state::src_open, usbc::cc_state::src_open};
-    usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
-    bool sourcing                 = false;
-    bool sinking                  = false;
-    bool vconn                    = false;
-    usbc::receive_detect detect = usbc::receive_detect::none;
-    usbc::message_header_info header_info{};
-    usbc::pd_message last_transmitted{};
-    std::uint8_t last_retry_count = 0;
-    std::optional<usbc::transmit_signal> last_signal{};
-    std::optional<usbc::pd_message> pending_rx{};
-
-    bool init()
-    {
-        initialized = true;
-        return true;
-    }
-    void set_alert_handler(usbc::alert_callback cb, void* ctx)
-    {
-        callback = cb;
-        context  = ctx;
-    }
-    std::optional<usbc::alert_status> read_alert()
-    {
-        auto const pending = alerts;
-        alerts             = usbc::alert_status::none;
-        return pending;
-    }
-    bool set_cc(usbc::cc_pull p, usbc::rp_value current)
-    {
-        pull = p;
-        rp   = current;
-        return true;
-    }
-    std::optional<usbc::cc_status> read_cc_status() { return line_state; }
-    bool set_plug_orientation(usbc::plug_orientation o)
-    {
-        orientation = o;
-        return true;
-    }
-    bool source_vbus(bool enable)
-    {
-        sourcing = enable;
-        return true;
-    }
-    bool sink_vbus(bool enable)
-    {
-        sinking = enable;
-        return true;
-    }
-    bool set_vconn(bool enable)
-    {
-        vconn = enable;
-        return true;
-    }
-    bool set_message_header_info(usbc::message_header_info info)
-    {
-        header_info = info;
-        return true;
-    }
-    bool set_receive_detect(usbc::receive_detect d)
-    {
-        detect = d;
-        return true;
-    }
-    bool transmit(usbc::pd_message const& message, std::uint8_t retry_count)
-    {
-        last_transmitted = message;
-        last_retry_count = retry_count;
-        return true;
-    }
-    bool transmit(usbc::transmit_signal signal)
-    {
-        last_signal = signal;
-        return true;
-    }
-    bool receive(usbc::pd_message& out)
-    {
-        if (!pending_rx) {
-            return false;
-        }
-        out = *pending_rx;
-        pending_rx.reset();
-        return true;
-    }
-
-    // test helper: a message arrives and the driver raises its alert
-    void inject_message(usbc::pd_message const& message)
-    {
-        pending_rx = message;
-        alerts |= usbc::alert_status::message_received;
-        if (callback != nullptr) {
-            callback(context);
-        }
-    }
-};
 
 // --- mock VBUS driver -------------------------------------------------------
 struct mock_vbus {
@@ -246,7 +143,7 @@ static_assert(!usbc::concepts::tcpc<mock_vbus>);
 
 // hiding both transmit overloads must break the concept
 struct no_transmit : mock_tcpc {
-    bool transmit(usbc::pd_message const&, std::uint8_t) = delete;
+    bool transmit(usbc::pd_message const&) = delete;
 };
 static_assert(!usbc::concepts::tcpc<no_transmit>);
 
@@ -391,7 +288,7 @@ int tcpc_tests()
     check(!fetch_message(tcpc).has_value()); // read_alert() cleared the pending alert
 
     // transmit both forms through the concept-constrained interface
-    check(tcpc.transmit(incoming, 2) && tcpc.last_retry_count == 2);
+    check(tcpc.transmit(incoming) && tcpc.transmit_count == 1);
     check(tcpc.transmit(usbc::transmit_signal::hard_reset) &&
           tcpc.last_signal == usbc::transmit_signal::hard_reset);
 

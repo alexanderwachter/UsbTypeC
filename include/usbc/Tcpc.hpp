@@ -23,9 +23,11 @@
  *
  * Failure contract: functions returning bool report whether the driver
  * accepted the operation (e.g. the bus transfer succeeded); read_*
- * functions return std::nullopt on failure. transmit() success means
- * accepted for transmission - the outcome arrives as a transmit_*
- * alert after GoodCRC handling and retries inside the TCPC.
+ * functions return std::nullopt on failure. transmit() is a single
+ * transmission attempt whose outcome arrives as a transmit_* alert
+ * after the driver's GoodCRC handling; retransmission is the protocol
+ * layer's job (PD spec PRL_Tx), so a TCPI-based driver shall configure
+ * zero hardware retries.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -123,8 +125,8 @@ template<typename T>
 concept tcpc = requires(T t, cc_pull pull, rp_value rp, plug_orientation orientation,
                         receive_detect detect, message_header_info header_info,
                         pd_message const& message, pd_message& receive_buffer,
-                        transmit_signal signal, std::uint8_t retry_count,
-                        alert_callback callback, void* context, bool enable) {
+                        transmit_signal signal, alert_callback callback, void* context,
+                        bool enable) {
     { t.init() } -> std::same_as<bool>;
     t.set_alert_handler(callback, context);
     { t.read_alert() } -> std::same_as<std::optional<alert_status>>;
@@ -143,7 +145,7 @@ concept tcpc = requires(T t, cc_pull pull, rp_value rp, plug_orientation orienta
     // PD messaging
     { t.set_message_header_info(header_info) } -> std::same_as<bool>;
     { t.set_receive_detect(detect) } -> std::same_as<bool>;
-    { t.transmit(message, retry_count) } -> std::same_as<bool>;
+    { t.transmit(message) } -> std::same_as<bool>; // one attempt, outcome via alert
     { t.transmit(signal) } -> std::same_as<bool>;
     { t.receive(receive_buffer) } -> std::same_as<bool>;
 };
