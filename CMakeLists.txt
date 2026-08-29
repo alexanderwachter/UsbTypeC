@@ -29,3 +29,7 @@ if(ENABLE_TESTING)
     enable_testing()
     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/test)
 endif()
+
+if(PROJECT_IS_TOP_LEVEL)
+    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/tools)
+endif()
