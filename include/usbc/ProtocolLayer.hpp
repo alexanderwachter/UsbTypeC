@@ -278,10 +278,10 @@ private:
 
         // leaving a report_hard_reset_sent state completes the hard
         // reset - via PHY confirmation, the timer, or a reset event
-        static constexpr auto observe_static(auto const& state)
-            -> decltype(state.report_hard_reset_sent)
+        template<typename STATE>
+        static constexpr auto observe_static() -> decltype(STATE::report_hard_reset_sent)
         {
-            return state.report_hard_reset_sent;
+            return STATE::report_hard_reset_sent;
         }
         void notify_exit(prl::hard_reset_sent) { prl.client_.on_hard_reset_sent(); }
 

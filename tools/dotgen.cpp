@@ -9,6 +9,7 @@
 
 #include <mtl/StateMachineDot.hpp>
 #include <usbc/ProtocolLayer.hpp>
+#include <usbc/TypeC.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -35,6 +36,7 @@ int main(int argc, char* argv[])
     std::filesystem::create_directories(directory);
 
     write<usbc::prl::tx_table>(directory, "prl_tx");
+    write<usbc::tc::sink_table>(directory, "tc_sink");
 
     return 0;
 }

@@ -18,65 +18,7 @@
 
 namespace {
 
-// --- mock VBUS driver -------------------------------------------------------
-struct mock_vbus {
-    bool enabled                 = false;
-    usbc::vbus_callback callback = nullptr;
-    void* context                = nullptr;
-    std::optional<usbc::vbus_level> monitored{};
-    std::int32_t voltage_mv = 0;
-    bool reported_met       = false;
-
-    bool enable(bool e)
-    {
-        enabled = e;
-        return true;
-    }
-    void set_callback(usbc::vbus_callback cb, void* ctx)
-    {
-        callback = cb;
-        context  = ctx;
-    }
-    bool monitor(usbc::vbus_level level)
-    {
-        monitored = level;
-        report(); // contract: current condition state as soon as known
-        return true;
-    }
-    bool discharge(bool enable)
-    {
-        if (enable) {
-            set_voltage(0);
-        }
-        return true;
-    }
-
-    // test helpers: simulate the comparator
-    bool met() const
-    {
-        switch (*monitored) {
-        case usbc::vbus_level::safe0v: return voltage_mv <= 800;
-        case usbc::vbus_level::safe5v: return voltage_mv >= 4750 && voltage_mv <= 5500;
-        case usbc::vbus_level::sink_disconnect: return voltage_mv < 3670;
-        case usbc::vbus_level::sink_disconnect_pd: return voltage_mv < 4000;
-        }
-        return false;
-    }
-    void report()
-    {
-        reported_met = met();
-        if (callback != nullptr) {
-            callback(context, reported_met);
-        }
-    }
-    void set_voltage(std::int32_t mv)
-    {
-        voltage_mv = mv;
-        if (monitored && met() != reported_met) {
-            report();
-        }
-    }
-};
+// mock_vbus moved to mocks.hpp, shared with the Type-C layer tests
 
 // --- mock source power supply -----------------------------------------------
 struct mock_supply {
