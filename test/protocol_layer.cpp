@@ -9,25 +9,55 @@
 #include <usbc/Message.hpp>
 #include <usbc/ProtocolLayer.hpp>
 
+#include <chrono>
 #include <print>
 #include <source_location>
 #include <vector>
 
+using namespace std::chrono_literals;
+
 namespace {
+
+// --- timer policy (host/test implementation) --------------------------------
+struct manual_timer {
+    std::chrono::milliseconds duration{};
+    fsm::timer_callback callback = nullptr;
+    void* context                = nullptr;
+    bool armed                   = false;
+
+    void start(std::chrono::milliseconds d, fsm::timer_callback cb, void* ctx)
+    {
+        duration = d;
+        callback = cb;
+        context  = ctx;
+        armed    = true;
+    }
+    void stop() { armed = false; }
+    void expire()
+    {
+        if (armed) {
+            armed = false;
+            callback(context);
+        }
+    }
+};
+static_assert(fsm::concepts::timer<manual_timer>);
 
 // --- policy engine test double ----------------------------------------------
 struct mock_client {
     std::vector<usbc::pd_message> messages;
-    int tx_done      = 0;
-    int tx_discarded = 0;
-    int tx_error     = 0;
-    int hard_resets  = 0;
+    int tx_done          = 0;
+    int tx_discarded     = 0;
+    int tx_error         = 0;
+    int hard_resets      = 0;
+    int hard_resets_sent = 0;
 
     void on_message(usbc::pd_message const& message) { messages.push_back(message); }
     void on_tx_done() { ++tx_done; }
     void on_tx_discarded() { ++tx_discarded; }
     void on_tx_error() { ++tx_error; }
     void on_hard_reset() { ++hard_resets; }
+    void on_hard_reset_sent() { ++hard_resets_sent; }
 };
 static_assert(usbc::concepts::prl_client<mock_client>);
 
@@ -96,31 +126,41 @@ int protocol_layer_tests()
 {
     mock_tcpc tcpc;
     mock_client client;
-    usbc::protocol_layer<mock_tcpc, mock_client> prl{tcpc, client};
+    usbc::protocol_layer<mock_tcpc, manual_timer, mock_client> prl{tcpc, client};
+    auto& timer = prl.timer();
 
-    // MessageID stamping; one PHY attempt per request
+    // MessageID stamping; one PHY attempt per request, CRCReceiveTimer runs
     check(prl.transmit(make_request()));
     check(tcpc.transmit_count == 1 && transmitted_id(tcpc) == 0);
+    check(timer.armed && timer.duration == usbc::prl::t_receive);
     check(!prl.transmit(make_request())); // busy until the PHY reports
     check(tcpc.transmit_count == 1);
 
     prl.on_alert(usbc::alert_status::transmit_success);
-    check(client.tx_done == 1);
+    check(client.tx_done == 1 && !timer.armed);
 
-    // PRL_Tx_Check_RetryCounter, rev 3.x: nRetryCount = 2, every
-    // retransmission keeps the MessageID, then transmission error
+    // CRCReceiveTimer expiry retries with the same MessageID, then
+    // transmission error after nRetryCount retries
     check(prl.transmit(make_request()) && transmitted_id(tcpc) == 1);
-    prl.on_alert(usbc::alert_status::transmit_failed); // first retry
-    check(tcpc.transmit_count == 3 && transmitted_id(tcpc) == 1);
-    check(client.tx_error == 0); // still trying
-    prl.on_alert(usbc::alert_status::transmit_failed); // second retry
+    timer.expire(); // first retry
+    check(tcpc.transmit_count == 3 && transmitted_id(tcpc) == 1 && timer.armed);
+    timer.expire(); // second retry
     check(tcpc.transmit_count == 4 && transmitted_id(tcpc) == 1);
-    prl.on_alert(usbc::alert_status::transmit_failed); // retries exhausted
-    check(tcpc.transmit_count == 4);
+    timer.expire(); // retries exhausted
+    check(tcpc.transmit_count == 4 && !timer.armed);
     check(client.tx_error == 1);
 
-    // the error incremented the MessageIDCounter exactly once
+    // the error incremented the MessageIDCounter exactly once, and the
+    // policy engine can transmit straight out of transmission_error
     check(prl.transmit(make_request()) && transmitted_id(tcpc) == 2);
+
+    // a driver-reported failure retries immediately, before tReceive
+    prl.on_alert(usbc::alert_status::transmit_failed);
+    check(tcpc.transmit_count == 6 && transmitted_id(tcpc) == 2 && timer.armed);
+    prl.on_alert(usbc::alert_status::transmit_success);
+    check(client.tx_done == 2 && client.tx_error == 1);
+
+    check(prl.transmit(make_request()) && transmitted_id(tcpc) == 3);
     prl.on_alert(usbc::alert_status::transmit_discarded);
     check(client.tx_discarded == 1);
 
@@ -131,19 +171,7 @@ int protocol_layer_tests()
 
     // a spurious PHY alert with nothing in flight reports nothing
     prl.on_alert(usbc::alert_status::transmit_success);
-    check(client.tx_done == 2);
-
-    // rev 2.0: nRetryCount = 3, four attempts in total
-    prl.set_revision(usbc::pd_revision::rev_2_0);
-    int const attempts_before = tcpc.transmit_count;
-    check(prl.transmit(make_request()));
-    prl.on_alert(usbc::alert_status::transmit_failed);
-    prl.on_alert(usbc::alert_status::transmit_failed);
-    prl.on_alert(usbc::alert_status::transmit_failed);
-    check(tcpc.transmit_count == attempts_before + 4);
-    prl.on_alert(usbc::alert_status::transmit_failed); // retries exhausted
-    check(tcpc.transmit_count == attempts_before + 4 && client.tx_error == 2);
-    prl.set_revision(usbc::pd_revision::rev_3_x);
+    check(client.tx_done == 3);
 
     // receive: forward, drop the retransmission, accept the next id
     tcpc.inject_message(make_incoming(4));
@@ -166,25 +194,37 @@ int protocol_layer_tests()
     check(prl.transmit(make_request(usbc::sop_type::sop_prime)) && transmitted_id(tcpc) == 1);
     prl.on_alert(usbc::alert_status::transmit_success);
 
-    // hard reset transmission resets every counter and aborts a pending tx
+    // hard reset: aborts a pending tx, HardResetCompleteTimer bounds the
+    // wait, PHY confirmation completes it
     check(prl.transmit(make_request()));
     check(prl.transmit_hard_reset());
     check(tcpc.last_signal == usbc::transmit_signal::hard_reset);
-    check(prl.transmit(make_request()) && transmitted_id(tcpc) == 0);
+    check(timer.armed && timer.duration == usbc::prl::t_hard_reset_complete);
+    check(!prl.transmit(make_request())); // busy until the hard reset is out
     prl.on_alert(usbc::alert_status::transmit_success);
+    check(client.hard_resets_sent == 1 && !timer.armed);
+    check(prl.transmit(make_request()) && transmitted_id(tcpc) == 0); // counters reset
+    prl.on_alert(usbc::alert_status::transmit_success);
+
+    // ... and the timer completes it when the PHY never confirms
+    check(prl.transmit_hard_reset());
+    timer.expire();
+    check(client.hard_resets_sent == 2);
 
     // received hard reset: counters reset, client informed
     tcpc.alerts |= usbc::alert_status::hard_reset_received;
     prl.on_alert(*tcpc.read_alert());
     check(client.hard_resets == 1);
     check(prl.transmit(make_request()) && transmitted_id(tcpc) == 0);
-
-    // the driver refusing the hand-off surfaces as a failed request
     prl.on_alert(usbc::alert_status::transmit_success);
+
+    // a refused driver hand-off is recovered by the CRCReceiveTimer
     tcpc.accept_transmit = false;
-    check(!prl.transmit(make_request()));
+    check(prl.transmit(make_request())); // accepted by the PRL, refused by the driver
     tcpc.accept_transmit = true;
-    check(prl.transmit(make_request())); // machine is idle again afterwards
+    timer.expire(); // retry succeeds at the driver
+    check(timer.armed);
+    prl.on_alert(usbc::alert_status::transmit_success);
 
     return failures;
 }
