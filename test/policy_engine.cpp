@@ -126,6 +126,10 @@ static_assert(wide.select(offered, sink_low)->position == 2); // 20 V excluded
 static_assert(wide.select(offered, sink_low)->operating_current == 2000);
 static_assert(wide.select(offered, sink_low)->voltage == 9000);
 
+// extended header round-trip
+constexpr usbc::extended_header chunk1{.chunked = true, .chunk_number = 1, .data_size = 260};
+static_assert(usbc::extended_header::decode(chunk1.encode()) == chunk1);
+
 // non-fixed PDOs are skipped
 constexpr std::array augmented_only{std::uint32_t{0b11u << 30u}};
 static_assert(!wide.select(augmented_only, sink_all).has_value());
@@ -190,6 +194,26 @@ std::uint32_t transmittedObject(mock_tcpc const& tcpc, std::uint8_t index = 0)
 std::uint8_t transmittedType(mock_tcpc const& tcpc)
 {
     return usbc::pd_header::decode(tcpc.last_transmitted.header).message_type;
+}
+
+usbc::pd_message makeExtended(bool chunked)
+{
+    usbc::pd_message message{
+        .sop    = usbc::sop_type::sop,
+        .header = usbc::pd_header{.message_type     = 0x0f, // some extended type
+                                  .port_data_role   = usbc::data_role::dfp,
+                                  .revision         = usbc::pd_revision::rev_3_x,
+                                  .port_power_role  = usbc::power_role::source,
+                                  .message_id       = static_cast<std::uint8_t>(next_id++ & 0x7u),
+                                  .num_data_objects = 1,
+                                  .extended         = true}
+                      .encode()};
+    auto const extended =
+        usbc::extended_header{.chunked = chunked, .data_size = 100}.encode();
+    message.payload[0]   = static_cast<std::uint8_t>(extended);
+    message.payload[1]   = static_cast<std::uint8_t>(extended >> 8u);
+    message.payload_size = 4;
+    return message;
 }
 
 } // namespace
@@ -288,6 +312,43 @@ int policyEngineTests()
     pe.onAlert(*tcpc.readAlert());
     check(client.lost == 2);
     check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sink_wait_cap);
+
+    // back to ready for the Not_Supported cases
+    deliver(makeSourceCaps(offered));
+    txSuccess();
+    deliver(makeControl(usbc::control_message_type::accept));
+    deliver(makeControl(usbc::control_message_type::ps_rdy));
+
+    // an unsupported control message is answered with Not_Supported
+    deliver(makeControl(usbc::control_message_type::get_source_cap));
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    txSuccess();
+
+    // an unchunked extended message is answered immediately
+    deliver(makeExtended(false));
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    txSuccess();
+
+    // a chunked extended message: the sender runs into its chunking
+    // timeout first (ChunkingNotSupportedTimer), then Not_Supported
+    auto const attempts_before_chunk = tcpc.transmit_count;
+    deliver(makeExtended(true));
+    check(tcpc.transmit_count == attempts_before_chunk); // no immediate answer
+    check(pe_timer.armed && pe_timer.duration == usbc::pe::t_chunking_not_supported);
+    pe_timer.expire();
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    check(tcpc.transmit_count == attempts_before_chunk + 1);
+    txSuccess();
+
+    // while negotiating, unsupported messages are ignored, not answered
+    deliver(makeControl(usbc::control_message_type::soft_reset)); // -> wait for caps
+    txSuccess();
+    auto const attempts_before_ignore = tcpc.transmit_count;
+    deliver(makeControl(usbc::control_message_type::get_source_cap));
+    check(tcpc.transmit_count == attempts_before_ignore);
 
     // stop() returns to startup: no timer running
     pe.stop();

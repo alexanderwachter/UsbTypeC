@@ -95,6 +95,34 @@ constexpr std::uint32_t makeFixedRequest(std::uint8_t object_position, milliamp 
 
 } // namespace pdo
 
+// The 16-bit extended message header, first two payload bytes of an
+// extended message
+struct extended_header {
+    bool chunked               = false;
+    std::uint8_t chunk_number  = 0;
+    bool request_chunk         = false;
+    std::uint16_t data_size    = 0; // bytes of the full extended message
+
+    static constexpr extended_header decode(std::uint16_t raw)
+    {
+        return {
+            .chunked       = ((raw >> 15u) & 0x1u) != 0u,
+            .chunk_number  = static_cast<std::uint8_t>((raw >> 11u) & 0xfu),
+            .request_chunk = ((raw >> 10u) & 0x1u) != 0u,
+            .data_size     = static_cast<std::uint16_t>(raw & 0x1ffu),
+        };
+    }
+
+    constexpr std::uint16_t encode() const
+    {
+        return static_cast<std::uint16_t>((chunked ? 1u << 15u : 0u) |
+                                          ((chunk_number & 0xfu) << 11u) |
+                                          (request_chunk ? 1u << 10u : 0u) | (data_size & 0x1ffu));
+    }
+
+    constexpr bool operator==(extended_header const&) const = default;
+};
+
 // Message classification and construction on top of pd_header
 constexpr bool isControl(pd_header header, control_message_type type)
 {

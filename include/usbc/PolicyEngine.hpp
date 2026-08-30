@@ -15,10 +15,16 @@
  * acceptable, the first source PDO is requested at its full current
  * with the Capability Mismatch flag.
  *
+ * Unsupported messages are answered with Not_Supported from Ready
+ * (PE_SNK_Send_Not_Supported); chunked extended messages are handled as
+ * a non-chunking device: PE_SNK_Chunk_Received waits
+ * ChunkingNotSupportedTimer, then answers Not_Supported.
+ *
  * Deviations kept for later: PE_SNK_Evaluate_Capability runs inside
  * the message dispatch rather than as an own state, Wait is treated as
- * Reject (no tSinkRequest retry), GotoMin and swaps are ignored, and
- * there is no HardResetCounter - the sink retries indefinitely.
+ * Reject (no tSinkRequest retry), GotoMin and swaps answer
+ * Not_Supported, and there is no HardResetCounter - the sink retries
+ * indefinitely.
  *
  * Integration: the engine drives a pd_transport driver through its own
  * ProtocolLayer; feed TCPC alerts into onAlert(), call start() once the
@@ -146,12 +152,14 @@ namespace pe {
 inline constexpr auto t_sink_wait_cap   = std::chrono::milliseconds{465}; // 310 ms - 620 ms
 inline constexpr auto t_sender_response = std::chrono::milliseconds{27};  // 24 ms - 30 ms
 inline constexpr auto t_ps_transition   = std::chrono::milliseconds{500}; // 450 ms - 550 ms
+inline constexpr auto t_chunking_not_supported = std::chrono::milliseconds{45}; // 40 ms - 50 ms
 
 inline constexpr milliamp i_snk_stdby       = 500; // iSnkStdby at any voltage
 inline constexpr milliamp i_default_current = 500; // implicit vSafe5V contract
 
 struct pe_context {
     contract_request request{};
+    pd_message reply{}; // pending Not_Supported answer
     bool explicit_contract = false;
 };
 
@@ -186,6 +194,12 @@ struct send_sink_caps {
 };
 struct soft_reset_received {
     pd_message accept;
+};
+struct unsupported {
+    pd_message reply;
+};
+struct chunked_message {
+    pd_message reply;
 };
 struct accept {};
 struct reject_or_wait {};
@@ -282,6 +296,34 @@ private:
     pd_message message_{};
 };
 
+// PE_SNK_Send_Not_Supported: answers a message the sink does not
+// support, then returns to Ready
+struct send_not_supported {
+    send_not_supported(event::unsupported const& event, pe_context& ctx) : context(ctx)
+    {
+        context.reply = event.reply;
+    }
+    explicit send_not_supported(pe_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return context.reply; }
+
+    pe_context& context;
+};
+
+// PE_SNK_Chunk_Received: a non-chunking device lets the sender run
+// into its chunking timeout before answering Not_Supported
+struct chunk_received {
+    static constexpr auto timeout = t_chunking_not_supported; // ChunkingNotSupportedTimer
+
+    chunk_received(event::chunked_message const& event, pe_context& ctx) : context(ctx)
+    {
+        context.reply = event.reply;
+    }
+    explicit chunk_received(pe_context& ctx) : context(ctx) {}
+
+    pe_context& context;
+};
+
 // Accepts a received Soft_Reset; the reporter resets the protocol
 // layer before the sender transmits the Accept
 struct soft_reset {
@@ -345,6 +387,16 @@ using sink_table = fsm::transition_table<
                     fsm::to<state::hard_reset>>,
     fsm::transition<fsm::from<state::ready>, fsm::on<event::send_sink_caps>,
                     fsm::to<state::give_sink_cap>>,
+    fsm::transition<fsm::from<state::ready>, fsm::on<event::unsupported>,
+                    fsm::to<state::send_not_supported>>,
+    fsm::transition<fsm::from<state::send_not_supported>, fsm::on<event::tx_done>,
+                    fsm::to<state::ready>>,
+    fsm::transition<fsm::from<state::send_not_supported>, fsm::on<event::tx_error>,
+                    fsm::to<state::hard_reset>>,
+    fsm::transition<fsm::from<state::ready>, fsm::on<event::chunked_message>,
+                    fsm::to<state::chunk_received>>,
+    fsm::transition<fsm::from<state::chunk_received>, fsm::on<fsm::timeout>,
+                    fsm::to<state::send_not_supported>>,
     fsm::transition<fsm::from<state::give_sink_cap>, fsm::on<event::tx_done>,
                     fsm::to<state::ready>>,
     fsm::transition<fsm::from<state::give_sink_cap>, fsm::on<event::tx_error>,
@@ -492,6 +544,19 @@ private:
     void dispatch(pd_message const& message)
     {
         auto const header = pd_header::decode(message.header);
+        if (header.extended) {
+            auto const extended = extended_header::decode(
+                static_cast<std::uint16_t>(message.payload[0]) |
+                (static_cast<std::uint16_t>(message.payload[1]) << 8u));
+            if (extended.chunked) {
+                sm_.process(pe::event::chunked_message{
+                    makeControl(control_message_type::not_supported)});
+            } else {
+                sm_.process(pe::event::unsupported{
+                    makeControl(control_message_type::not_supported)});
+            }
+            return;
+        }
         if (isData(header, data_message_type::source_capabilities)) {
             evaluate(message, header.num_data_objects);
         } else if (isControl(header, control_message_type::accept)) {
@@ -506,8 +571,11 @@ private:
         } else if (isControl(header, control_message_type::soft_reset)) {
             sm_.process(pe::event::soft_reset_received{
                 makeControl(control_message_type::accept)});
+        } else if (!isControl(header, control_message_type::good_crc) &&
+                   !isControl(header, control_message_type::ping)) {
+            // answered from Ready only; ignored while negotiating
+            sm_.process(pe::event::unsupported{makeControl(control_message_type::not_supported)});
         }
-        // everything else is ignored for now
     }
 
     // PE_SNK_Evaluate_Capability: ask the policy, fall back to the
