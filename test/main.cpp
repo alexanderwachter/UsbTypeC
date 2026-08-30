@@ -9,9 +9,10 @@
 int tcpcTests();
 int protocolLayerTests();
 int typeCTests();
+int policyEngineTests();
 
 int main(int argc, const char* argv[]) {
-    int const failures = tcpcTests() + protocolLayerTests() + typeCTests();
+    int const failures = tcpcTests() + protocolLayerTests() + typeCTests() + policyEngineTests();
     if (failures != 0) {
         std::print("{} check(s) FAILED\n", failures);
         return 1;

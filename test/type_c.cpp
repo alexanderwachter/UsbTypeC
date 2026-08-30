@@ -60,6 +60,12 @@ struct mock_tc_client {
 };
 static_assert(usbc::concepts::tc_sink_client<mock_tc_client>);
 
+// a client may additionally take the PD alert bits the layer ignores
+struct mock_pd_forwarding_client : mock_tc_client {
+    usbc::alert_status forwarded = usbc::alert_status::none;
+    void onPdAlert(usbc::alert_status alerts) { forwarded |= alerts; }
+};
+
 // --- compile-time checks ----------------------------------------------------
 namespace compile_time {
 
@@ -168,6 +174,22 @@ int typeCTests()
     timer.expire();
     check(!tcpc.sinking && client.attached == 2);
     vbus.setVoltage(0);
+
+    // PD alert bits reach a client providing onPdAlert(); CC bits do not
+    {
+        mock_tcpc pd_tcpc;
+        mock_vbus pd_vbus;
+        mock_pd_forwarding_client pd_client;
+        manual_timer pd_timer;
+        usbc::TypeCSink<mock_tcpc, mock_vbus, manual_timer, mock_pd_forwarding_client> pd_tc{
+            pd_tcpc, pd_vbus, pd_timer, pd_client};
+        static_cast<void>(pd_tc);
+
+        pd_tcpc.alerts |= usbc::alert_status::message_received |
+                          usbc::alert_status::cc_status_changed;
+        pd_tcpc.callback(pd_tcpc.context);
+        check(pd_client.forwarded == usbc::alert_status::message_received);
+    }
 
     return failures;
 }

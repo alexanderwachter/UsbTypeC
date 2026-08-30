@@ -14,5 +14,6 @@ namespace usbc {
 
 using millivolt = std::int32_t;
 using milliamp  = std::int32_t;
+using milliwatt = std::int32_t;
 
 } // namespace usbc

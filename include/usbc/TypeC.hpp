@@ -282,12 +282,20 @@ public:
 
 private:
     // Drains the TCPC's pending alerts and dispatches them; invoked
-    // through the alert handler registered at construction
+    // through the alert handler registered at construction. A client
+    // providing onPdAlert(alert_status) receives the bits this layer
+    // does not consume - the hook for the PD layers above
     void alert()
     {
         if (auto const alerts = tcpc_.readAlert()) {
             if (any(*alerts & alert_status::cc_status_changed)) {
                 ccAlert();
+            }
+            if constexpr (requires { client_.onPdAlert(*alerts); }) {
+                auto const residual = *alerts & ~alert_status::cc_status_changed;
+                if (any(residual)) {
+                    client_.onPdAlert(residual);
+                }
             }
         }
     }
