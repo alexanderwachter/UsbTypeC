@@ -5,9 +5,8 @@
  *
  * Alerts arrive per-event from the driver's callback context, are
  * accumulated atomically, and the registered alert callback is
- * delivered from a workqueue (the system workqueue by default) - the
- * stack's serialized context. readAlert() drains the accumulated
- * flags.
+ * delivered from the stack's work queue (WorkQueue.hpp) - the stack's
+ * serialized context. readAlert() drains the accumulated flags.
  * The PD revision from setMessageHeaderInfo() cannot be forwarded -
  * Zephyr's set_roles carries no revision. Ports whose VBUS switches
  * live outside the TCPC (dedicated PPC, GPIO) wrap or replace
@@ -35,8 +34,7 @@ namespace usbc::zephyr {
 
 class Tcpc {
 public:
-    // nullptr delivers the alert callback on the system workqueue
-    explicit Tcpc(device const* dev, k_work_q* queue = nullptr);
+    explicit Tcpc(device const* dev);
     Tcpc(Tcpc const&)            = delete;
     Tcpc& operator=(Tcpc const&) = delete;
 
@@ -62,7 +60,6 @@ private:
     static void notifyWork(k_work* work);
 
     device const* dev_;
-    k_work_q* queue_;
     k_work alert_work_{};
     alert_callback callback_ = nullptr;
     void* context_           = nullptr;

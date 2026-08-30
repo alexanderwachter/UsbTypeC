@@ -5,6 +5,7 @@
  */
 
 #include <usbc/zephyr/Tcpc.hpp>
+#include <usbc/zephyr/WorkQueue.hpp>
 
 #include <zephyr/logging/log.h>
 
@@ -88,7 +89,7 @@ constexpr cc_state fromVoltage(tc_cc_voltage_state state, cc_pull presented)
 
 } // namespace
 
-Tcpc::Tcpc(device const* dev, k_work_q* queue) : dev_(dev), queue_(queue)
+Tcpc::Tcpc(device const* dev) : dev_(dev)
 {
     k_work_init(&alert_work_, &Tcpc::notifyWork);
 }
@@ -254,11 +255,7 @@ void Tcpc::alert(device const*, void* data, tcpc_alert alert)
         return;
     }
     atomic_or(&self->pending_, static_cast<atomic_val_t>(bits));
-    if (self->queue_ != nullptr) {
-        k_work_submit_to_queue(self->queue_, &self->alert_work_);
-    } else {
-        k_work_submit(&self->alert_work_);
-    }
+    k_work_submit_to_queue(&workQueue(), &self->alert_work_);
 }
 
 void Tcpc::notifyWork(k_work* work)

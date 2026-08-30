@@ -2,10 +2,11 @@
  * Adapter from a Zephyr VBUS device driver
  * (zephyr/drivers/usb_c/usbc_vbus.h) to the stack's event-driven vbus
  * concept. Zephyr's driver is poll-based, so the adapter samples
- * check_level() from a delayable work item (the system workqueue by
- * default) and reports through the callback on every change - plus
- * once after monitor(), as the concept requires. sink_disconnect_pd
- * has no Zephyr level and is approximated with TC_VBUS_REMOVED.
+ * check_level() from a delayable work item on the stack's work queue
+ * (WorkQueue.hpp) and reports through the callback on every change -
+ * plus once after monitor(), as the concept requires.
+ * sink_disconnect_pd has no Zephyr level and is approximated with
+ * TC_VBUS_REMOVED.
  *
  * The instance is pinned: the work item holds its address.
  *
@@ -26,7 +27,7 @@ namespace usbc::zephyr {
 
 class Vbus {
 public:
-    explicit Vbus(device const* dev, k_work_q* queue = nullptr,
+    explicit Vbus(device const* dev,
                   std::chrono::milliseconds poll_interval = std::chrono::milliseconds{5});
     Vbus(Vbus const&)            = delete;
     Vbus& operator=(Vbus const&) = delete;
@@ -41,7 +42,6 @@ private:
     void schedule(k_timeout_t delay);
 
     device const* dev_;
-    k_work_q* queue_;
     k_work_delayable work_{};
     std::chrono::milliseconds poll_interval_;
     vbus_callback callback_ = nullptr;

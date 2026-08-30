@@ -5,6 +5,7 @@
  */
 
 #include <usbc/zephyr/Vbus.hpp>
+#include <usbc/zephyr/WorkQueue.hpp>
 
 #include <zephyr/logging/log.h>
 
@@ -25,8 +26,8 @@ constexpr tc_vbus_level toZephyr(vbus_level level)
 
 } // namespace
 
-Vbus::Vbus(device const* dev, k_work_q* queue, std::chrono::milliseconds poll_interval)
-    : dev_(dev), queue_(queue), poll_interval_(poll_interval)
+Vbus::Vbus(device const* dev, std::chrono::milliseconds poll_interval)
+    : dev_(dev), poll_interval_(poll_interval)
 {
     k_work_init_delayable(&work_, &Vbus::poll);
 }
@@ -80,11 +81,7 @@ void Vbus::poll(k_work* work)
 
 void Vbus::schedule(k_timeout_t delay)
 {
-    if (queue_ != nullptr) {
-        k_work_reschedule_for_queue(queue_, &work_, delay);
-    } else {
-        k_work_reschedule(&work_, delay);
-    }
+    k_work_reschedule_for_queue(&workQueue(), &work_, delay);
 }
 
 } // namespace usbc::zephyr

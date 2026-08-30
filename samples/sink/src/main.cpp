@@ -1,20 +1,20 @@
 /*
  * USB Type-C sink sample: attach/detach detection with the UsbTypeC
- * stack on Zephyr driver adapters. Everything runs on the system
- * workqueue - the VBUS poller, the deferred TCPC alerts, and the
- * debounce timer - which is the serialization the stack requires. The
- * sink registers itself with the drivers on construction; there is no
- * glue to write.
+ * stack on Zephyr driver adapters. Everything runs on the stack's own
+ * work queue (priority set by CONFIG_USB_TYPEC_STACK_THREAD_PRIORITY)
+ * - the VBUS poller, the deferred TCPC alerts, and the debounce timer
+ * - which is the serialization the stack requires. The sink registers
+ * itself with the drivers on construction; there is no glue to write.
  *
  * Copyright (c) 2026 Alexander Wachter
  *
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <mtl/zephyr/Timer.hpp>
 #include <usbc/TypeC.hpp>
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/Vbus.hpp>
+#include <usbc/zephyr/WorkQueue.hpp>
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -44,12 +44,12 @@ struct AttachLogger {
     void onDetached() { LOG_INF("detached"); }
 };
 
-using Sink = usbc::TypeCSink<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, mtl::zephyr::WorkqueueTimer,
-                             AttachLogger>;
+using Sink =
+    usbc::TypeCSink<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer, AttachLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
-mtl::zephyr::WorkqueueTimer timer;
+usbc::zephyr::Timer timer;
 AttachLogger logger;
 
 } // namespace

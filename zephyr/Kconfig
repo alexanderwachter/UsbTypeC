@@ -13,6 +13,20 @@ config USB_TYPEC_STACK
 
 if USB_TYPEC_STACK
 
+config USB_TYPEC_STACK_THREAD_PRIORITY
+	int "USB Type-C stack thread priority"
+	default 0
+	help
+	  Priority of the stack's work queue thread. All stack processing -
+	  TCPC alerts, VBUS monitoring, and the protocol timers - runs on
+	  this thread.
+
+config USB_TYPEC_STACK_STACK_SIZE
+	int "USB Type-C stack thread stack size"
+	default 1024
+	help
+	  Stack size of the stack's work queue thread.
+
 module = USB_TYPEC_STACK
 module-str = USB Type-C stack
 source "subsys/logging/Kconfig.template.log_config"
