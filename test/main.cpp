@@ -6,12 +6,12 @@
 
 #include <print>
 
-int tcpc_tests();
-int protocol_layer_tests();
-int type_c_tests();
+int tcpcTests();
+int protocolLayerTests();
+int typeCTests();
 
 int main(int argc, const char* argv[]) {
-    int const failures = tcpc_tests() + protocol_layer_tests() + type_c_tests();
+    int const failures = tcpcTests() + protocolLayerTests() + typeCTests();
     if (failures != 0) {
         std::print("{} check(s) FAILED\n", failures);
         return 1;

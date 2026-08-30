@@ -6,7 +6,9 @@
  * drivers that are not register-level TCPI - in particular a shim over
  * a Zephyr TCPC device driver (zephyr/drivers/usb_c/usbc_tcpc.h). The
  * state machines play the TCPM role and drive a user-provided driver
- * satisfying concepts::tcpc. VBUS sensing is a separate interface
+ * satisfying concepts::tcpc plus the capability concepts its port
+ * needs (vconn_switch, pd_transport - not every port runs Power
+ * Delivery or supplies VCONN). VBUS sensing is a separate interface
  * (concepts::vbus in Vbus.hpp): hardware, and Zephyr's driver model,
  * often measure VBUS outside the TCPC. Connection detection (including
  * DRP toggling) is done by the stack's state machines; a TCPC's
@@ -15,7 +17,7 @@
  *
  * Execution contract: the driver signals pending work by invoking the
  * registered alert callback (typically from interrupt context). The
- * stack later calls read_alert() from its own context - reading clears
+ * stack later calls readAlert() from its own context - reading clears
  * the pending flags, like the write-to-clear ALERT register. Received
  * messages are fetched with receive() until it returns false. All other
  * functions are called from the stack's context only; the driver never
@@ -102,7 +104,7 @@ enum class transmit_signal : std::uint8_t {
     bist_carrier_mode_2,
 };
 
-// Pending events, cleared by read_alert()
+// Pending events, cleared by readAlert()
 enum class alert_status : std::uint8_t {
     none                = 0,
     cc_status_changed   = 1u << 0,
@@ -121,30 +123,38 @@ using alert_callback = void (*)(void*);
 
 namespace concepts {
 
+// The core every port controller driver provides: alerts, CC
+// sensing/control, and the VBUS path switches (voltage programming is
+// the source_supply interface, SourceSupply.hpp). The driver arrives
+// already initialized - bring-up is the integrator's job. VCONN and PD
+// messaging are capability concepts a driver implements only when its
+// port uses them
 template<typename T>
 concept tcpc = requires(T t, cc_pull pull, rp_value rp, plug_orientation orientation,
-                        receive_detect detect, message_header_info header_info,
-                        pd_message const& message, pd_message& receive_buffer,
-                        transmit_signal signal, alert_callback callback, void* context,
-                        bool enable) {
-    { t.init() } -> std::same_as<bool>;
-    t.set_alert_handler(callback, context);
-    { t.read_alert() } -> std::same_as<std::optional<alert_status>>;
+                        alert_callback callback, void* context, bool enable) {
+    t.setAlertHandler(callback, context);
+    { t.readAlert() } -> std::same_as<std::optional<alert_status>>;
+    { t.setCc(pull, rp) } -> std::same_as<bool>;
+    { t.readCcStatus() } -> std::same_as<std::optional<cc_status>>;
+    { t.setPlugOrientation(orientation) } -> std::same_as<bool>;
+    { t.sourceVbus(enable) } -> std::same_as<bool>;
+    { t.sinkVbus(enable) } -> std::same_as<bool>;
+};
 
-    // connection detection
-    { t.set_cc(pull, rp) } -> std::same_as<bool>;
-    { t.read_cc_status() } -> std::same_as<std::optional<cc_status>>;
-    { t.set_plug_orientation(orientation) } -> std::same_as<bool>;
+// VCONN powers the cable plug: only ports doing cable communication or
+// >3 A contracts need it
+template<typename T>
+concept vconn_switch = requires(T t, bool enable) {
+    { t.setVconn(enable) } -> std::same_as<bool>;
+};
 
-    // power path switches; voltage programming is the source_supply
-    // interface (SourceSupply.hpp)
-    { t.source_vbus(enable) } -> std::same_as<bool>;
-    { t.sink_vbus(enable) } -> std::same_as<bool>;
-    { t.set_vconn(enable) } -> std::same_as<bool>;
-
-    // PD messaging
-    { t.set_message_header_info(header_info) } -> std::same_as<bool>;
-    { t.set_receive_detect(detect) } -> std::same_as<bool>;
+// PD message transport; a Type-C-only port needs none of it
+template<typename T>
+concept pd_transport = requires(T t, receive_detect detect, message_header_info header_info,
+                                pd_message const& message, pd_message& receive_buffer,
+                                transmit_signal signal) {
+    { t.setMessageHeaderInfo(header_info) } -> std::same_as<bool>;
+    { t.setReceiveDetect(detect) } -> std::same_as<bool>;
     { t.transmit(message) } -> std::same_as<bool>; // one attempt, outcome via alert
     { t.transmit(signal) } -> std::same_as<bool>;
     { t.receive(receive_buffer) } -> std::same_as<bool>;

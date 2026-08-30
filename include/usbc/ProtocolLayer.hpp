@@ -12,24 +12,24 @@
  * (tReceive): a failed attempt - reported by the driver or by the timer
  * - retransmits with the same MessageID while RetryCounter allows
  * (guarded self-transition), then lands in transmission_error, which
- * reports on_tx_error, increments the MessageIDCounter, and rests until
+ * reports onTxError, increments the MessageIDCounter, and rests until
  * the policy engine transmits again or resets. Success and discard
- * outcomes arrive as alerts and report on_tx_done/on_tx_discarded; the
+ * outcomes arrive as alerts and report onTxDone/onTxDiscarded; the
  * MessageIDCounter increments on these completions only - never per
  * attempt. transmit() while a message is in flight is refused - the
  * policy engine serializes its requests.
  *
- * Hard reset: transmit_hard_reset() hands the signal to the driver and
+ * Hard reset: transmitHardReset() hands the signal to the driver and
  * waits in wait_for_hard_reset_complete, bounded by
  * HardResetCompleteTimer (tHardResetComplete); PHY confirmation or the
- * timer completes it and reports on_hard_reset_sent.
+ * timer completes it and reports onHardResetSent.
  *
- * Execution contract: the transmit functions, reset, and on_alert run
+ * Execution contract: the transmit functions, reset, and onAlert run
  * in the stack's
  * context. The TIMER policy fires fsm::timeout from its own execution
  * context (mtl timer contract), and the integrator serializes it with
- * the stack's calls; client callbacks on timeout paths (on_tx_error,
- * on_hard_reset_sent) originate from that serialized timer context.
+ * the stack's calls; client callbacks on timeout paths (onTxError,
+ * onHardResetSent) originate from that serialized timer context.
  *
  * The PD revision is a build-time property: n_retry_count is the
  * PD rev 3.x value (a rev 2.0 build would use 3).
@@ -58,12 +58,12 @@ namespace concepts {
 
 template<typename T>
 concept prl_client = requires(T client, pd_message const& message) {
-    client.on_message(message);
-    client.on_tx_done();
-    client.on_tx_discarded();
-    client.on_tx_error();
-    client.on_hard_reset();      // hard reset received from the partner
-    client.on_hard_reset_sent(); // own hard reset signal is on the wire
+    client.onMessage(message);
+    client.onTxDone();
+    client.onTxDiscarded();
+    client.onTxError();
+    client.onHardReset();      // hard reset received from the partner
+    client.onHardResetSent(); // own hard reset signal is on the wire
 };
 
 } // namespace concepts
@@ -115,7 +115,7 @@ struct wait_for_phy_response {
     // Re-entry is the retransmission: same message, same MessageID
     explicit wait_for_phy_response(tx_context& ctx) : context(ctx) { ++context.retry_counter; }
 
-    pd_message const& tx_message() const { return context.message; }
+    pd_message const& txMessage() const { return context.message; }
 
     tx_context& context;
 };
@@ -126,7 +126,7 @@ struct transmission_error {
     explicit transmission_error(tx_context& ctx) : context(ctx) {}
 
     // the failed message's SOP*, observed by the client reporter
-    sop_type failed_sop() const { return context.message.sop; }
+    sop_type failedSop() const { return context.message.sop; }
 
     tx_context& context;
 };
@@ -178,29 +178,29 @@ using tx_table = fsm::transition_table<
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::reset>,
                     fsm::to<state::wait_for_message_request>>>;
 
-// Hands a state's tx_message() to the TCPC on entry; the accessor is
+// Hands a state's txMessage() to the TCPC on entry; the accessor is
 // the marker that makes a state a transmitting one. A refused hand-off
 // is not reported: CRCReceiveTimer turns it into a retry
-template<concepts::tcpc TCPC>
+template<concepts::pd_transport TCPC>
 struct phy_driver : fsm::observing<phy_driver<TCPC>> {
     explicit phy_driver(TCPC& tcpc_ref) : tcpc(tcpc_ref) {}
 
-    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.tx_message()))
+    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.txMessage()))
     {
-        return state.tx_message();
+        return state.txMessage();
     }
 
-    void notify_entry(pd_message const& message) { tcpc.transmit(message); }
+    void notifyEntry(pd_message const& message) { tcpc.transmit(message); }
 
     TCPC& tcpc;
 };
 
 } // namespace prl
 
-template<concepts::tcpc TCPC, fsm::concepts::timer TIMER, concepts::prl_client CLIENT>
-class protocol_layer {
+template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER, concepts::prl_client CLIENT>
+class ProtocolLayer {
 public:
-    protocol_layer(TCPC& tcpc, CLIENT& client) : tcpc_(tcpc), client_(client) {}
+    ProtocolLayer(TCPC& tcpc, CLIENT& client) : tcpc_(tcpc), client_(client) {}
 
     // Stamps the MessageID; the rest of the header is the caller's.
     // False when a message or hard reset is already in flight
@@ -212,11 +212,11 @@ public:
         return sm_.process(prl::event::tx_request{message});
     }
 
-    bool transmit_hard_reset()
+    bool transmitHardReset()
     {
         bool const accepted = tcpc_.transmit(transmit_signal::hard_reset);
         sm_.process(prl::event::hard_reset_request{});
-        reset_all();
+        resetAll();
         return accepted;
     }
 
@@ -227,34 +227,34 @@ public:
         rx_id_[index(sop)].reset();
     }
 
-    void on_alert(alert_status alerts)
+    void onAlert(alert_status alerts)
     {
         if (any(alerts & alert_status::hard_reset_received)) {
             sm_.process(prl::event::reset{});
-            reset_all();
-            client_.on_hard_reset();
+            resetAll();
+            client_.onHardReset();
         }
         if (any(alerts & alert_status::transmit_success)) {
-            if (auto const* pending = sm_.template get_if<prl::state::wait_for_phy_response>()) {
+            if (auto const* pending = sm_.template getIf<prl::state::wait_for_phy_response>()) {
                 increment(pending->context.message.sop);
                 sm_.process(prl::event::phy_success{});
-                client_.on_tx_done();
+                client_.onTxDone();
             } else {
                 sm_.process(prl::event::phy_success{}); // hard reset confirmation
             }
         }
         if (any(alerts & alert_status::transmit_discarded)) {
-            if (auto const* pending = sm_.template get_if<prl::state::wait_for_phy_response>()) {
+            if (auto const* pending = sm_.template getIf<prl::state::wait_for_phy_response>()) {
                 increment(pending->context.message.sop);
                 sm_.process(prl::event::phy_discarded{});
-                client_.on_tx_discarded();
+                client_.onTxDiscarded();
             }
         }
         if (any(alerts & alert_status::transmit_failed)) {
             sm_.process(prl::event::phy_failed{}); // retry or transmission_error
         }
         if (any(alerts & alert_status::message_received)) {
-            drain_received();
+            drainReceived();
         }
     }
 
@@ -266,15 +266,15 @@ private:
     // possibly from the serialized timer context. Each observation
     // delivers its own type, so the notify hooks cannot collide
     struct client_reporter : fsm::observing<client_reporter> {
-        explicit client_reporter(protocol_layer& prl_ref) : prl(prl_ref) {}
+        explicit client_reporter(ProtocolLayer& prl_ref) : prl(prl_ref) {}
 
-        // entering a state with a failed_sop() is the transmission error
+        // entering a state with a failedSop() is the transmission error
         static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.failed_sop()))
+            -> decltype((state.failedSop()))
         {
-            return state.failed_sop();
+            return state.failedSop();
         }
-        void notify_entry(sop_type sop) { prl.give_up(sop); }
+        void notifyEntry(sop_type sop) { prl.giveUp(sop); }
 
         // leaving a report_hard_reset_sent state completes the hard
         // reset - via PHY confirmation, the timer, or a reset event
@@ -283,9 +283,9 @@ private:
         {
             return STATE::report_hard_reset_sent;
         }
-        void notify_exit(prl::hard_reset_sent) { prl.client_.on_hard_reset_sent(); }
+        void notifyExit(prl::hard_reset_sent) { prl.client_.onHardResetSent(); }
 
-        protocol_layer& prl;
+        ProtocolLayer& prl;
     };
 
     static constexpr std::size_t sop_count = 5;
@@ -299,13 +299,13 @@ private:
     }
 
     // PRL_Tx_Transmission_Error: MessageIDCounter increments, PE informed
-    void give_up(sop_type sop)
+    void giveUp(sop_type sop)
     {
         increment(sop);
-        client_.on_tx_error();
+        client_.onTxError();
     }
 
-    void drain_received()
+    void drainReceived()
     {
         pd_message message;
         while (tcpc_.receive(message)) {
@@ -315,11 +315,11 @@ private:
                 continue; // retransmission of a message already delivered
             }
             stored = id;
-            client_.on_message(message);
+            client_.onMessage(message);
         }
     }
 
-    void reset_all()
+    void resetAll()
     {
         tx_counter_ = {};
         rx_id_      = {};

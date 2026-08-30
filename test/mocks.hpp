@@ -14,7 +14,6 @@
 
 // TCPC driver test double, shared by the interface and protocol layer tests
 struct mock_tcpc {
-    bool initialized              = false;
     usbc::alert_callback callback = nullptr;
     void* context                 = nullptr;
     usbc::alert_status alerts     = usbc::alert_status::none;
@@ -33,55 +32,50 @@ struct mock_tcpc {
     std::optional<usbc::transmit_signal> last_signal{};
     std::optional<usbc::pd_message> pending_rx{};
 
-    bool init()
-    {
-        initialized = true;
-        return true;
-    }
-    void set_alert_handler(usbc::alert_callback cb, void* ctx)
+    void setAlertHandler(usbc::alert_callback cb, void* ctx)
     {
         callback = cb;
         context  = ctx;
     }
-    std::optional<usbc::alert_status> read_alert()
+    std::optional<usbc::alert_status> readAlert()
     {
         auto const pending = alerts;
         alerts             = usbc::alert_status::none;
         return pending;
     }
-    bool set_cc(usbc::cc_pull p, usbc::rp_value current)
+    bool setCc(usbc::cc_pull p, usbc::rp_value current)
     {
         pull = p;
         rp   = current;
         return true;
     }
-    std::optional<usbc::cc_status> read_cc_status() { return line_state; }
-    bool set_plug_orientation(usbc::plug_orientation o)
+    std::optional<usbc::cc_status> readCcStatus() { return line_state; }
+    bool setPlugOrientation(usbc::plug_orientation o)
     {
         orientation = o;
         return true;
     }
-    bool source_vbus(bool enable)
+    bool sourceVbus(bool enable)
     {
         sourcing = enable;
         return true;
     }
-    bool sink_vbus(bool enable)
+    bool sinkVbus(bool enable)
     {
         sinking = enable;
         return true;
     }
-    bool set_vconn(bool enable)
+    bool setVconn(bool enable)
     {
         vconn = enable;
         return true;
     }
-    bool set_message_header_info(usbc::message_header_info info)
+    bool setMessageHeaderInfo(usbc::message_header_info info)
     {
         header_info = info;
         return true;
     }
-    bool set_receive_detect(usbc::receive_detect d)
+    bool setReceiveDetect(usbc::receive_detect d)
     {
         detect = d;
         return true;
@@ -108,7 +102,7 @@ struct mock_tcpc {
     }
 
     // test helper: a message arrives and the driver raises its alert
-    void inject_message(usbc::pd_message const& message)
+    void injectMessage(usbc::pd_message const& message)
     {
         pending_rx = message;
         alerts |= usbc::alert_status::message_received;
@@ -132,7 +126,7 @@ struct mock_vbus {
         enabled = e;
         return true;
     }
-    void set_callback(usbc::vbus_callback cb, void* ctx)
+    void setCallback(usbc::vbus_callback cb, void* ctx)
     {
         callback = cb;
         context  = ctx;
@@ -146,7 +140,7 @@ struct mock_vbus {
     bool discharge(bool enable)
     {
         if (enable) {
-            set_voltage(0);
+            setVoltage(0);
         }
         return true;
     }
@@ -169,7 +163,7 @@ struct mock_vbus {
             callback(context, reported_met);
         }
     }
-    void set_voltage(std::int32_t mv)
+    void setVoltage(std::int32_t mv)
     {
         voltage_mv = mv;
         if (monitored && met() != reported_met) {

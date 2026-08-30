@@ -24,7 +24,7 @@ void write(std::filesystem::path const& directory, std::string_view name)
 {
     auto const path = directory / (std::string{name} + ".dot");
     std::ofstream out{path};
-    fsm::write_dot<TABLE>(out, name);
+    fsm::writeDot<TABLE>(out, name);
     std::print("{}\n", path.string());
 }
 

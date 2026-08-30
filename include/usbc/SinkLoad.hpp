@@ -11,7 +11,7 @@
  * completion event - the standard bounds the reduction by time
  * (tSnkStdby), not by handshake.
  *
- * Failure contract as in Tcpc.hpp: set_limit() reports whether the
+ * Failure contract as in Tcpc.hpp: setLimit() reports whether the
  * driver accepted the operation.
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -30,7 +30,7 @@ namespace concepts {
 
 template<typename T>
 concept sink_load = requires(T s, millivolt expected_voltage, milliamp max_current) {
-    { s.set_limit(expected_voltage, max_current) } -> std::same_as<bool>;
+    { s.setLimit(expected_voltage, max_current) } -> std::same_as<bool>;
 };
 
 } // namespace concepts

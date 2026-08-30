@@ -19,10 +19,10 @@
  * Integration: initialize the tcpc and vbus drivers and register the
  * vbus callback before constructing the machine (construction applies
  * the initial state's terminations and starts monitoring). Feed
- * cc_status_changed alerts through cc_alert() and vbus callback
- * reports through vbus_event(); both run in the stack's context, and
+ * cc_status_changed alerts through ccAlert() and vbus callback
+ * reports through vbusEvent(); both run in the stack's context, and
  * the TIMER policy is serialized with them by the integrator (mtl
- * timer contract). Client callbacks (on_attached/on_detached) may
+ * timer contract). Client callbacks (onAttached/onDetached) may
  * originate from the timer context on debounce-timeout paths.
  *
  * Not covered yet: source and DRP roles, Try.SNK, debug and audio
@@ -49,8 +49,8 @@ namespace concepts {
 
 template<typename T>
 concept tc_sink_client = requires(T client, plug_orientation orientation, rp_value advertisement) {
-    client.on_attached(orientation, advertisement);
-    client.on_detached();
+    client.onAttached(orientation, advertisement);
+    client.onDetached();
 };
 
 } // namespace concepts
@@ -59,25 +59,25 @@ namespace tc {
 
 inline constexpr auto t_cc_debounce = std::chrono::milliseconds{150}; // 100 ms - 200 ms
 
-constexpr bool is_rp(cc_state state)
+constexpr bool isRp(cc_state state)
 {
     return state == cc_state::snk_default || state == cc_state::snk_power_1a5 ||
            state == cc_state::snk_power_3a0;
 }
 
-constexpr bool single_rp(cc_status status)
+constexpr bool singleRp(cc_status status)
 {
-    return is_rp(status.cc1) != is_rp(status.cc2);
+    return isRp(status.cc1) != isRp(status.cc2);
 }
 
-constexpr plug_orientation orientation_of(cc_status status)
+constexpr plug_orientation orientationOf(cc_status status)
 {
-    return is_rp(status.cc1) ? plug_orientation::cc1 : plug_orientation::cc2;
+    return isRp(status.cc1) ? plug_orientation::cc1 : plug_orientation::cc2;
 }
 
-constexpr rp_value advertisement_of(cc_status status)
+constexpr rp_value advertisementOf(cc_status status)
 {
-    switch (is_rp(status.cc1) ? status.cc1 : status.cc2) {
+    switch (isRp(status.cc1) ? status.cc1 : status.cc2) {
     case cc_state::snk_power_1a5: return rp_value::p_1a5;
     case cc_state::snk_power_3a0: return rp_value::p_3a0;
     default: return rp_value::usb_default;
@@ -160,13 +160,13 @@ struct attached_snk : sink_state {
 
     explicit attached_snk(port_context& ctx)
         : sink_state(ctx),
-          orientation_(orientation_of(ctx.cc)),
-          advertisement_(advertisement_of(ctx.cc))
+          orientation_(orientationOf(ctx.cc)),
+          advertisement_(advertisementOf(ctx.cc))
     {
     }
 
     plug_orientation orientation() const { return orientation_; }
-    attach_info attached_info() const { return {orientation_, advertisement_}; }
+    attach_info attachedInfo() const { return {orientation_, advertisement_}; }
 
 private:
     plug_orientation orientation_;
@@ -178,12 +178,12 @@ private:
 struct attach_conditions_met {
     static bool check(state::attach_wait_snk const& state)
     {
-        return single_rp(state.context.cc) && state.context.vbus_present;
+        return singleRp(state.context.cc) && state.context.vbus_present;
     }
 };
 
 struct stable_rp {
-    static bool check(state::attach_wait_snk const& state) { return single_rp(state.context.cc); }
+    static bool check(state::attach_wait_snk const& state) { return singleRp(state.context.cc); }
 };
 
 using sink_table = fsm::transition_table<
@@ -227,17 +227,17 @@ struct hw_driver : fsm::observing<hw_driver<TCPC>> {
     {
         return STATE::hw;
     }
-    void notify_entry(hw_config const& config)
+    void notifyEntry(hw_config const& config)
     {
-        tcpc.set_cc(config.pull, rp_value::usb_default);
-        tcpc.sink_vbus(config.sink);
+        tcpc.setCc(config.pull, rp_value::usb_default);
+        tcpc.sinkVbus(config.sink);
     }
 
     static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.orientation()))
     {
         return state.orientation();
     }
-    void notify_entry(plug_orientation orientation) { tcpc.set_plug_orientation(orientation); }
+    void notifyEntry(plug_orientation orientation) { tcpc.setPlugOrientation(orientation); }
 
     TCPC& tcpc;
 };
@@ -253,7 +253,7 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
     {
         return STATE::watch;
     }
-    void notify_entry(vbus_level level)
+    void notifyEntry(vbus_level level)
     {
         monitored = level;
         vbus.monitor(level);
@@ -267,23 +267,23 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
 
 template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
          concepts::tc_sink_client CLIENT>
-class type_c_sink {
+class TypeCSink {
 public:
-    type_c_sink(TCPC& tcpc, VBUS& vbus, CLIENT& client)
+    TypeCSink(TCPC& tcpc, VBUS& vbus, CLIENT& client)
         : tcpc_(tcpc), hw_(tcpc), vbus_(vbus), client_(client)
     {
     }
 
     // The TCPC reported a CC status change
-    void cc_alert()
+    void ccAlert()
     {
-        if (auto const cc = tcpc_.read_cc_status()) {
+        if (auto const cc = tcpc_.readCcStatus()) {
             sm_.process(tc::event::cc_changed{*cc});
         }
     }
 
     // The vbus driver reported its monitored condition
-    void vbus_event(bool met)
+    void vbusEvent(bool met)
     {
         bool const present = vbus_.monitored == vbus_level::sink_disconnect ? !met : met;
         if (present) {
@@ -302,15 +302,15 @@ private:
         explicit attach_reporter(CLIENT& client_ref) : client(client_ref) {}
 
         static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.attached_info()))
+            -> decltype((state.attachedInfo()))
         {
-            return state.attached_info();
+            return state.attachedInfo();
         }
-        void notify_entry(tc::attach_info info)
+        void notifyEntry(tc::attach_info info)
         {
-            client.on_attached(info.orientation, info.advertisement);
+            client.onAttached(info.orientation, info.advertisement);
         }
-        void notify_exit(tc::attach_info) { client.on_detached(); }
+        void notifyExit(tc::attach_info) { client.onDetached(); }
 
         CLIENT& client;
     };
