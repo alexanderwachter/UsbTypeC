@@ -200,7 +200,10 @@ struct phy_driver : fsm::observing<phy_driver<TCPC>> {
 template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER, concepts::prl_client CLIENT>
 class ProtocolLayer {
 public:
-    ProtocolLayer(TCPC& tcpc, CLIENT& client) : tcpc_(tcpc), client_(client) {}
+    ProtocolLayer(TCPC& tcpc, TIMER& timer, CLIENT& client)
+        : tcpc_(tcpc), client_(client), timed_(timer)
+    {
+    }
 
     // Stamps the MessageID; the rest of the header is the caller's.
     // False when a message or hard reset is already in flight
@@ -257,9 +260,6 @@ public:
             drainReceived();
         }
     }
-
-    // The timer policy instance, for platform integration (e.g. polling)
-    TIMER& timer() { return timed_.timer; }
 
 private:
     // Reports the outcomes the state machine reaches on its own -
@@ -327,10 +327,10 @@ private:
 
     TCPC& tcpc_;
     CLIENT& client_;
-    fsm::timed<TIMER> timed_{};
+    fsm::timed<TIMER&> timed_;
     prl::phy_driver<TCPC> driver_{tcpc_};
     client_reporter reporter_{*this};
-    fsm::state_machine<prl::tx_table, fsm::timed<TIMER>, prl::phy_driver<TCPC>, client_reporter>
+    fsm::state_machine<prl::tx_table, fsm::timed<TIMER&>, prl::phy_driver<TCPC>, client_reporter>
         sm_{timed_, driver_, reporter_};
     std::array<std::uint8_t, sop_count> tx_counter_{};
     std::array<std::optional<std::uint8_t>, sop_count> rx_id_{};

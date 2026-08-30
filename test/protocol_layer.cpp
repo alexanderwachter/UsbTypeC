@@ -126,8 +126,8 @@ int protocolLayerTests()
 {
     mock_tcpc tcpc;
     mock_client client;
-    usbc::ProtocolLayer<mock_tcpc, manual_timer, mock_client> prl{tcpc, client};
-    auto& timer = prl.timer();
+    manual_timer timer;
+    usbc::ProtocolLayer<mock_tcpc, manual_timer, mock_client> prl{tcpc, timer, client};
 
     // MessageID stamping; one PHY attempt per request, CRCReceiveTimer runs
     check(prl.transmit(makeRequest()));

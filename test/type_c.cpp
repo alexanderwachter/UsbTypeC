@@ -98,9 +98,15 @@ int typeCTests()
     mock_tcpc tcpc;
     mock_vbus vbus;
     mock_tc_client client;
-    sink tc{tcpc, vbus, client};
-    vbus.setCallback([](void* ctx, bool met) { static_cast<sink*>(ctx)->vbusEvent(met); }, &tc);
-    auto& timer = tc.timer();
+    manual_timer timer;
+    sink tc{tcpc, vbus, timer, client};
+    static_cast<void>(tc); // driven through the self-registered callbacks
+
+    // a CC alert travels through the alert handler the sink registered
+    auto const ccAlert = [&] {
+        tcpc.alerts |= usbc::alert_status::cc_status_changed;
+        tcpc.callback(tcpc.context);
+    };
 
     // construction applied Unattached.SNK: Rd presented, sink path off,
     // vSafe5V monitored
@@ -110,7 +116,7 @@ int typeCTests()
     // source attaches: Rp seen, debounce runs, VBUS arrives mid-debounce
     // without restarting it
     tcpc.line_state = {usbc::cc_state::snk_power_1a5, usbc::cc_state::snk_open};
-    tc.ccAlert();
+    ccAlert();
     check(timer.armed && timer.duration == usbc::tc::t_cc_debounce);
     auto const starts_before = timer.starts;
     vbus.setVoltage(5000);
@@ -131,7 +137,7 @@ int typeCTests()
 
     // attach with VBUS arriving after the debounce, flipped orientation
     tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_power_3a0};
-    tc.ccAlert();
+    ccAlert();
     timer.expire();
     check(!tcpc.sinking && client.attached == 1); // debounced, waiting for VBUS
     vbus.setVoltage(5000);
@@ -143,21 +149,21 @@ int typeCTests()
 
     // a CC change during the debounce restarts it
     tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
-    tc.ccAlert();
+    ccAlert();
     auto const restart_before = timer.starts;
     tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
-    tc.ccAlert();
+    ccAlert();
     check(timer.starts == restart_before + 1);
 
     // ... and a line gone open at the timeout returns to Unattached.SNK
     tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
-    tc.ccAlert();
+    ccAlert();
     timer.expire();
     check(!tcpc.sinking && client.attached == 2 && client.detached == 2);
 
     // both lines with Rp (debug accessory) is not an attach
     tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_default};
-    tc.ccAlert();
+    ccAlert();
     vbus.setVoltage(5000);
     timer.expire();
     check(!tcpc.sinking && client.attached == 2);

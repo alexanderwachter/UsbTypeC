@@ -5,7 +5,16 @@
 config USB_TYPEC_STACK
 	bool "USB Type-C stack with Power Delivery"
 	select CPP
+	select REQUIRES_FULL_LIBCPP
 	help
 	  Enable the UsbTypeC library: USB Type-C connection state machines
 	  and USB Power Delivery according to the USB Type-C Cable and
 	  Connector Specification and the USB PD Specification.
+
+if USB_TYPEC_STACK
+
+module = USB_TYPEC_STACK
+module-str = USB Type-C stack
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # USB_TYPEC_STACK

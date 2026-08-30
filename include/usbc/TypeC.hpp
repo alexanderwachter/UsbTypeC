@@ -16,14 +16,16 @@
  * the watched level is a state annotation and the vbus_watcher observer
  * re-arms the vbus driver on changes.
  *
- * Integration: initialize the tcpc and vbus drivers and register the
- * vbus callback before constructing the machine (construction applies
- * the initial state's terminations and starts monitoring). Feed
- * cc_status_changed alerts through ccAlert() and vbus callback
- * reports through vbusEvent(); both run in the stack's context, and
- * the TIMER policy is serialized with them by the integrator (mtl
- * timer contract). Client callbacks (onAttached/onDetached) may
- * originate from the timer context on debounce-timeout paths.
+ * Integration: hand over initialized drivers and a caller-owned timer
+ * policy instance; construction applies the initial state's
+ * terminations, registers the machine as the tcpc alert handler and
+ * the vbus callback, starts monitoring, and seeds the CC state when a
+ * source is already present. The drivers must invoke their callbacks
+ * from the stack's serialized context (the Zephyr adapters deliver on
+ * a workqueue), and the timer is serialized with them by the
+ * integrator (mtl timer contract). Client callbacks
+ * (onAttached/onDetached) may originate from the timer context on
+ * debounce-timeout paths.
  *
  * Not covered yet: source and DRP roles, Try.SNK, debug and audio
  * accessories (both-Rp results detach), Rp change notification while
@@ -269,9 +271,25 @@ template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
          concepts::tc_sink_client CLIENT>
 class TypeCSink {
 public:
-    TypeCSink(TCPC& tcpc, VBUS& vbus, CLIENT& client)
-        : tcpc_(tcpc), hw_(tcpc), vbus_(vbus), client_(client)
+    TypeCSink(TCPC& tcpc, VBUS& vbus, TIMER& timer, CLIENT& client)
+        : tcpc_(tcpc), hw_(tcpc), vbus_(vbus), client_(client), timed_(timer)
     {
+        vbus.setCallback(
+            [](void* self, bool met) { static_cast<TypeCSink*>(self)->vbusEvent(met); }, this);
+        tcpc.setAlertHandler([](void* self) { static_cast<TypeCSink*>(self)->alert(); }, this);
+        seedCcState();
+    }
+
+private:
+    // Drains the TCPC's pending alerts and dispatches them; invoked
+    // through the alert handler registered at construction
+    void alert()
+    {
+        if (auto const alerts = tcpc_.readAlert()) {
+            if (any(*alerts & alert_status::cc_status_changed)) {
+                ccAlert();
+            }
+        }
     }
 
     // The TCPC reported a CC status change
@@ -293,10 +311,15 @@ public:
         }
     }
 
-    // The timer policy instance, for platform integration (e.g. polling)
-    TIMER& timer() { return timed_.timer; }
+    // A source plugged in before construction has no alert to announce it
+    void seedCcState()
+    {
+        auto const cc = tcpc_.readCcStatus();
+        if (cc && (tc::isRp(cc->cc1) || tc::isRp(cc->cc2))) {
+            sm_.process(tc::event::cc_changed{*cc});
+        }
+    }
 
-private:
     // Tells the client about attach results, from the live attached state
     struct attach_reporter : fsm::observing<attach_reporter> {
         explicit attach_reporter(CLIENT& client_ref) : client(client_ref) {}
@@ -320,8 +343,8 @@ private:
     tc::vbus_watcher<VBUS> vbus_;
     CLIENT& client_;
     attach_reporter reporter_{client_};
-    fsm::timed<TIMER> timed_{};
-    fsm::state_machine<tc::sink_table, fsm::timed<TIMER>, tc::hw_driver<TCPC>,
+    fsm::timed<TIMER&> timed_;
+    fsm::state_machine<tc::sink_table, fsm::timed<TIMER&>, tc::hw_driver<TCPC>,
                        tc::vbus_watcher<VBUS>, attach_reporter>
         sm_{timed_, hw_, vbus_, reporter_};
 };
