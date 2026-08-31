@@ -60,11 +60,11 @@ struct PortClient {
     {
         LOG_INF("attached: CC%d", orientation == usbc::plug_orientation::cc1 ? 1 : 2);
         static_cast<void>(advertisement);
-        engine.start();
+        engine.vbusPresent(); // a sink's attach implies VBUS
     }
     void onDetached()
     {
-        engine.stop();
+        engine.vbusRemoved();
         LOG_INF("detached");
     }
     void onPdAlert(usbc::alert_status alerts) { engine.onAlert(alerts); }

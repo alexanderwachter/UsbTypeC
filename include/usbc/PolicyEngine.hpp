@@ -20,17 +20,32 @@
  * a non-chunking device: PE_SNK_Chunk_Received waits
  * ChunkingNotSupportedTimer, then answers Not_Supported.
  *
- * Deviations kept for later: PE_SNK_Evaluate_Capability runs inside
- * the message dispatch rather than as an own state, Wait is treated as
- * Reject (no tSinkRequest retry), GotoMin and swaps answer
- * Not_Supported, and there is no HardResetCounter - the sink retries
- * indefinitely.
+ * The machine follows the spec's PE_SNK state diagram: Startup (with
+ * the mandatory protocol layer reset) -> Discovery -> Wait_for_
+ * Capabilities -> Evaluate_Capability -> Select_Capability ->
+ * Transition_Sink -> Ready, with Send_Soft_Reset on protocol errors,
+ * Soft_Reset answering a received one, Hard_Reset ->
+ * Transition_to_default on timeouts, and Give_Sink_Cap /
+ * Send_Not_Supported / Chunk_Received serving Ready. Transient spec
+ * states advance through events the engine injects sequentially;
+ * Discovery -> Wait_for_Capabilities is driven by the externally
+ * reported VBUS.
+ *
+ * Deviations kept for later: Wait is treated as Reject (no
+ * tSinkRequest retry), GotoMin and swaps answer Not_Supported, there
+ * is no HardResetCounter - the sink retries indefinitely - and
+ * Discovery does not verify VBUS itself: start() implies VBUS present,
+ * and after a hard reset the SinkWaitCapTimer absorbs the VBUS gap.
  *
  * Integration: the engine drives a pd_transport driver through its own
- * ProtocolLayer; feed TCPC alerts into onAlert(), call start() once the
- * Type-C layer reports attach and stop() on detach. Everything runs in
- * the stack's serialized context; client callbacks may originate from
- * the timer context (mtl timer contract).
+ * ProtocolLayer and runs from construction on, resting in
+ * PE_SNK_Discovery until VBUS is reported. Feed TCPC alerts into
+ * onAlert() and the Type-C layer's attach/detach into vbusPresent()
+ * and vbusRemoved() - a sink's attach implies VBUS. After a hard reset
+ * the engine waits in Discovery for the Type-C layer to report the
+ * returning VBUS. Everything runs in the stack's serialized context;
+ * client callbacks may originate from the timer context (mtl timer
+ * contract).
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -184,8 +199,10 @@ struct lost_contract {
 namespace event {
 
 struct started {};
-struct stopped {};
-struct send_request {
+struct vbus_present {};
+struct vbus_removed {};
+struct source_capabilities {};
+struct capabilities_evaluated {
     pd_message message;
     contract_request terms;
 };
@@ -202,55 +219,66 @@ struct chunked_message {
     pd_message reply;
 };
 struct accept {};
-struct reject_or_wait {};
+struct reject {};
+struct wait {};
 struct ps_rdy {};
-struct tx_done {};
-struct tx_error {};
-struct hard_reset_sent {};
+struct message_sent {};       // PRL: transmission confirmed
+struct protocol_error {};     // PRL: transmission failed
+struct hard_reset_complete {};
 struct hard_reset_received {};
+struct default_level_reached {};
 
 } // namespace event
 
+inline pd_message makeControlMessage(control_message_type type)
+{
+    return {.sop    = sop_type::sop,
+            .header = pd_header{.message_type    = static_cast<std::uint8_t>(type),
+                                .port_data_role  = data_role::ufp,
+                                .revision        = pd_revision::rev_3_x,
+                                .port_power_role = power_role::sink}
+                          .encode()};
+}
+
 namespace state {
 
-struct startup {
-    explicit startup(pe_context& ctx) : context(ctx) { context = {}; }
+// PE_SNK_Startup: the protocol layer reset here is mandatory
+struct pe_snk_startup {
+    static constexpr prl_reset_action action{};
+
+    explicit pe_snk_startup(pe_context& ctx) : context(ctx) { context = {}; }
     pe_context& context;
 };
 
-struct wait_for_capabilities {
+// Waits for the Type-C layer to report VBUS
+struct pe_snk_discovery {
+    explicit pe_snk_discovery(pe_context& ctx) : context(ctx) {}
+    pe_context& context;
+};
+
+struct pe_snk_wait_for_capabilities {
     static constexpr auto timeout = t_sink_wait_cap; // SinkWaitCapTimer
 
-    wait_for_capabilities(event::started const&, pe_context& ctx) : context(ctx) { context = {}; }
-    wait_for_capabilities(event::hard_reset_sent const&, pe_context& ctx)
-        : context(ctx), lost_(ctx.explicit_contract)
-    {
-        context = {};
-    }
-    wait_for_capabilities(event::hard_reset_received const&, pe_context& ctx)
-        : context(ctx), lost_(ctx.explicit_contract)
-    {
-        context = {};
-    }
-    explicit wait_for_capabilities(pe_context& ctx) : context(ctx) {}
-
-    lost_contract report() const { return {lost_}; }
-
+    explicit pe_snk_wait_for_capabilities(pe_context& ctx) : context(ctx) {}
     pe_context& context;
-
-private:
-    bool lost_ = false;
 };
 
-struct select_capability {
+// The engine evaluates through the injected policy and advances with
+// capabilities_evaluated
+struct pe_snk_evaluate_capability {
+    explicit pe_snk_evaluate_capability(pe_context& ctx) : context(ctx) {}
+    pe_context& context;
+};
+
+struct pe_snk_select_capability {
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
 
-    select_capability(event::send_request const& event, pe_context& ctx)
+    pe_snk_select_capability(event::capabilities_evaluated const& event, pe_context& ctx)
         : context(ctx), message_(event.message)
     {
         context.request = event.terms;
     }
-    explicit select_capability(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_select_capability(pe_context& ctx) : context(ctx) {}
 
     pd_message const& txMessage() const { return message_; }
 
@@ -260,18 +288,18 @@ private:
     pd_message message_{};
 };
 
-struct transition_sink {
+struct pe_snk_transition_sink {
     static constexpr auto timeout = t_ps_transition; // PSTransitionTimer
 
-    explicit transition_sink(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_transition_sink(pe_context& ctx) : context(ctx) {}
 
     standby_limit report() const { return {context.request.voltage}; }
 
     pe_context& context;
 };
 
-struct ready {
-    explicit ready(pe_context& ctx) : context(ctx) { context.explicit_contract = true; }
+struct pe_snk_ready {
+    explicit pe_snk_ready(pe_context& ctx) : context(ctx) { context.explicit_contract = true; }
 
     active_contract report() const
     {
@@ -281,12 +309,12 @@ struct ready {
     pe_context& context;
 };
 
-struct give_sink_cap {
-    give_sink_cap(event::send_sink_caps const& event, pe_context& ctx)
+struct pe_snk_give_sink_cap {
+    pe_snk_give_sink_cap(event::send_sink_caps const& event, pe_context& ctx)
         : context(ctx), message_(event.message)
     {
     }
-    explicit give_sink_cap(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_give_sink_cap(pe_context& ctx) : context(ctx) {}
 
     pd_message const& txMessage() const { return message_; }
 
@@ -298,12 +326,12 @@ private:
 
 // PE_SNK_Send_Not_Supported: answers a message the sink does not
 // support, then returns to Ready
-struct send_not_supported {
-    send_not_supported(event::unsupported const& event, pe_context& ctx) : context(ctx)
+struct pe_snk_send_not_supported {
+    pe_snk_send_not_supported(event::unsupported const& event, pe_context& ctx) : context(ctx)
     {
         context.reply = event.reply;
     }
-    explicit send_not_supported(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_send_not_supported(pe_context& ctx) : context(ctx) {}
 
     pd_message const& txMessage() const { return context.reply; }
 
@@ -312,28 +340,28 @@ struct send_not_supported {
 
 // PE_SNK_Chunk_Received: a non-chunking device lets the sender run
 // into its chunking timeout before answering Not_Supported
-struct chunk_received {
+struct pe_snk_chunk_received {
     static constexpr auto timeout = t_chunking_not_supported; // ChunkingNotSupportedTimer
 
-    chunk_received(event::chunked_message const& event, pe_context& ctx) : context(ctx)
+    pe_snk_chunk_received(event::chunked_message const& event, pe_context& ctx) : context(ctx)
     {
         context.reply = event.reply;
     }
-    explicit chunk_received(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_chunk_received(pe_context& ctx) : context(ctx) {}
 
     pe_context& context;
 };
 
 // Accepts a received Soft_Reset; the reporter resets the protocol
 // layer before the sender transmits the Accept
-struct soft_reset {
+struct pe_snk_soft_reset {
     static constexpr prl_reset_action action{};
 
-    soft_reset(event::soft_reset_received const& event, pe_context& ctx)
+    pe_snk_soft_reset(event::soft_reset_received const& event, pe_context& ctx)
         : context(ctx), message_(event.accept)
     {
     }
-    explicit soft_reset(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_soft_reset(pe_context& ctx) : context(ctx) {}
 
     pd_message const& txMessage() const { return message_; }
 
@@ -343,74 +371,125 @@ private:
     pd_message message_{};
 };
 
-struct hard_reset {
+// PE_SNK_Send_Soft_Reset: protocol errors first try a soft reset; the
+// protocol layer is reset before the Soft_Reset goes out
+struct pe_snk_send_soft_reset {
+    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+    static constexpr prl_reset_action action{};
+
+    explicit pe_snk_send_soft_reset(pe_context& ctx) : context(ctx)
+    {
+        context.reply = makeControlMessage(control_message_type::soft_reset);
+    }
+
+    pd_message const& txMessage() const { return context.reply; }
+
+    pe_context& context;
+};
+
+struct pe_snk_hard_reset {
     static constexpr hard_reset_action action{};
 
-    explicit hard_reset(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_hard_reset(pe_context& ctx) : context(ctx) {}
     pe_context& context;
+};
+
+// PE_SNK_Transition_to_default: back to vSafe5V defaults; the engine
+// then advances through Startup and Discovery
+struct pe_snk_transition_to_default {
+    explicit pe_snk_transition_to_default(pe_context& ctx)
+        : context(ctx), lost_(ctx.explicit_contract)
+    {
+        context = {};
+    }
+
+    lost_contract report() const { return {lost_}; }
+
+    pe_context& context;
+
+private:
+    bool lost_ = false;
 };
 
 } // namespace state
 
 struct has_explicit_contract {
-    static bool check(state::select_capability const& state)
+    static bool check(state::pe_snk_select_capability const& state)
     {
         return state.context.explicit_contract;
     }
 };
 
 using sink_table = fsm::transition_table<
-    fsm::initial<state::startup>,
-    fsm::transition<fsm::from<state::startup>, fsm::on<event::started>,
-                    fsm::to<state::wait_for_capabilities>>,
-    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::stopped>, fsm::to<state::startup>>,
-    // the evaluated source capabilities arrive as a prepared request
-    fsm::transition<fsm::from<state::wait_for_capabilities>, fsm::on<event::send_request>,
-                    fsm::to<state::select_capability>>,
-    fsm::transition<fsm::from<state::ready>, fsm::on<event::send_request>,
-                    fsm::to<state::select_capability>>,
-    fsm::transition<fsm::from<state::wait_for_capabilities>, fsm::on<fsm::timeout>,
-                    fsm::to<state::hard_reset>>,
-    fsm::transition<fsm::from<state::select_capability>, fsm::on<event::accept>,
-                    fsm::to<state::transition_sink>>,
-    fsm::transition<fsm::from<state::select_capability>, fsm::on<event::reject_or_wait>,
-                    fsm::to<state::ready>, fsm::guard<has_explicit_contract>>,
-    fsm::transition<fsm::from<state::select_capability>, fsm::on<event::reject_or_wait>,
-                    fsm::to<state::wait_for_capabilities>>,
-    fsm::transition<fsm::from<state::select_capability>, fsm::on<fsm::timeout>,
-                    fsm::to<state::hard_reset>>,
-    fsm::transition<fsm::from<state::select_capability>, fsm::on<event::tx_error>,
-                    fsm::to<state::hard_reset>>,
-    fsm::transition<fsm::from<state::transition_sink>, fsm::on<event::ps_rdy>,
-                    fsm::to<state::ready>>,
-    fsm::transition<fsm::from<state::transition_sink>, fsm::on<fsm::timeout>,
-                    fsm::to<state::hard_reset>>,
-    fsm::transition<fsm::from<state::ready>, fsm::on<event::send_sink_caps>,
-                    fsm::to<state::give_sink_cap>>,
-    fsm::transition<fsm::from<state::ready>, fsm::on<event::unsupported>,
-                    fsm::to<state::send_not_supported>>,
-    fsm::transition<fsm::from<state::send_not_supported>, fsm::on<event::tx_done>,
-                    fsm::to<state::ready>>,
-    fsm::transition<fsm::from<state::send_not_supported>, fsm::on<event::tx_error>,
-                    fsm::to<state::hard_reset>>,
-    fsm::transition<fsm::from<state::ready>, fsm::on<event::chunked_message>,
-                    fsm::to<state::chunk_received>>,
-    fsm::transition<fsm::from<state::chunk_received>, fsm::on<fsm::timeout>,
-                    fsm::to<state::send_not_supported>>,
-    fsm::transition<fsm::from<state::give_sink_cap>, fsm::on<event::tx_done>,
-                    fsm::to<state::ready>>,
-    fsm::transition<fsm::from<state::give_sink_cap>, fsm::on<event::tx_error>,
-                    fsm::to<state::hard_reset>>,
+    fsm::initial<state::pe_snk_startup>,
+    fsm::transition<fsm::from<state::pe_snk_startup>, fsm::on<event::started>,
+                    fsm::to<state::pe_snk_discovery>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::vbus_removed>,
+                    fsm::to<state::pe_snk_startup>>,
+    fsm::transition<fsm::from<state::pe_snk_discovery>, fsm::on<event::vbus_present>,
+                    fsm::to<state::pe_snk_wait_for_capabilities>>,
+    fsm::transition<fsm::from<state::pe_snk_wait_for_capabilities>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_wait_for_capabilities>,
+                    fsm::on<event::source_capabilities>,
+                    fsm::to<state::pe_snk_evaluate_capability>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::source_capabilities>,
+                    fsm::to<state::pe_snk_evaluate_capability>>,
+    fsm::transition<fsm::from<state::pe_snk_evaluate_capability>,
+                    fsm::on<event::capabilities_evaluated>,
+                    fsm::to<state::pe_snk_select_capability>>,
+    fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::accept>,
+                    fsm::to<state::pe_snk_transition_sink>>,
+    fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::reject>,
+                    fsm::to<state::pe_snk_ready>, fsm::guard<has_explicit_contract>>,
+    fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::reject>,
+                    fsm::to<state::pe_snk_wait_for_capabilities>>,
+    fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::wait>,
+                    fsm::to<state::pe_snk_ready>, fsm::guard<has_explicit_contract>>,
+    fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::wait>,
+                    fsm::to<state::pe_snk_wait_for_capabilities>>,
+    fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::protocol_error>,
+                    fsm::to<state::pe_snk_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_transition_sink>, fsm::on<event::ps_rdy>,
+                    fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_transition_sink>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_sink_caps>,
+                    fsm::to<state::pe_snk_give_sink_cap>>,
+    fsm::transition<fsm::from<state::pe_snk_give_sink_cap>, fsm::on<event::message_sent>,
+                    fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_give_sink_cap>, fsm::on<event::protocol_error>,
+                    fsm::to<state::pe_snk_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::unsupported>,
+                    fsm::to<state::pe_snk_send_not_supported>>,
+    fsm::transition<fsm::from<state::pe_snk_send_not_supported>, fsm::on<event::message_sent>,
+                    fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_send_not_supported>, fsm::on<event::protocol_error>,
+                    fsm::to<state::pe_snk_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::chunked_message>,
+                    fsm::to<state::pe_snk_chunk_received>>,
+    fsm::transition<fsm::from<state::pe_snk_chunk_received>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_send_not_supported>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::soft_reset_received>,
-                    fsm::to<state::soft_reset>>,
-    fsm::transition<fsm::from<state::soft_reset>, fsm::on<event::tx_done>,
-                    fsm::to<state::wait_for_capabilities>>,
-    fsm::transition<fsm::from<state::soft_reset>, fsm::on<event::tx_error>,
-                    fsm::to<state::hard_reset>>,
-    fsm::transition<fsm::from<state::hard_reset>, fsm::on<event::hard_reset_sent>,
-                    fsm::to<state::wait_for_capabilities>>,
+                    fsm::to<state::pe_snk_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_soft_reset>, fsm::on<event::message_sent>,
+                    fsm::to<state::pe_snk_wait_for_capabilities>>,
+    fsm::transition<fsm::from<state::pe_snk_soft_reset>, fsm::on<event::protocol_error>,
+                    fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_send_soft_reset>, fsm::on<event::accept>,
+                    fsm::to<state::pe_snk_wait_for_capabilities>>,
+    fsm::transition<fsm::from<state::pe_snk_send_soft_reset>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_send_soft_reset>, fsm::on<event::protocol_error>,
+                    fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_hard_reset>, fsm::on<event::hard_reset_complete>,
+                    fsm::to<state::pe_snk_transition_to_default>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::hard_reset_received>,
-                    fsm::to<state::wait_for_capabilities>>>;
+                    fsm::to<state::pe_snk_transition_to_default>>,
+    fsm::transition<fsm::from<state::pe_snk_transition_to_default>,
+                    fsm::on<event::default_level_reached>, fsm::to<state::pe_snk_startup>>>;
 
 } // namespace pe
 
@@ -429,18 +508,21 @@ public:
           prl_(tcpc, prl_timer, port_),
           timed_(pe_timer)
     {
-    }
-
-    // Call once the Type-C layer reports attach
-    void start()
-    {
         tcpc_.setMessageHeaderInfo(
             {power_role::sink, data_role::ufp, pd_revision::rev_3_x});
         tcpc_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
-        sm_.process(pe::event::started{});
+        sm_.process(pe::event::started{}); // rest in Discovery until VBUS
     }
 
-    void stop() { sm_.process(pe::event::stopped{}); }
+    // The Type-C layer reports attach: for a sink, VBUS is present
+    void vbusPresent() { sm_.process(pe::event::vbus_present{}); }
+
+    // ... and detach: negotiation state is gone, back to Discovery
+    void vbusRemoved()
+    {
+        sm_.process(pe::event::vbus_removed{});
+        sm_.process(pe::event::started{});
+    }
 
     // Feed the TCPC's PD alerts (message/transmit/hard reset bits)
     void onAlert(alert_status alerts) { prl_.onAlert(alerts); }
@@ -451,12 +533,29 @@ private:
         SinkPolicyEngine& pe;
 
         void onMessage(pd_message const& message) { pe.dispatch(message); }
-        void onTxDone() { pe.sm_.process(pe::event::tx_done{}); }
+        void onTxDone() { pe.sm_.process(pe::event::message_sent{}); }
         void onTxDiscarded() {} // the preempting message drives the engine
-        void onTxError() { pe.sm_.process(pe::event::tx_error{}); }
-        void onHardReset() { pe.sm_.process(pe::event::hard_reset_received{}); }
-        void onHardResetSent() { pe.sm_.process(pe::event::hard_reset_sent{}); }
+        void onTxError() { pe.sm_.process(pe::event::protocol_error{}); }
+        void onHardReset()
+        {
+            pe.sm_.process(pe::event::hard_reset_received{});
+            pe.restart();
+        }
+        void onHardResetSent()
+        {
+            pe.sm_.process(pe::event::hard_reset_complete{});
+            pe.restart();
+        }
     };
+
+    // Advances the transient spec states after a hard reset:
+    // Transition_to_default -> Startup -> Discovery, where the engine
+    // waits for the Type-C layer to report the returning VBUS
+    void restart()
+    {
+        sm_.process(pe::event::default_level_reached{});
+        sm_.process(pe::event::started{});
+    }
 
     // Transmits a state's txMessage() through the protocol layer
     struct Sender : fsm::observing<Sender> {
@@ -561,9 +660,10 @@ private:
             evaluate(message, header.num_data_objects);
         } else if (isControl(header, control_message_type::accept)) {
             sm_.process(pe::event::accept{});
-        } else if (isControl(header, control_message_type::reject) ||
-                   isControl(header, control_message_type::wait)) {
-            sm_.process(pe::event::reject_or_wait{});
+        } else if (isControl(header, control_message_type::reject)) {
+            sm_.process(pe::event::reject{});
+        } else if (isControl(header, control_message_type::wait)) {
+            sm_.process(pe::event::wait{});
         } else if (isControl(header, control_message_type::ps_rdy)) {
             sm_.process(pe::event::ps_rdy{});
         } else if (isControl(header, control_message_type::get_sink_cap)) {
@@ -582,6 +682,9 @@ private:
     // first PDO with the Capability Mismatch flag
     void evaluate(pd_message const& message, std::uint8_t count)
     {
+        if (!sm_.process(pe::event::source_capabilities{})) {
+            return; // not in a state that evaluates capabilities
+        }
         std::array<std::uint32_t, 7> objects{};
         auto const n = std::min<std::uint8_t>(count, objects.size());
         for (std::uint8_t index = 0; index < n; ++index) {
@@ -606,7 +709,7 @@ private:
                                static_cast<std::uint8_t>(data_message_type::request), 1)};
         putObject(request, pdo::makeFixedRequest(terms->position, terms->operating_current,
                                                  terms->maximum_current, terms->mismatch));
-        sm_.process(pe::event::send_request{request, *terms});
+        sm_.process(pe::event::capabilities_evaluated{request, *terms});
     }
 
     void sendSinkCapabilities()

@@ -238,10 +238,12 @@ int policyEngineTests()
     };
     auto txSuccess = [&] { pe.onAlert(usbc::alert_status::transmit_success); };
 
-    // start(): roles configured, SinkWaitCapTimer running
-    pe.start();
+    // construction configured the roles and rests in Discovery; the
+    // Type-C layer's attach starts the SinkWaitCapTimer
     check(tcpc.header_info.power == usbc::power_role::sink);
     check(any(tcpc.detect & usbc::receive_detect::sop));
+    check(!pe_timer.armed);
+    pe.vbusPresent();
     check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sink_wait_cap);
 
     // source capabilities: the policy picks 9 V / 3 A (position 2)
@@ -295,12 +297,15 @@ int policyEngineTests()
     txSuccess(); // PHY confirms the hard reset
     check(client.lost == 1);
     check(load.voltage == 5000 && load.current == usbc::pe::i_default_current);
+    check(!pe_timer.armed); // Discovery: waiting for VBUS to return
+    pe.vbusPresent();
     check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sink_wait_cap);
 
     // SinkWaitCap timeout also escalates to hard reset
     pe_timer.expire();
     check(tcpc.last_signal == usbc::transmit_signal::hard_reset);
     txSuccess();
+    pe.vbusPresent();
 
     // a received hard reset falls back to waiting for capabilities
     deliver(makeSourceCaps(offered));
@@ -311,6 +316,8 @@ int policyEngineTests()
     tcpc.alerts |= usbc::alert_status::hard_reset_received;
     pe.onAlert(*tcpc.readAlert());
     check(client.lost == 2);
+    check(!pe_timer.armed); // Discovery again
+    pe.vbusPresent();
     check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sink_wait_cap);
 
     // back to ready for the Not_Supported cases
@@ -350,9 +357,29 @@ int policyEngineTests()
     deliver(makeControl(usbc::control_message_type::get_source_cap));
     check(tcpc.transmit_count == attempts_before_ignore);
 
-    // stop() returns to startup: no timer running
-    pe.stop();
+    // a protocol error tries a soft reset first (PE_SNK_Send_Soft_Reset):
+    // the request's transmission fails through all PRL retries
+    deliver(makeSourceCaps(offered));
+    prl_timer.expire(); // retry 1
+    prl_timer.expire(); // retry 2
+    prl_timer.expire(); // retries exhausted -> protocol error
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::control_message_type::soft_reset));
+    check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id == 0); // PRL reset
+    check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sender_response);
+    txSuccess();
+    deliver(makeControl(usbc::control_message_type::accept));
+    check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sink_wait_cap);
+
+    // detach returns to startup, which resets the protocol layer: the
+    // next negotiation starts over with MessageID 0
+    pe.vbusRemoved();
     check(!pe_timer.armed);
+    pe.vbusPresent();
+    deliver(makeSourceCaps(offered));
+    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
+    check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id == 0);
+    txSuccess();
 
     return failures;
 }
