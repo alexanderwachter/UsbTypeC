@@ -32,16 +32,14 @@ constexpr std::array sink_capabilities{usbc::sink_capability{5000, 3000},
                                        usbc::sink_capability{9000, 3000},
                                        usbc::sink_capability{15000, 3000}};
 
-// The board has no real input regulator to program: log what one would do
-struct Load {
+// The power side of the engine, injected as an observer. The board has
+// no real input regulator to program: log what one would do
+struct Power : usbc::SinkPower<Power> {
     bool setLimit(usbc::millivolt voltage, usbc::milliamp current)
     {
         LOG_INF("load limit: %d mV, %d mA", voltage, current);
         return true;
     }
-};
-
-struct PdClient {
     void onContract(usbc::millivolt voltage, usbc::milliamp current)
     {
         LOG_INF("contract: %d mV at %d mA", voltage, current);
@@ -50,7 +48,7 @@ struct PdClient {
 };
 
 using Engine = usbc::SinkPolicyEngine<usbc::zephyr::Tcpc, usbc::zephyr::Timer, usbc::PowerPolicy,
-                                      Load, PdClient>;
+                                      Power>;
 
 // Reacts to the connection layer and feeds the engine
 struct PortClient {
@@ -80,9 +78,8 @@ usbc::zephyr::Timer prl_timer;
 usbc::zephyr::Timer pe_timer;
 
 usbc::PowerPolicy policy{5000, 27000}; // at least 5 W, aim for 27 W
-Load load;
-PdClient pd_client;
-Engine engine{tcpc, prl_timer, pe_timer, sink_capabilities, policy, load, pd_client};
+Power power;
+Engine engine{tcpc, prl_timer, pe_timer, sink_capabilities, policy, power};
 PortClient port_client{engine};
 
 } // namespace

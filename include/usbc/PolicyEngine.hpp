@@ -7,8 +7,8 @@
  * below is the power-based default. The engine negotiates: waits for
  * Source_Capabilities (SinkWaitCapTimer), evaluates through the policy,
  * requests (SenderResponseTimer), transitions the sink load to iSnkStdby
- * until PS_RDY (PSTransitionTimer), then applies the contract to the
- * sink_load and reports it to the client. Reject without an explicit
+ * until PS_RDY (PSTransitionTimer), then applies the contract through
+ * the injected SinkPower observer. Reject without an explicit
  * contract falls back to waiting for capabilities; protocol timeouts
  * and transmission errors escalate to a hard reset, Soft_Reset is
  * accepted and restarts negotiation. When the policy finds nothing
@@ -38,14 +38,19 @@
  * and after a hard reset the SinkWaitCapTimer absorbs the VBUS gap.
  *
  * Integration: the engine drives a pd_transport driver through its own
- * ProtocolLayer and runs from construction on, resting in
- * PE_SNK_Discovery until VBUS is reported. Feed TCPC alerts into
- * onAlert() and the Type-C layer's attach/detach into vbusPresent()
- * and vbusRemoved() - a sink's attach implies VBUS. After a hard reset
- * the engine waits in Discovery for the Type-C layer to report the
- * returning VBUS. Everything runs in the stack's serialized context;
- * client callbacks may originate from the timer context (mtl timer
- * contract).
+ * ProtocolLayer - itself an observer of the engine's machine, executing
+ * the states' prl_action commands and txMessage() transmissions - and
+ * runs from construction on, resting in PE_SNK_Discovery until VBUS is
+ * reported. The application injects its own observers into the machine;
+ * the power side is one of them: derive from SinkPower (CRTP) and
+ * implement setLimit/onContract/onContractLost. Extra observers (e.g.
+ * for logging) see exactly the annotated edges of the DOT diagram. Feed
+ * TCPC alerts into onAlert() and the Type-C layer's attach/detach into
+ * vbusPresent() and vbusRemoved() - a sink's attach implies VBUS. After
+ * a hard reset the engine waits in Discovery for the Type-C layer to
+ * report the returning VBUS. Everything runs in the stack's serialized
+ * context; observer callbacks may originate from the timer context (mtl
+ * timer contract).
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -68,6 +73,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 
 namespace usbc {
 
@@ -96,8 +102,11 @@ concept sink_policy = requires(T policy, std::span<std::uint32_t const> source_c
     } -> std::same_as<std::optional<contract_request>>;
 };
 
+// The interface a SinkPower-derived class provides: the sink load
+// limit plus the contract notifications
 template<typename T>
-concept pe_sink_client = requires(T client, millivolt voltage, milliamp current) {
+concept sink_power_client = requires(T client, millivolt voltage, milliamp current) {
+    { client.setLimit(voltage, current) } -> std::convertible_to<bool>;
     client.onContract(voltage, current);
     client.onContractLost();
 };
@@ -169,31 +178,75 @@ inline constexpr auto t_sender_response = std::chrono::milliseconds{27};  // 24 
 inline constexpr auto t_ps_transition   = std::chrono::milliseconds{500}; // 450 ms - 550 ms
 inline constexpr auto t_chunking_not_supported = std::chrono::milliseconds{45}; // 40 ms - 50 ms
 
-inline constexpr milliamp i_snk_stdby       = 500; // iSnkStdby at any voltage
-inline constexpr milliamp i_default_current = 500; // implicit vSafe5V contract
+inline constexpr millivolt v_safe_5v        = 5000; // vSafe5V
+inline constexpr milliamp i_snk_stdby       = 500;  // iSnkStdby at any voltage
+inline constexpr milliamp i_default_current = 500;  // implicit vSafe5V contract
+
+// The specification's per-state notation: every state is annotated
+// with its power level and whether PD communication is connected
+enum class power_level : std::uint8_t {
+    default_power,
+    contract_or_default, // "Default/implicit or explicit contract"
+    transition,
+    explicit_contract,
+};
+enum class pd_status : std::uint8_t { not_connected, connected, connected_or_not_connected };
+
+constexpr std::string_view specNote(power_level power, pd_status pd)
+{
+    switch (power) {
+    case power_level::contract_or_default:
+        switch (pd) {
+        case pd_status::connected:
+            return "Power: Default/implicit or explicit contract | PD: Connected";
+        case pd_status::connected_or_not_connected:
+            return "Power: Default/implicit or explicit contract | PD: Connected/not Connected";
+        default: return "Power: Default/implicit or explicit contract | PD: not Connected";
+        }
+    case power_level::transition:
+        switch (pd) {
+        case pd_status::connected: return "Power: Transition | PD: Connected";
+        case pd_status::connected_or_not_connected: return "Power: Transition | PD: Connected/not Connected";
+        default: return "Power: Transition | PD: not Connected";
+        }
+    case power_level::explicit_contract:
+        switch (pd) {
+        case pd_status::connected: return "Power: Explicit Contract | PD: Connected";
+        case pd_status::connected_or_not_connected:
+            return "Power: Explicit Contract | PD: Connected/not Connected";
+        default: return "Power: Explicit Contract | PD: not Connected";
+        }
+    default:
+        switch (pd) {
+        case pd_status::connected: return "Power: Default | PD: Connected";
+        case pd_status::connected_or_not_connected: return "Power: Default | PD: Connected/not Connected";
+        default: return "Power: Default | PD: not Connected";
+        }
+    }
+}
 
 struct pe_context {
-    contract_request request{};
-    pd_message reply{}; // pending Not_Supported answer
+    contract_request pending{}; // proposed by the last Request
+    contract_request request{}; // accepted by the source
+    pd_message reply{};         // pending Not_Supported answer
     bool explicit_contract = false;
 };
 
-// Reporter observations; each type selects its notify hook
-struct prl_reset_action {
-    constexpr bool operator==(prl_reset_action const&) const = default;
-};
-struct hard_reset_action {
-    constexpr bool operator==(hard_reset_action const&) const = default;
+// Observations; each type selects its notify hook. The PRL-directed
+// commands (prl::reset_action, prl::hard_reset_action) live with the
+// protocol layer; the power-directed one is defined here. Action types
+// carry their diagram note, so the rendered state machine shows
+// exactly what entering the state does
+struct restore_default_action {
+    static constexpr std::string_view note = "restores default power";
+    constexpr bool operator==(restore_default_action const&) const = default;
 };
 struct standby_limit {
     millivolt voltage;
 };
 struct active_contract {
-    millivolt voltage;
-    milliamp current;
-};
-struct lost_contract {
-    bool lost;
+    millivolt voltage = v_safe_5v;
+    milliamp current  = i_default_current;
 };
 
 namespace event {
@@ -242,9 +295,17 @@ inline pd_message makeControlMessage(control_message_type type)
 
 namespace state {
 
-// PE_SNK_Startup: the protocol layer reset here is mandatory
+// PE_SNK_Startup: the protocol layer reset here is mandatory; the
+// default power restore covers the detach entry (after a hard reset,
+// Transition_to_default already restored and suppression elides it)
 struct pe_snk_startup {
-    static constexpr prl_reset_action action{};
+    static constexpr prl::reset_action prl_action{};
+    static constexpr restore_default_action power_action{};
+    static constexpr power_level power          = power_level::default_power;
+    static constexpr pd_status pd               = pd_status::connected_or_not_connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action =
+        "resets the protocol layer, restores default power";
 
     explicit pe_snk_startup(pe_context& ctx) : context(ctx) { context = {}; }
     pe_context& context;
@@ -252,12 +313,19 @@ struct pe_snk_startup {
 
 // Waits for the Type-C layer to report VBUS
 struct pe_snk_discovery {
+    static constexpr power_level power          = power_level::default_power;
+    static constexpr pd_status pd               = pd_status::connected_or_not_connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
     explicit pe_snk_discovery(pe_context& ctx) : context(ctx) {}
     pe_context& context;
 };
 
 struct pe_snk_wait_for_capabilities {
     static constexpr auto timeout = t_sink_wait_cap; // SinkWaitCapTimer
+    static constexpr power_level power          = power_level::default_power;
+    static constexpr pd_status pd               = pd_status::connected_or_not_connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_wait_for_capabilities(pe_context& ctx) : context(ctx) {}
     pe_context& context;
@@ -266,17 +334,26 @@ struct pe_snk_wait_for_capabilities {
 // The engine evaluates through the injected policy and advances with
 // capabilities_evaluated
 struct pe_snk_evaluate_capability {
+    static constexpr power_level power          = power_level::default_power;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
     explicit pe_snk_evaluate_capability(pe_context& ctx) : context(ctx) {}
     pe_context& context;
 };
 
 struct pe_snk_select_capability {
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+    static constexpr power_level power          = power_level::default_power;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
 
+    // the proposal stays pending: only an Accept promotes it, so a
+    // Reject cannot leak the proposed terms into the active contract
     pe_snk_select_capability(event::capabilities_evaluated const& event, pe_context& ctx)
         : context(ctx), message_(event.message)
     {
-        context.request = event.terms;
+        context.pending = event.terms;
     }
     explicit pe_snk_select_capability(pe_context& ctx) : context(ctx) {}
 
@@ -290,7 +367,15 @@ private:
 
 struct pe_snk_transition_sink {
     static constexpr auto timeout = t_ps_transition; // PSTransitionTimer
+    static constexpr power_level power          = power_level::transition;
+    static constexpr pd_status pd        = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
 
+    // entered on Accept: the pending proposal becomes the contract
+    pe_snk_transition_sink(event::accept const&, pe_context& ctx) : context(ctx)
+    {
+        context.request = context.pending;
+    }
     explicit pe_snk_transition_sink(pe_context& ctx) : context(ctx) {}
 
     standby_limit report() const { return {context.request.voltage}; }
@@ -299,6 +384,10 @@ struct pe_snk_transition_sink {
 };
 
 struct pe_snk_ready {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd        = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
     explicit pe_snk_ready(pe_context& ctx) : context(ctx) { context.explicit_contract = true; }
 
     active_contract report() const
@@ -310,6 +399,10 @@ struct pe_snk_ready {
 };
 
 struct pe_snk_give_sink_cap {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd        = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
     pe_snk_give_sink_cap(event::send_sink_caps const& event, pe_context& ctx)
         : context(ctx), message_(event.message)
     {
@@ -327,6 +420,10 @@ private:
 // PE_SNK_Send_Not_Supported: answers a message the sink does not
 // support, then returns to Ready
 struct pe_snk_send_not_supported {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd        = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
     pe_snk_send_not_supported(event::unsupported const& event, pe_context& ctx) : context(ctx)
     {
         context.reply = event.reply;
@@ -342,6 +439,9 @@ struct pe_snk_send_not_supported {
 // into its chunking timeout before answering Not_Supported
 struct pe_snk_chunk_received {
     static constexpr auto timeout = t_chunking_not_supported; // ChunkingNotSupportedTimer
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd        = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
 
     pe_snk_chunk_received(event::chunked_message const& event, pe_context& ctx) : context(ctx)
     {
@@ -355,7 +455,11 @@ struct pe_snk_chunk_received {
 // Accepts a received Soft_Reset; the reporter resets the protocol
 // layer before the sender transmits the Accept
 struct pe_snk_soft_reset {
-    static constexpr prl_reset_action action{};
+    static constexpr prl::reset_action prl_action{};
+    static constexpr power_level power          = power_level::contract_or_default;
+    static constexpr pd_status pd        = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = prl::reset_action::note;
 
     pe_snk_soft_reset(event::soft_reset_received const& event, pe_context& ctx)
         : context(ctx), message_(event.accept)
@@ -375,7 +479,11 @@ private:
 // protocol layer is reset before the Soft_Reset goes out
 struct pe_snk_send_soft_reset {
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr prl_reset_action action{};
+    static constexpr prl::reset_action prl_action{};
+    static constexpr power_level power          = power_level::contract_or_default;
+    static constexpr pd_status pd        = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = prl::reset_action::note;
 
     explicit pe_snk_send_soft_reset(pe_context& ctx) : context(ctx)
     {
@@ -388,7 +496,11 @@ struct pe_snk_send_soft_reset {
 };
 
 struct pe_snk_hard_reset {
-    static constexpr hard_reset_action action{};
+    static constexpr prl::hard_reset_action prl_action{};
+    static constexpr power_level power          = power_level::contract_or_default;
+    static constexpr pd_status pd               = pd_status::connected_or_not_connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = prl::hard_reset_action::note;
 
     explicit pe_snk_hard_reset(pe_context& ctx) : context(ctx) {}
     pe_context& context;
@@ -397,18 +509,15 @@ struct pe_snk_hard_reset {
 // PE_SNK_Transition_to_default: back to vSafe5V defaults; the engine
 // then advances through Startup and Discovery
 struct pe_snk_transition_to_default {
-    explicit pe_snk_transition_to_default(pe_context& ctx)
-        : context(ctx), lost_(ctx.explicit_contract)
-    {
-        context = {};
-    }
+    static constexpr restore_default_action power_action{};
+    static constexpr power_level power          = power_level::transition;
+    static constexpr pd_status pd        = pd_status::not_connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = restore_default_action::note;
 
-    lost_contract report() const { return {lost_}; }
+    explicit pe_snk_transition_to_default(pe_context& ctx) : context(ctx) { context = {}; }
 
     pe_context& context;
-
-private:
-    bool lost_ = false;
 };
 
 } // namespace state
@@ -491,22 +600,150 @@ using sink_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_transition_to_default>,
                     fsm::on<event::default_level_reached>, fsm::to<state::pe_snk_startup>>>;
 
+// The member observers behind SinkPower (POWER is SinkPower<DERIVED>);
+// injected together as one fsm::observer_group
+
+// Stores the runtime values the states report: the contract terms on
+// Ready entry, and the standby limit applied during the transition
+template<typename POWER>
+struct contract_store : fsm::observing<contract_store<POWER>> {
+    explicit contract_store(POWER& power_ref) : power(power_ref) {}
+
+    template<typename TABLE>
+    static constexpr void validate()
+    {
+        static_assert(concepts::sink_power_client<typename POWER::derived_type>,
+                      "SinkPower: the derived class must provide setLimit(millivolt, "
+                      "milliamp), onContract(millivolt, milliamp), onContractLost()");
+    }
+
+    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.report()))
+    {
+        return state.report();
+    }
+    void notifyEntry(standby_limit limit)
+    {
+        power.derived().setLimit(limit.voltage, i_snk_stdby);
+    }
+    // store only - contract_apply acts on the power annotation edge
+    void notifyEntry(active_contract contract) { power.contract_ = contract; }
+
+    POWER& power;
+};
+
+// Applies the stored contract exactly when the diagram's Power column
+// changes to Explicit Contract; with change suppression, bounces
+// between Ready and its service states stay silent
+template<typename POWER>
+struct contract_apply : fsm::observing<contract_apply<POWER>> {
+    explicit contract_apply(POWER& power_ref) : power(power_ref) {}
+
+    template<typename STATE>
+    static constexpr auto observe_static() -> decltype(STATE::power)
+    {
+        return STATE::power;
+    }
+    void notifyEntry(power_level level)
+    {
+        if (level == power_level::explicit_contract) {
+            power.applyContract();
+        }
+    }
+
+    POWER& power;
+};
+
+// Restores vSafe5V defaults on the states carrying a restore
+// power_action (Startup, Transition_to_default)
+template<typename POWER>
+struct default_restore : fsm::observing<default_restore<POWER>> {
+    explicit default_restore(POWER& power_ref) : power(power_ref) {}
+
+    template<typename STATE>
+    static constexpr auto observe_static() -> decltype(STATE::power_action)
+    {
+        return STATE::power_action;
+    }
+    void notifyEntry(restore_default_action) { power.restoreDefaults(); }
+
+    POWER& power;
+};
+
 } // namespace pe
 
+// The power side of the sink policy engine, injectable into it as one
+// observer. Derive from it (CRTP) and implement the effects
+// (concepts::sink_power_client):
+//
+//   bool setLimit(millivolt, milliamp);   // limit the sink load
+//   void onContract(millivolt, milliamp); // explicit contract in place
+//   void onContractLost();                // back to default power
+//
+// The spec-compliant sequencing lives here: iSnkStdby during the sink
+// transition, the contract applied when the diagram's Power column
+// changes to Explicit Contract, vSafe5V defaults restored on the
+// states carrying a restore action - with onContractLost() fired only
+// when a contract was actually in place
+template<typename DERIVED>
+class SinkPower : public fsm::observer_group<pe::contract_store<SinkPower<DERIVED>>,
+                                             pe::contract_apply<SinkPower<DERIVED>>,
+                                             pe::default_restore<SinkPower<DERIVED>>> {
+public:
+    using derived_type = DERIVED;
+
+    // store before apply: the contract terms must be fresh when the
+    // power annotation edge fires on the same entry
+    SinkPower()
+        : fsm::observer_group<pe::contract_store<SinkPower>, pe::contract_apply<SinkPower>,
+                              pe::default_restore<SinkPower>>(store_, apply_, restore_)
+    {
+    }
+
+private:
+    friend pe::contract_store<SinkPower>;
+    friend pe::contract_apply<SinkPower>;
+    friend pe::default_restore<SinkPower>;
+
+    DERIVED& derived() { return static_cast<DERIVED&>(*this); }
+
+    void applyContract()
+    {
+        contract_active_ = true;
+        derived().setLimit(contract_.voltage, contract_.current);
+        derived().onContract(contract_.voltage, contract_.current);
+    }
+
+    void restoreDefaults()
+    {
+        if (contract_active_) {
+            contract_active_ = false;
+            derived().setLimit(pe::v_safe_5v, pe::i_default_current);
+            derived().onContractLost();
+        }
+    }
+
+    pe::contract_store<SinkPower> store_{*this};
+    pe::contract_apply<SinkPower> apply_{*this};
+    pe::default_restore<SinkPower> restore_{*this};
+    pe::active_contract contract_{};
+    bool contract_active_ = false;
+};
+
 template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER, concepts::sink_policy POLICY,
-         concepts::sink_load LOAD, concepts::pe_sink_client CLIENT>
+         typename... OBSERVERs>
 class SinkPolicyEngine {
 public:
+    // The observers are injected into the engine's machine after the
+    // protocol layer; a SinkPower-derived one supplies the power side
     SinkPolicyEngine(TCPC& tcpc, TIMER& prl_timer, TIMER& pe_timer,
-                     std::span<sink_capability const> capabilities, POLICY& policy, LOAD& load,
-                     CLIENT& client)
+                     std::span<sink_capability const> capabilities, POLICY& policy,
+                     OBSERVERs&... observers)
         : tcpc_(tcpc),
           capabilities_(capabilities),
           policy_(policy),
-          load_(load),
-          client_(client),
           prl_(tcpc, prl_timer, port_),
-          timed_(pe_timer)
+          timed_(pe_timer),
+          sm_(timed_, prl_, observers...)
     {
         tcpc_.setMessageHeaderInfo(
             {power_role::sink, data_role::ufp, pd_revision::rev_3_x});
@@ -556,55 +793,6 @@ private:
         sm_.process(pe::event::default_level_reached{});
         sm_.process(pe::event::started{});
     }
-
-    // Transmits a state's txMessage() through the protocol layer
-    struct Sender : fsm::observing<Sender> {
-        explicit Sender(SinkPolicyEngine& pe_ref) : pe(pe_ref) {}
-
-        static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.txMessage()))
-        {
-            return state.txMessage();
-        }
-        void notifyEntry(pd_message const& message) { pe.prl_.transmit(message); }
-
-        SinkPolicyEngine& pe;
-    };
-
-    // Applies the reporter observations to the load, client, and PRL
-    struct Reporter : fsm::observing<Reporter> {
-        explicit Reporter(SinkPolicyEngine& pe_ref) : pe(pe_ref) {}
-
-        template<typename STATE>
-        static constexpr auto observe_static() -> decltype(STATE::action)
-        {
-            return STATE::action;
-        }
-        void notifyEntry(pe::prl_reset_action) { pe.prl_.reset(sop_type::sop); }
-        void notifyEntry(pe::hard_reset_action) { pe.prl_.transmitHardReset(); }
-
-        static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.report()))
-        {
-            return state.report();
-        }
-        void notifyEntry(pe::standby_limit limit)
-        {
-            pe.load_.setLimit(limit.voltage, pe::i_snk_stdby);
-        }
-        void notifyEntry(pe::active_contract contract)
-        {
-            pe.load_.setLimit(contract.voltage, contract.current);
-            pe.client_.onContract(contract.voltage, contract.current);
-        }
-        void notifyEntry(pe::lost_contract report)
-        {
-            if (report.lost) {
-                pe.load_.setLimit(5000, pe::i_default_current);
-                pe.client_.onContractLost();
-            }
-        }
-
-        SinkPolicyEngine& pe;
-    };
 
     std::uint16_t makeHeader(std::uint8_t message_type, std::uint8_t data_objects) const
     {
@@ -729,15 +917,12 @@ private:
     TCPC& tcpc_;
     std::span<sink_capability const> capabilities_;
     POLICY& policy_;
-    LOAD& load_;
-    CLIENT& client_;
     PrlPort port_{*this};
-    ProtocolLayer<TCPC, TIMER, PrlPort> prl_;
+    ProtocolLayer<TCPC, TIMER, PrlPort> prl_; // also an observer of sm_
     fsm::timed<TIMER&> timed_;
-    Reporter reporter_{*this};
-    Sender sender_{*this};
-    fsm::state_machine<pe::sink_table, fsm::timed<TIMER&>, Reporter, Sender>
-        sm_{timed_, reporter_, sender_};
+    fsm::state_machine<pe::sink_table, fsm::timed<TIMER&>, ProtocolLayer<TCPC, TIMER, PrlPort>,
+                       OBSERVERs...>
+        sm_;
 };
 
 } // namespace usbc

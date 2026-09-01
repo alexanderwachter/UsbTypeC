@@ -51,6 +51,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 
 namespace usbc {
 
@@ -98,6 +99,19 @@ struct reset {};
 // Annotation tag: leaving a state carrying it completes a hard reset
 struct hard_reset_sent {
     constexpr bool operator==(hard_reset_sent const&) const = default;
+};
+
+// Commands to the protocol layer: a policy engine state carries one as
+// a static prl_action member and the ProtocolLayer, injected into that
+// machine as an observer, executes it on entry. The note strings feed
+// the states' dot_action diagram labels
+struct reset_action {
+    static constexpr std::string_view note = "resets the protocol layer";
+    constexpr bool operator==(reset_action const&) const = default;
+};
+struct hard_reset_action {
+    static constexpr std::string_view note = "requests a hard reset";
+    constexpr bool operator==(hard_reset_action const&) const = default;
 };
 
 namespace state {
@@ -198,12 +212,31 @@ struct phy_driver : fsm::observing<phy_driver<TCPC>> {
 } // namespace prl
 
 template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER, concepts::prl_client CLIENT>
-class ProtocolLayer {
+class ProtocolLayer : public fsm::observing<ProtocolLayer<TCPC, TIMER, CLIENT>> {
 public:
     ProtocolLayer(TCPC& tcpc, TIMER& timer, CLIENT& client)
         : tcpc_(tcpc), client_(client), timed_(timer)
     {
     }
+
+    // The protocol layer is itself an observer of the policy engine's
+    // machine: states command it through static prl_action annotations
+    // and transmit by exposing txMessage(). The observing contract runs
+    // the static hook before the nonstatic one, so a state carrying
+    // both resets first and its message goes out with MessageID 0
+    template<typename STATE>
+    static constexpr auto observe_static() -> decltype(STATE::prl_action)
+    {
+        return STATE::prl_action;
+    }
+    void notifyEntry(prl::reset_action) { reset(sop_type::sop); }
+    void notifyEntry(prl::hard_reset_action) { transmitHardReset(); }
+
+    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.txMessage()))
+    {
+        return state.txMessage();
+    }
+    void notifyEntry(pd_message const& message) { transmit(message); }
 
     // Stamps the MessageID; the rest of the header is the caller's.
     // False when a message or hard reset is already in flight

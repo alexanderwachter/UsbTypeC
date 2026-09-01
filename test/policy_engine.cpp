@@ -45,28 +45,23 @@ struct manual_timer {
 };
 static_assert(fsm::concepts::timer<manual_timer>);
 
-// --- application test doubles ------------------------------------------------
-struct mock_load {
-    usbc::millivolt voltage = 5000;
-    usbc::milliamp current  = 0;
-    int changes             = 0;
+// --- application test double: the power side as one observer -----------------
+struct mock_power : usbc::SinkPower<mock_power> {
+    usbc::millivolt limit_voltage = 5000; // the sink load limit
+    usbc::milliamp limit_current  = 0;
+    int changes                   = 0;
+    usbc::millivolt voltage       = 0; // the reported contract
+    usbc::milliamp current        = 0;
+    int contracts                 = 0;
+    int lost                      = 0;
 
     bool setLimit(usbc::millivolt expected_voltage, usbc::milliamp max_current)
     {
-        voltage = expected_voltage;
-        current = max_current;
+        limit_voltage = expected_voltage;
+        limit_current = max_current;
         ++changes;
         return true;
     }
-};
-static_assert(usbc::concepts::sink_load<mock_load>);
-
-struct mock_pe_client {
-    usbc::millivolt voltage = 0;
-    usbc::milliamp current  = 0;
-    int contracts           = 0;
-    int lost                = 0;
-
     void onContract(usbc::millivolt v, usbc::milliamp i)
     {
         voltage = v;
@@ -75,7 +70,7 @@ struct mock_pe_client {
     }
     void onContractLost() { ++lost; }
 };
-static_assert(usbc::concepts::pe_sink_client<mock_pe_client>);
+static_assert(usbc::concepts::sink_power_client<mock_power>);
 
 // --- compile-time checks: codec and the default policy -----------------------
 namespace compile_time {
@@ -125,6 +120,48 @@ constexpr std::array sink_low{usbc::sink_capability{5000, 3000},
 static_assert(wide.select(offered, sink_low)->position == 2); // 20 V excluded
 static_assert(wide.select(offered, sink_low)->operating_current == 2000);
 static_assert(wide.select(offered, sink_low)->voltage == 9000);
+
+// the specification's Power/PD notation, encoded as state annotations
+namespace spec_notation {
+using namespace usbc::pe;
+using enum power_level;
+using enum pd_status;
+
+static_assert(state::pe_snk_startup::power == default_power &&
+              state::pe_snk_startup::pd == connected_or_not_connected);
+static_assert(state::pe_snk_discovery::power == default_power &&
+              state::pe_snk_discovery::pd == connected_or_not_connected);
+static_assert(state::pe_snk_wait_for_capabilities::power == default_power &&
+              state::pe_snk_wait_for_capabilities::pd == connected_or_not_connected);
+static_assert(state::pe_snk_evaluate_capability::power == default_power &&
+              state::pe_snk_evaluate_capability::pd == connected);
+static_assert(state::pe_snk_select_capability::power == default_power &&
+              state::pe_snk_select_capability::pd == connected);
+static_assert(state::pe_snk_transition_sink::power == transition &&
+              state::pe_snk_transition_sink::pd == connected);
+static_assert(state::pe_snk_ready::power == explicit_contract && state::pe_snk_ready::pd == connected);
+static_assert(state::pe_snk_give_sink_cap::power == explicit_contract &&
+              state::pe_snk_give_sink_cap::pd == connected);
+static_assert(state::pe_snk_send_not_supported::power == explicit_contract &&
+              state::pe_snk_send_not_supported::pd == connected);
+static_assert(state::pe_snk_chunk_received::power == explicit_contract &&
+              state::pe_snk_chunk_received::pd == connected);
+static_assert(state::pe_snk_soft_reset::power == contract_or_default &&
+              state::pe_snk_soft_reset::pd == connected);
+static_assert(state::pe_snk_send_soft_reset::power == contract_or_default &&
+              state::pe_snk_send_soft_reset::pd == connected);
+static_assert(state::pe_snk_hard_reset::power == contract_or_default &&
+              state::pe_snk_hard_reset::pd == connected_or_not_connected);
+static_assert(state::pe_snk_transition_to_default::power == transition &&
+              state::pe_snk_transition_to_default::pd == not_connected);
+
+// the note derives from the enums: single source of truth
+static_assert(state::pe_snk_ready::dot_note == "Power: Explicit Contract | PD: Connected");
+static_assert(state::pe_snk_startup::dot_note ==
+              "Power: Default | PD: Connected/not Connected");
+static_assert(state::pe_snk_soft_reset::dot_note ==
+              "Power: Default/implicit or explicit contract | PD: Connected");
+} // namespace spec_notation
 
 // extended header round-trip
 constexpr usbc::extended_header chunk1{.chunked = true, .chunk_number = 1, .data_size = 260};
@@ -227,10 +264,9 @@ int policyEngineTests()
     manual_timer prl_timer;
     manual_timer pe_timer;
     usbc::PowerPolicy policy{5000, 27000};
-    mock_load load;
-    mock_pe_client client;
-    usbc::SinkPolicyEngine<mock_tcpc, manual_timer, usbc::PowerPolicy, mock_load, mock_pe_client>
-        pe{tcpc, prl_timer, pe_timer, sink_caps, policy, load, client};
+    mock_power power;
+    usbc::SinkPolicyEngine<mock_tcpc, manual_timer, usbc::PowerPolicy, mock_power>
+        pe{tcpc, prl_timer, pe_timer, sink_caps, policy, power};
 
     auto deliver = [&](usbc::pd_message const& message) {
         tcpc.injectMessage(message);
@@ -258,13 +294,13 @@ int policyEngineTests()
 
     // Accept: sink drops to standby for the transition
     deliver(makeControl(usbc::control_message_type::accept));
-    check(load.voltage == 9000 && load.current == usbc::pe::i_snk_stdby);
+    check(power.limit_voltage == 9000 && power.limit_current == usbc::pe::i_snk_stdby);
     check(pe_timer.armed && pe_timer.duration == usbc::pe::t_ps_transition);
 
     // PS_RDY: the contract is active
     deliver(makeControl(usbc::control_message_type::ps_rdy));
-    check(load.voltage == 9000 && load.current == 3000);
-    check(client.contracts == 1 && client.voltage == 9000 && client.current == 3000);
+    check(power.limit_voltage == 9000 && power.limit_current == 3000);
+    check(power.contracts == 1 && power.voltage == 9000 && power.current == 3000);
     check(!pe_timer.armed);
 
     // Get_Sink_Cap answered with the injected capabilities span
@@ -275,11 +311,16 @@ int policyEngineTests()
     check(transmittedObject(tcpc, 1) == usbc::pdo::makeFixedSink(9000, 3000));
     txSuccess();
 
-    // new capabilities renegotiate; Reject with a contract returns to ready
-    deliver(makeSourceCaps(offered));
+    // new capabilities renegotiate towards 5 V; the Reject returns to
+    // ready and must keep the active 9 V contract - the rejected
+    // proposal never reaches the load
+    constexpr std::array offered_low{usbc::pdo::makeFixedSink(5000, 3000)};
+    deliver(makeSourceCaps(offered_low));
+    check(transmittedObject(tcpc) == usbc::pdo::makeFixedRequest(1, 3000, 3000, false));
     txSuccess();
     deliver(makeControl(usbc::control_message_type::reject));
-    check(client.lost == 0);
+    check(power.limit_voltage == 9000 && power.limit_current == 3000);
+    check(power.voltage == 9000 && power.lost == 0);
 
     // Soft_Reset: protocol layer resets, Accept goes out with MessageID 0
     deliver(makeControl(usbc::control_message_type::soft_reset));
@@ -287,7 +328,7 @@ int policyEngineTests()
     check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id == 0);
     txSuccess();
     check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sink_wait_cap);
-    check(client.lost == 0); // a soft reset does not end the contract
+    check(power.lost == 0); // a soft reset does not end the contract
 
     // negotiate again, then SenderResponse timeout escalates to hard reset
     deliver(makeSourceCaps(offered));
@@ -295,8 +336,8 @@ int policyEngineTests()
     pe_timer.expire(); // no Accept in time
     check(tcpc.last_signal == usbc::transmit_signal::hard_reset);
     txSuccess(); // PHY confirms the hard reset
-    check(client.lost == 1);
-    check(load.voltage == 5000 && load.current == usbc::pe::i_default_current);
+    check(power.lost == 1);
+    check(power.limit_voltage == 5000 && power.limit_current == usbc::pe::i_default_current);
     check(!pe_timer.armed); // Discovery: waiting for VBUS to return
     pe.vbusPresent();
     check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sink_wait_cap);
@@ -312,10 +353,10 @@ int policyEngineTests()
     txSuccess();
     deliver(makeControl(usbc::control_message_type::accept));
     deliver(makeControl(usbc::control_message_type::ps_rdy));
-    check(client.contracts >= 2);
+    check(power.contracts >= 2);
     tcpc.alerts |= usbc::alert_status::hard_reset_received;
     pe.onAlert(*tcpc.readAlert());
-    check(client.lost == 2);
+    check(power.lost == 2);
     check(!pe_timer.armed); // Discovery again
     pe.vbusPresent();
     check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sink_wait_cap);
@@ -371,10 +412,13 @@ int policyEngineTests()
     deliver(makeControl(usbc::control_message_type::accept));
     check(pe_timer.armed && pe_timer.duration == usbc::pe::t_sink_wait_cap);
 
-    // detach returns to startup, which resets the protocol layer: the
-    // next negotiation starts over with MessageID 0
+    // detach returns to startup, which resets the protocol layer and
+    // restores the default power - the contract in place is reported lost
+    auto const lost_before_detach = power.lost;
     pe.vbusRemoved();
     check(!pe_timer.armed);
+    check(power.lost == lost_before_detach + 1);
+    check(power.limit_voltage == 5000 && power.limit_current == usbc::pe::i_default_current);
     pe.vbusPresent();
     deliver(makeSourceCaps(offered));
     check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
