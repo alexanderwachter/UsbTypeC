@@ -86,6 +86,12 @@ PortClient port_client{engine};
 
 int main()
 {
+    // Constructing the Sink is the go-live moment: its constructor
+    // registers the alert handler and VBUS callback and seeds the CC
+    // state, so attach events flow from this line on. A function-local
+    // static pins that start to a visible point after every init level
+    // and all the objects above exist - safe here even as a global (one
+    // TU, declared after its dependencies), but explicit beats implicit
     static Sink sink{tcpc, vbus, tc_timer, port_client};
     static_cast<void>(sink);
 
