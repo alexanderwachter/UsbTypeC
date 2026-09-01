@@ -137,13 +137,15 @@ struct mock_vbus {
         report(); // contract: current condition state as soon as known
         return true;
     }
+    // Discharging takes time and completes asynchronously: the test
+    // drives the voltage explicitly (a synchronous report here would
+    // re-enter process() from within an observer hook)
     bool discharge(bool enable)
     {
-        if (enable) {
-            setVoltage(0);
-        }
+        discharging = enable;
         return true;
     }
+    bool discharging = false;
 
     // test helpers: simulate the comparator
     bool met() const

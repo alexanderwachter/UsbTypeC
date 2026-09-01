@@ -6,7 +6,8 @@
 
 #include "mocks.hpp"
 
-#include <usbc/TypeC.hpp>
+#include <usbc/TypeCSink.hpp>
+#include <usbc/TypeCSource.hpp>
 
 #include <chrono>
 #include <print>
@@ -66,6 +67,20 @@ struct mock_pd_forwarding_client : mock_tc_client {
     void onPdAlert(usbc::alert_status alerts) { forwarded |= alerts; }
 };
 
+struct mock_src_client {
+    int attached                       = 0;
+    int detached                       = 0;
+    usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
+
+    void onAttached(usbc::plug_orientation o)
+    {
+        ++attached;
+        orientation = o;
+    }
+    void onDetached() { ++detached; }
+};
+static_assert(usbc::concepts::tc_source_client<mock_src_client>);
+
 // --- compile-time checks ----------------------------------------------------
 namespace compile_time {
 
@@ -81,6 +96,13 @@ static_assert(usbc::tc::advertisementOf(cc_status{cc_state::snk_open, cc_state::
               usbc::rp_value::p_3a0);
 static_assert(usbc::tc::advertisementOf(cc_status{cc_state::snk_default, cc_state::snk_open}) ==
               usbc::rp_value::usb_default);
+
+static_assert(usbc::tc::singleRd(cc_status{cc_state::src_rd, cc_state::src_open}));
+static_assert(usbc::tc::singleRd(cc_status{cc_state::src_ra, cc_state::src_rd}));
+static_assert(!usbc::tc::singleRd(cc_status{cc_state::src_rd, cc_state::src_rd}));
+static_assert(!usbc::tc::singleRd(cc_status{cc_state::src_open, cc_state::src_ra}));
+static_assert(usbc::tc::srcOrientationOf(cc_status{cc_state::src_open, cc_state::src_rd}) ==
+              usbc::plug_orientation::cc2);
 
 } // namespace compile_time
 
@@ -189,6 +211,108 @@ int typeCTests()
                           usbc::alert_status::cc_status_changed;
         pd_tcpc.callback(pd_tcpc.context);
         check(pd_client.forwarded == usbc::alert_status::message_received);
+    }
+
+    return failures;
+}
+
+int typeCSourceTests()
+{
+    using source = usbc::TypeCSource<mock_tcpc, mock_vbus, manual_timer, mock_src_client>;
+
+    mock_tcpc tcpc;
+    mock_vbus vbus;
+    mock_src_client client;
+    manual_timer timer;
+    source tc{tcpc, vbus, timer, client, usbc::rp_value::p_3a0};
+    static_cast<void>(tc); // driven through the self-registered callbacks
+
+    auto const ccAlert = [&] {
+        tcpc.alerts |= usbc::alert_status::cc_status_changed;
+        tcpc.callback(tcpc.context);
+    };
+
+    // construction applied Unattached.SRC: Rp with the configured
+    // advertisement, source path off, vSafe0V monitored and reported
+    check(tcpc.pull == usbc::cc_pull::rp && tcpc.rp == usbc::rp_value::p_3a0);
+    check(!tcpc.sourcing && !vbus.discharging);
+    check(vbus.monitored == usbc::vbus_level::safe0v);
+
+    // sink attaches on CC2: debounce, then VBUS applied (already at vSafe0V)
+    tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_rd};
+    ccAlert();
+    check(timer.armed && timer.duration == usbc::tc::t_cc_debounce);
+    check(!tcpc.sourcing); // not before the debounce completes
+    timer.expire();
+    check(tcpc.sourcing);
+    check(tcpc.orientation == usbc::plug_orientation::cc2);
+    check(client.attached == 1 && client.orientation == usbc::plug_orientation::cc2);
+    vbus.setVoltage(5000); // the supply raises VBUS
+
+    // detach: Rd removed, discharge to vSafe0V before re-presenting
+    tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+    ccAlert();
+    check(!tcpc.sourcing && vbus.discharging);
+    check(client.detached == 1);
+    vbus.setVoltage(0); // discharge complete
+    check(!vbus.discharging); // Unattached.SRC again
+
+    // attach with Ra on the other pin: still a single Rd, on CC1
+    tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_ra};
+    ccAlert();
+    timer.expire();
+    check(tcpc.sourcing && client.attached == 2);
+    check(client.orientation == usbc::plug_orientation::cc1);
+
+    // detach with VBUS already at vSafe0V skips UnattachedWait.SRC
+    tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+    ccAlert();
+    check(!tcpc.sourcing && !vbus.discharging);
+    check(client.detached == 2);
+
+    // Rd stable but VBUS not yet at vSafe0V: attach waits for it
+    vbus.setVoltage(5000);
+    tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+    ccAlert();
+    timer.expire();
+    check(!tcpc.sourcing && client.attached == 2); // debounced, waiting
+    vbus.setVoltage(0);
+    check(tcpc.sourcing && client.attached == 3);
+    tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+    ccAlert();
+    check(client.detached == 3);
+
+    // both lines with Rd (debug accessory) is not an attach
+    tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_rd};
+    ccAlert();
+    timer.expire();
+    check(!tcpc.sourcing && client.attached == 3);
+
+    // a CC change during the debounce restarts it
+    tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_rd};
+    ccAlert();
+    auto const restart_before = timer.starts;
+    tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+    ccAlert();
+    check(timer.starts == restart_before + 1);
+    tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+    ccAlert();
+    timer.expire();
+    check(!tcpc.sourcing && client.attached == 3);
+
+    // a sink already present at construction is seeded from CC status
+    {
+        mock_tcpc seeded_tcpc;
+        mock_vbus seeded_vbus;
+        mock_src_client seeded_client;
+        manual_timer seeded_timer;
+        seeded_tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+        source seeded{seeded_tcpc, seeded_vbus, seeded_timer, seeded_client};
+        static_cast<void>(seeded);
+        check(seeded_timer.armed); // debounce started right away
+        seeded_timer.expire();
+        check(seeded_tcpc.sourcing && seeded_client.attached == 1);
+        check(seeded_tcpc.rp == usbc::rp_value::usb_default);
     }
 
     return failures;
