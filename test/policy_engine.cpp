@@ -7,7 +7,7 @@
 #include "mocks.hpp"
 
 #include <usbc/Pdo.hpp>
-#include <usbc/PolicyEngine.hpp>
+#include <usbc/SinkPolicyEngine.hpp>
 
 #include <array>
 #include <chrono>

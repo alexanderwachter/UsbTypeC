@@ -81,6 +81,14 @@ constexpr std::uint32_t makeFixedSink(millivolt voltage, milliamp operational_cu
            static_cast<std::uint32_t>(operational_current / 10);
 }
 
+// Fixed supply source PDO, for the Source_Capabilities message; only
+// the voltage/current fields - a plain always-on fixed supply
+constexpr std::uint32_t makeFixedSource(millivolt voltage, milliamp maximum_current)
+{
+    return (static_cast<std::uint32_t>(voltage / 50) << 10u) |
+           static_cast<std::uint32_t>(maximum_current / 10);
+}
+
 // Fixed supply RDO. no_usb_suspend is set: a pure power sink does not
 // participate in USB suspend power rules
 constexpr std::uint32_t makeFixedRequest(std::uint8_t object_position, milliamp operating_current,
@@ -91,6 +99,27 @@ constexpr std::uint32_t makeFixedRequest(std::uint8_t object_position, milliamp 
            (capability_mismatch ? 1u << 26u : 0u) | no_usb_suspend |
            (static_cast<std::uint32_t>(operating_current / 10) << 10u) |
            static_cast<std::uint32_t>(maximum_current / 10);
+}
+
+// Fixed supply RDO fields, for the source evaluating a Request
+constexpr std::uint8_t requestPosition(std::uint32_t rdo)
+{
+    return static_cast<std::uint8_t>((rdo >> 28u) & 0x7u);
+}
+
+constexpr milliamp requestOperatingCurrent(std::uint32_t rdo)
+{
+    return static_cast<milliamp>(((rdo >> 10u) & 0x3ffu) * 10u);
+}
+
+constexpr milliamp requestMaximumCurrent(std::uint32_t rdo)
+{
+    return static_cast<milliamp>((rdo & 0x3ffu) * 10u);
+}
+
+constexpr bool requestMismatch(std::uint32_t rdo)
+{
+    return ((rdo >> 26u) & 0x1u) != 0u;
 }
 
 } // namespace pdo
