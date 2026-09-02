@@ -11,6 +11,7 @@
 #include <usbc/SinkPolicyEngine.hpp>
 #include <usbc/SourcePolicyEngine.hpp>
 #include <usbc/ProtocolLayer.hpp>
+#include <usbc/TypeCDrp.hpp>
 #include <usbc/TypeCSink.hpp>
 #include <usbc/TypeCSource.hpp>
 
@@ -41,6 +42,13 @@ int main(int argc, char* argv[])
     write<usbc::prl::tx_table>(directory, "prl_tx");
     write<usbc::tc::sink_table>(directory, "tc_sink");
     write<usbc::tc::source_table>(directory, "tc_source");
+    using drp_timing = usbc::default_drp_timing;
+    write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::none>>(directory,
+                                                                              "tc_drp");
+    write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::source>>(
+        directory, "tc_drp_try_src");
+    write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::sink>>(
+        directory, "tc_drp_try_snk");
     write<usbc::pe::sink_table>(directory, "pe_sink");
     write<usbc::pe::source_table>(directory, "pe_source");
 

@@ -19,7 +19,8 @@
  * CC state when a sink is already present. Client callbacks may
  * originate from the timer context on debounce-timeout paths.
  *
- * Not covered yet: DRP, Try.SRC, debug accessories (both-Rd results
+ * DRP and Try.SRC/Try.SNK build on this layer's states in
+ * TypeCDrp.hpp. Not covered yet: debug accessories (both-Rd results
  * detach), VCONN and Ra cable handling, and debounced source-side
  * detach (tPDDebounce).
  *
@@ -34,6 +35,7 @@
 #include <usbc/Vbus.hpp>
 
 #include <mtl/StateMachine.hpp>
+#include <mtl/Typelist.hpp>
 
 #include <concepts>
 
@@ -210,16 +212,16 @@ struct rd_removed_at_safe0v {
     }
 };
 
-using source_table = fsm::transition_table<
-    fsm::initial<state::disabled_src>,
-    fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>,
-                    fsm::to<state::unattached_src>>,
-    fsm::transition<fsm::from<state::unattached_src>, fsm::on<event::cc_changed>,
+// The source attach flow, shared with the DRP layer: UNATTACHED
+// anchors it (the source's resting state, or the DRP's toggling Rp
+// phase) and ATTACH is where a successful attach leads (Attached.SRC,
+// or Try.SNK for a sink-preferring DRP)
+template<typename UNATTACHED, typename ATTACH>
+using source_attach_flow = mtl::typelist<
+    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>,
                     fsm::to<state::attach_wait_src>>,
-    fsm::internal_transition<fsm::from<state::unattached_src>,
-                             fsm::on<event::vbus_reached_safe0v>>,
-    fsm::internal_transition<fsm::from<state::unattached_src>,
-                             fsm::on<event::vbus_left_safe0v>>,
+    fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_reached_safe0v>>,
+    fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_left_safe0v>>,
     // a CC change during the debounce restarts it
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<event::cc_changed>,
                     fsm::to<state::attach_wait_src>>,
@@ -229,20 +231,21 @@ using source_table = fsm::transition_table<
                              fsm::on<event::vbus_left_safe0v>>,
     // debounce complete: attach, wait for vSafe0V, or back to unattached
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>,
-                    fsm::to<state::attached_src>, fsm::guard<src_attach_conditions_met>>,
+                    fsm::to<ATTACH>, fsm::guard<src_attach_conditions_met>>,
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>,
                     fsm::to<state::attach_wait_src_debounced>, fsm::guard<src_stable_rd>>,
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>,
-                    fsm::to<state::unattached_src>>,
+                    fsm::to<UNATTACHED>>,
     fsm::transition<fsm::from<state::attach_wait_src_debounced>,
-                    fsm::on<event::vbus_reached_safe0v>, fsm::to<state::attached_src>>,
+                    fsm::on<event::vbus_reached_safe0v>, fsm::to<ATTACH>>,
     fsm::internal_transition<fsm::from<state::attach_wait_src_debounced>,
                              fsm::on<event::vbus_left_safe0v>>,
     fsm::transition<fsm::from<state::attach_wait_src_debounced>, fsm::on<event::cc_changed>,
                     fsm::to<state::attach_wait_src>>,
-    // source detach detection is CC-based: Rd removed
+    // source detach detection is CC-based: Rd removed; toggling resumes
+    // after the discharge (skipped when VBUS already sits at vSafe0V)
     fsm::transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>,
-                    fsm::to<state::unattached_src>, fsm::guard<rd_removed_at_safe0v>>,
+                    fsm::to<UNATTACHED>, fsm::guard<rd_removed_at_safe0v>>,
     fsm::transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>,
                     fsm::to<state::unattached_wait_src>, fsm::guard<rd_removed>>,
     fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>>,
@@ -250,11 +253,19 @@ using source_table = fsm::transition_table<
                              fsm::on<event::vbus_reached_safe0v>>,
     fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::vbus_left_safe0v>>,
     fsm::transition<fsm::from<state::unattached_wait_src>, fsm::on<event::vbus_reached_safe0v>,
-                    fsm::to<state::unattached_src>>,
+                    fsm::to<UNATTACHED>>,
     fsm::internal_transition<fsm::from<state::unattached_wait_src>,
                              fsm::on<event::vbus_left_safe0v>>,
     fsm::internal_transition<fsm::from<state::unattached_wait_src>,
                              fsm::on<event::cc_changed>>>;
+
+using source_table = mtl::rebind_t<
+    mtl::linearize_t<mtl::typelist<
+        fsm::initial<state::disabled_src>,
+        fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>,
+                        fsm::to<state::unattached_src>>,
+        source_attach_flow<state::unattached_src, state::attached_src>>>,
+    fsm::transition_table>;
 
 // Applies each state's src_hw annotation (suppressed while unchanged)
 // with the port's configured Rp advertisement, and the attached

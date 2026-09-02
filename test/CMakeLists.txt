@@ -12,6 +12,7 @@ add_executable(${PROJECT_NAME}
     ${CMAKE_CURRENT_LIST_DIR}/tcpc.cpp
     ${CMAKE_CURRENT_LIST_DIR}/protocol_layer.cpp
     ${CMAKE_CURRENT_LIST_DIR}/type_c.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/type_c_drp.cpp
     ${CMAKE_CURRENT_LIST_DIR}/policy_engine.cpp
     ${CMAKE_CURRENT_LIST_DIR}/policy_engine_source.cpp
     ${CMAKE_CURRENT_LIST_DIR}/main.cpp

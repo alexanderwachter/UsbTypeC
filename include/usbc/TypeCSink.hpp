@@ -29,7 +29,8 @@
  * (onAttached/onDetached) may originate from the timer context on
  * debounce-timeout paths.
  *
- * Not covered yet: DRP, Try.SNK, debug and audio accessories (both-Rp
+ * DRP and Try.SNK/Try.SRC build on this layer's states in
+ * TypeCDrp.hpp. Not covered yet: debug and audio accessories (both-Rp
  * results detach), Rp change notification while attached, and VCONN (a
  * sink without cable communication needs none).
  *
@@ -44,6 +45,7 @@
 #include <usbc/Vbus.hpp>
 
 #include <mtl/StateMachine.hpp>
+#include <mtl/Typelist.hpp>
 
 #include <concepts>
 
@@ -169,6 +171,12 @@ struct attached_snk : sink_state {
           advertisement_(advertisementOf(ctx.cc))
     {
     }
+    // entered on a CC event (the DRP's TryWait.SNK attach): the payload
+    // must land in the context before the orientation is derived
+    attached_snk(event::cc_changed const& event, port_context& ctx)
+        : attached_snk((ctx.cc = event.cc, ctx))
+    {
+    }
 
     plug_orientation orientation() const { return orientation_; }
     attach_info attachedInfo() const { return {orientation_, advertisement_}; }
@@ -191,14 +199,16 @@ struct stable_rp {
     static bool check(state::attach_wait_snk const& state) { return singleRp(state.context.cc); }
 };
 
-using sink_table = fsm::transition_table<
-    fsm::initial<state::disabled_snk>,
-    fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
-                    fsm::to<state::unattached_snk>>,
-    fsm::transition<fsm::from<state::unattached_snk>, fsm::on<event::cc_changed>,
+// The sink attach flow, shared with the DRP layer: UNATTACHED anchors
+// it (the sink's resting state, or the DRP's toggling Rd phase) and
+// ATTACH is where a successful attach leads (Attached.SNK, or Try.SRC
+// for a source-preferring DRP)
+template<typename UNATTACHED, typename ATTACH>
+using sink_attach_flow = mtl::typelist<
+    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>,
                     fsm::to<state::attach_wait_snk>>,
-    fsm::internal_transition<fsm::from<state::unattached_snk>, fsm::on<event::vbus_present>>,
-    fsm::internal_transition<fsm::from<state::unattached_snk>, fsm::on<event::vbus_removed>>,
+    fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_present>>,
+    fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_removed>>,
     // a CC change during the debounce restarts it
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<event::cc_changed>,
                     fsm::to<state::attach_wait_snk>>,
@@ -206,22 +216,30 @@ using sink_table = fsm::transition_table<
     fsm::internal_transition<fsm::from<state::attach_wait_snk>, fsm::on<event::vbus_removed>>,
     // debounce complete: attach, keep waiting for VBUS, or detach
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<state::attached_snk>, fsm::guard<attach_conditions_met>>,
+                    fsm::to<ATTACH>, fsm::guard<attach_conditions_met>>,
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
                     fsm::to<state::attach_wait_snk_debounced>, fsm::guard<stable_rp>>,
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<state::unattached_snk>>,
+                    fsm::to<UNATTACHED>>,
     fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_present>,
-                    fsm::to<state::attached_snk>>,
+                    fsm::to<ATTACH>>,
     fsm::internal_transition<fsm::from<state::attach_wait_snk_debounced>,
                              fsm::on<event::vbus_removed>>,
     fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::cc_changed>,
                     fsm::to<state::attach_wait_snk>>,
     // sink detach detection is VBUS-based
     fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::vbus_removed>,
-                    fsm::to<state::unattached_snk>>,
+                    fsm::to<UNATTACHED>>,
     fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::cc_changed>>,
     fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::vbus_present>>>;
+
+using sink_table = mtl::rebind_t<
+    mtl::linearize_t<mtl::typelist<
+        fsm::initial<state::disabled_snk>,
+        fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
+                        fsm::to<state::unattached_snk>>,
+        sink_attach_flow<state::unattached_snk, state::attached_snk>>>,
+    fsm::transition_table>;
 
 // Applies each state's hw annotation (suppressed while unchanged) and
 // the attached state's plug orientation
