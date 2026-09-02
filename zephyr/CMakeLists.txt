@@ -11,6 +11,7 @@ zephyr_library_sources(
     ${CMAKE_CURRENT_LIST_DIR}/src/Tcpc.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/WorkQueue.cpp
     ${CMAKE_CURRENT_LIST_DIR}/src/Vbus.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/src/StateLogger.cpp
 )
 
 zephyr_include_directories(
