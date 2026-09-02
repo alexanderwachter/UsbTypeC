@@ -42,16 +42,14 @@ usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
 usbc::zephyr::Timer timer;
 AttachLogger logger;
+// Default Rp advertisement: the board sources default USB current
+Source source{tcpc, vbus, timer, logger, usbc::rp_value::usb_default};
 
 } // namespace
 
 int main()
 {
-    // Construction is the go-live moment: the port presents Rp and
-    // reacts to sinks from here on. Default Rp advertisement: the
-    // board sources default USB current only
-    static Source source{tcpc, vbus, timer, logger, usbc::rp_value::usb_default};
-    static_cast<void>(source);
+    source.start(); // leave Disabled: present Rp, react to sinks
 
     LOG_INF("USB-C source port running");
     return 0;

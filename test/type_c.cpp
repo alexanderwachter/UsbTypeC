@@ -128,18 +128,22 @@ int typeCTests()
     mock_tc_client client;
     manual_timer timer;
     sink tc{tcpc, vbus, timer, client};
-    static_cast<void>(tc); // driven through the self-registered callbacks
+
+    // construction rests in Disabled: nothing registered, nothing driven
+    check(tcpc.callback == nullptr && !vbus.monitored);
+
+    // start() applies Unattached.SNK: Rd presented, sink path off,
+    // vSafe5V monitored, callbacks registered
+    tc.start();
+    check(tcpc.pull == usbc::cc_pull::rd && !tcpc.sinking);
+    check(vbus.monitored == usbc::vbus_level::safe5v);
+    check(tcpc.callback != nullptr);
 
     // a CC alert travels through the alert handler the sink registered
     auto const ccAlert = [&] {
         tcpc.alerts |= usbc::alert_status::cc_status_changed;
         tcpc.callback(tcpc.context);
     };
-
-    // construction applied Unattached.SNK: Rd presented, sink path off,
-    // vSafe5V monitored
-    check(tcpc.pull == usbc::cc_pull::rd && !tcpc.sinking);
-    check(vbus.monitored == usbc::vbus_level::safe5v);
 
     // source attaches: Rp seen, debounce runs, VBUS arrives mid-debounce
     // without restarting it
@@ -205,7 +209,7 @@ int typeCTests()
         manual_timer pd_timer;
         usbc::TypeCSink<mock_tcpc, mock_vbus, manual_timer, mock_pd_forwarding_client> pd_tc{
             pd_tcpc, pd_vbus, pd_timer, pd_client};
-        static_cast<void>(pd_tc);
+        pd_tc.start();
 
         pd_tcpc.alerts |= usbc::alert_status::message_received |
                           usbc::alert_status::cc_status_changed;
@@ -225,18 +229,21 @@ int typeCSourceTests()
     mock_src_client client;
     manual_timer timer;
     source tc{tcpc, vbus, timer, client, usbc::rp_value::p_3a0};
-    static_cast<void>(tc); // driven through the self-registered callbacks
+
+    // construction rests in Disabled: nothing registered, nothing driven
+    check(tcpc.callback == nullptr && !vbus.monitored);
+
+    // start() applies Unattached.SRC: Rp with the configured
+    // advertisement, source path off, vSafe0V monitored and reported
+    tc.start();
+    check(tcpc.pull == usbc::cc_pull::rp && tcpc.rp == usbc::rp_value::p_3a0);
+    check(!tcpc.sourcing && !vbus.discharging);
+    check(vbus.monitored == usbc::vbus_level::safe0v);
 
     auto const ccAlert = [&] {
         tcpc.alerts |= usbc::alert_status::cc_status_changed;
         tcpc.callback(tcpc.context);
     };
-
-    // construction applied Unattached.SRC: Rp with the configured
-    // advertisement, source path off, vSafe0V monitored and reported
-    check(tcpc.pull == usbc::cc_pull::rp && tcpc.rp == usbc::rp_value::p_3a0);
-    check(!tcpc.sourcing && !vbus.discharging);
-    check(vbus.monitored == usbc::vbus_level::safe0v);
 
     // sink attaches on CC2: debounce, then VBUS applied (already at vSafe0V)
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_rd};
@@ -300,7 +307,7 @@ int typeCSourceTests()
     timer.expire();
     check(!tcpc.sourcing && client.attached == 3);
 
-    // a sink already present at construction is seeded from CC status
+    // a sink already present at start() is seeded from CC status
     {
         mock_tcpc seeded_tcpc;
         mock_vbus seeded_vbus;
@@ -308,7 +315,7 @@ int typeCSourceTests()
         manual_timer seeded_timer;
         seeded_tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
         source seeded{seeded_tcpc, seeded_vbus, seeded_timer, seeded_client};
-        static_cast<void>(seeded);
+        seeded.start();
         check(seeded_timer.armed); // debounce started right away
         seeded_timer.expire();
         check(seeded_tcpc.sourcing && seeded_client.attached == 1);

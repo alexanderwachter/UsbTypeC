@@ -81,19 +81,15 @@ usbc::PowerPolicy policy{5000, 27000}; // at least 5 W, aim for 27 W
 Power power;
 Engine engine{tcpc, prl_timer, pe_timer, sink_capabilities, policy, power};
 PortClient port_client{engine};
+Sink sink{tcpc, vbus, tc_timer, port_client};
 
 } // namespace
 
 int main()
 {
-    // Constructing the Sink is the go-live moment: its constructor
-    // registers the alert handler and VBUS callback and seeds the CC
-    // state, so attach events flow from this line on. A function-local
-    // static pins that start to a visible point after every init level
-    // and all the objects above exist - safe here even as a global (one
-    // TU, declared after its dependencies), but explicit beats implicit
-    static Sink sink{tcpc, vbus, tc_timer, port_client};
-    static_cast<void>(sink);
+    // start() is the go-live moment: the port leaves Disabled, applies
+    // its terminations, and attach events flow from this line on
+    sink.start();
 
     LOG_INF("USB PD sink port running");
     return 0;

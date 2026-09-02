@@ -28,6 +28,7 @@ namespace event {
 struct cc_changed {
     cc_status cc;
 };
+struct started {}; // start(): leave Disabled, apply the terminations
 
 } // namespace event
 

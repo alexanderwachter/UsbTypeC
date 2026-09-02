@@ -51,13 +51,13 @@ usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
 usbc::zephyr::Timer timer;
 AttachLogger logger;
+Sink sink{tcpc, vbus, timer, logger};
 
 } // namespace
 
 int main()
 {
-    static Sink sink{tcpc, vbus, timer, logger};
-    static_cast<void>(sink);
+    sink.start(); // leave Disabled: present Rd, react to sources
 
     LOG_INF("USB-C sink port running");
     return 0;

@@ -11,12 +11,13 @@
  * decides on the CC event payload through a (state, event) guard.
  *
  * Integration mirrors TypeCSink: initialized drivers plus a
- * caller-owned timer policy instance; construction applies the initial
- * state's terminations, registers the callbacks, re-arms the vSafe0V
- * monitor (its initial report would otherwise predate the callback
- * registration), and seeds the CC state when a sink is already
- * present. Client callbacks may originate from the timer context on
- * debounce-timeout paths.
+ * caller-owned timer policy instance. Construction rests in the spec's
+ * Disabled state (open terminations, nothing monitored); start() is
+ * the go-live moment - it fires the started event, whose transition
+ * presents Rp and arms the vSafe0V monitor, then registers the
+ * callbacks, re-arms the monitor for its initial report, and seeds the
+ * CC state when a sink is already present. Client callbacks may
+ * originate from the timer context on debounce-timeout paths.
  *
  * Not covered yet: DRP, Try.SRC, debug accessories (both-Rd results
  * detach), VCONN and Ra cable handling, and debounced source-side
@@ -66,9 +67,10 @@ constexpr plug_orientation srcOrientationOf(cc_status status)
     return isRd(status.cc1) ? plug_orientation::cc1 : plug_orientation::cc2;
 }
 
-// The source power path and discharge a state requires; the CC pull is
-// always Rp with the port's configured advertisement
+// The CC pull (Rp with the port's configured advertisement, or open
+// while Disabled), power path, and discharge a state requires
 struct src_hw_config {
+    cc_pull pull;
     bool source;
     bool discharge;
     constexpr bool operator==(src_hw_config const&) const = default;
@@ -88,6 +90,13 @@ struct vbus_left_safe0v {};
 
 namespace state {
 
+// The spec's Disabled state: the port is not operating, terminations
+// removed, nothing monitored. start() fires the started event
+struct disabled_src {
+    static constexpr src_hw_config hw{.pull = cc_pull::open, .source = false,
+                                      .discharge = false};
+};
+
 // Common context plus the internal-transition handlers keeping it
 // current without disturbing a running debounce
 struct source_state {
@@ -101,7 +110,7 @@ struct source_state {
 };
 
 struct unattached_src : source_state {
-    static constexpr src_hw_config hw{.source = false, .discharge = false};
+    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
 
     // entering on the discharge-complete event records what it means -
@@ -114,7 +123,7 @@ struct unattached_src : source_state {
 };
 
 struct attach_wait_src : source_state {
-    static constexpr src_hw_config hw{.source = false, .discharge = false};
+    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
@@ -127,14 +136,14 @@ struct attach_wait_src : source_state {
 
 // AttachWait.SRC with a stable single Rd, waiting for VBUS at vSafe0V
 struct attach_wait_src_debounced : source_state {
-    static constexpr src_hw_config hw{.source = false, .discharge = false};
+    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
 
     using source_state::source_state;
 };
 
 struct attached_src : source_state {
-    static constexpr src_hw_config hw{.source = true, .discharge = false};
+    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = true, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
 
     // entered from the debounced wait on the vSafe0V event
@@ -156,7 +165,7 @@ private:
 
 // Discharges VBUS to vSafe0V before presenting Rp for a new attach
 struct unattached_wait_src : source_state {
-    static constexpr src_hw_config hw{.source = false, .discharge = true};
+    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = true};
     static constexpr vbus_level watch = vbus_level::safe0v;
 
     unattached_wait_src(event::cc_changed const& event, src_context& ctx) : source_state(ctx)
@@ -202,7 +211,9 @@ struct rd_removed_at_safe0v {
 };
 
 using source_table = fsm::transition_table<
-    fsm::initial<state::unattached_src>,
+    fsm::initial<state::disabled_src>,
+    fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>,
+                    fsm::to<state::unattached_src>>,
     fsm::transition<fsm::from<state::unattached_src>, fsm::on<event::cc_changed>,
                     fsm::to<state::attach_wait_src>>,
     fsm::internal_transition<fsm::from<state::unattached_src>,
@@ -262,7 +273,7 @@ struct src_hw_driver : fsm::observing<src_hw_driver<TCPC, VBUS>> {
     }
     void notifyEntry(src_hw_config const& config)
     {
-        tcpc.setCc(cc_pull::rp, rp);
+        tcpc.setCc(config.pull, rp);
         tcpc.sourceVbus(config.source);
         vbus.discharge(config.discharge);
     }
@@ -284,17 +295,28 @@ template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
          concepts::tc_source_client CLIENT>
 class TypeCSource {
 public:
-    // The advertisement is the Rp the port presents (and must honor)
+    // Construction rests in Disabled with open terminations; the port
+    // goes live on start(). The advertisement is the Rp the port
+    // presents (and must honor)
     TypeCSource(TCPC& tcpc, VBUS& vbus, TIMER& timer, CLIENT& client,
                 rp_value advertisement = rp_value::usb_default)
         : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), client_(client), timed_(timer)
     {
-        vbus.setCallback(
+    }
+
+    // Leaves Disabled: Rp and monitoring apply through the machine,
+    // the callbacks register, and a present sink is seeded from the CC
+    // status. A second start() finds no started transition and does
+    // nothing
+    void start()
+    {
+        if (!sm_.process(tc::event::started{})) {
+            return;
+        }
+        vbus_.vbus.setCallback(
             [](void* self, bool met) { static_cast<TypeCSource*>(self)->vbusEvent(met); }, this);
-        tcpc.setAlertHandler([](void* self) { static_cast<TypeCSource*>(self)->alert(); }, this);
-        // the initial monitor() ran before the callback registration:
-        // re-arm so the driver reports the current vSafe0V state
-        vbus.monitor(vbus_level::safe0v);
+        tcpc_.setAlertHandler([](void* self) { static_cast<TypeCSource*>(self)->alert(); }, this);
+        vbus_.vbus.monitor(vbus_level::safe0v); // deliver the initial condition
         seedCcState();
     }
 

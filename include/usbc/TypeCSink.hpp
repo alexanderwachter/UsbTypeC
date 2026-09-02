@@ -17,9 +17,11 @@
  * re-arms the vbus driver on changes.
  *
  * Integration: hand over initialized drivers and a caller-owned timer
- * policy instance; construction applies the initial state's
- * terminations, registers the machine as the tcpc alert handler and
- * the vbus callback, starts monitoring, and seeds the CC state when a
+ * policy instance. Construction rests in the spec's Disabled state
+ * (open terminations, nothing monitored); start() is the go-live
+ * moment - it fires the started event, whose transition applies the
+ * Unattached.SNK terminations and monitoring, then registers the tcpc
+ * alert handler and the vbus callback and seeds the CC state when a
  * source is already present. The drivers must invoke their callbacks
  * from the stack's serialized context (the Zephyr adapters deliver on
  * a workqueue), and the timer is serialized with them by the
@@ -112,6 +114,12 @@ struct vbus_removed {};
 
 namespace state {
 
+// The spec's Disabled state: the port is not operating, terminations
+// removed, nothing monitored. start() fires the started event
+struct disabled_snk {
+    static constexpr hw_config hw{cc_pull::open, false};
+};
+
 // Common context plus the internal-transition handlers keeping it
 // current without disturbing a running debounce
 struct sink_state {
@@ -184,7 +192,9 @@ struct stable_rp {
 };
 
 using sink_table = fsm::transition_table<
-    fsm::initial<state::unattached_snk>,
+    fsm::initial<state::disabled_snk>,
+    fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
+                    fsm::to<state::unattached_snk>>,
     fsm::transition<fsm::from<state::unattached_snk>, fsm::on<event::cc_changed>,
                     fsm::to<state::attach_wait_snk>>,
     fsm::internal_transition<fsm::from<state::unattached_snk>, fsm::on<event::vbus_present>>,
@@ -245,12 +255,26 @@ template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
          concepts::tc_sink_client CLIENT>
 class TypeCSink {
 public:
+    // Construction rests in Disabled with open terminations; the port
+    // goes live on start()
     TypeCSink(TCPC& tcpc, VBUS& vbus, TIMER& timer, CLIENT& client)
         : tcpc_(tcpc), hw_(tcpc), vbus_(vbus), client_(client), timed_(timer)
     {
-        vbus.setCallback(
+    }
+
+    // Leaves Disabled: the terminations and monitoring apply through
+    // the machine, the callbacks register, and a present source is
+    // seeded from the CC status. A second start() finds no started
+    // transition and does nothing
+    void start()
+    {
+        if (!sm_.process(tc::event::started{})) {
+            return;
+        }
+        vbus_.vbus.setCallback(
             [](void* self, bool met) { static_cast<TypeCSink*>(self)->vbusEvent(met); }, this);
-        tcpc.setAlertHandler([](void* self) { static_cast<TypeCSink*>(self)->alert(); }, this);
+        tcpc_.setAlertHandler([](void* self) { static_cast<TypeCSink*>(self)->alert(); }, this);
+        vbus_.vbus.monitor(vbus_.monitored); // deliver the initial condition
         seedCcState();
     }
 

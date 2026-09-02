@@ -111,16 +111,17 @@ Supply supply;
 Contract contract;
 Engine engine{tcpc, prl_timer, pe_timer, source_caps, policy, supply, contract};
 PortClient port_client{engine};
+// The Rp matches the 5 V capability the port advertises through PD
+Source source{tcpc, vbus, tc_timer, port_client, usbc::rp_value::p_1a5};
 
 } // namespace
 
 int main()
 {
-    // Constructing the Source is the go-live moment: the port presents
-    // Rp and reacts to sinks from here on. The Rp matches the 5 V
-    // capability the port advertises through PD
-    static Source source{tcpc, vbus, tc_timer, port_client, usbc::rp_value::p_1a5};
-    static_cast<void>(source);
+
+    // start() is the go-live moment: the port leaves Disabled,
+    // presents Rp, and reacts to sinks from this line on
+    source.start();
 
     LOG_INF("USB PD source port running");
     return 0;
