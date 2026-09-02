@@ -39,9 +39,11 @@
  * spec's Disabled state and start() goes live in Unattached.SNK. The
  * vbus driver is re-armed per state (vSafe5V in sink-role states,
  * vSafe0V in source-role states, vSinkDisconnect while Attached.SNK)
- * and the callback's meaning is mapped through the armed level. The
- * client is told which role attached: onAttachedSnk(orientation,
- * advertisement) or onAttachedSrc(orientation), and onDetached().
+ * and the callback's meaning is mapped through the armed level.
+ * Injected observers watching the attached states' attachedInfo()
+ * learn which role attached through the info type: tc::attach_info
+ * (orientation and advertisement) for Attached.SNK, plug_orientation
+ * for Attached.SRC.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -61,6 +63,7 @@
 
 #include <chrono>
 #include <concepts>
+#include <tuple>
 
 namespace usbc {
 
@@ -90,14 +93,6 @@ concept drp_timing = requires {
     { T::t_try_cc_debounce } -> std::convertible_to<std::chrono::milliseconds>;
     { T::t_try_timeout } -> std::convertible_to<std::chrono::milliseconds>;
     { T::t_pd_debounce } -> std::convertible_to<std::chrono::milliseconds>;
-};
-
-// A DRP client learns which role the port attached in
-template<typename T>
-concept tc_drp_client = requires(T client, plug_orientation orientation, rp_value advertisement) {
-    client.onAttachedSnk(orientation, advertisement);
-    client.onAttachedSrc(orientation);
-    client.onDetached();
 };
 
 } // namespace concepts
@@ -516,16 +511,28 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
 } // namespace tc
 
 template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         concepts::tc_drp_client CLIENT, concepts::drp_timing TIMING = default_drp_timing,
-         drp_preference PREFERENCE = drp_preference::none>
+         concepts::drp_timing TIMING = default_drp_timing,
+         drp_preference PREFERENCE = drp_preference::none, typename... OBSERVERs>
 class TypeCDrp {
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). The advertisement is the Rp presented
-    // whenever the port advertises the source role
-    TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, CLIENT& client,
-             rp_value advertisement = rp_value::usb_default)
-        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), client_(client), timed_(timer)
+    // whenever the port advertises the source role. The observers are
+    // injected into the machine after the built-in ones (timer, hw
+    // driver, vbus watcher); attach results are observed on the
+    // attached states' attachedInfo() with the role encoded in the
+    // info type, and an observer providing onPdAlert(alert_status)
+    // receives the alert bits this layer does not consume
+    TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, rp_value advertisement,
+             OBSERVERs&... observers)
+        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timed_(timer),
+          observers_(observers...), sm_(timed_, hw_, vbus_, observers...)
+    {
+    }
+    // Default-Rp convenience: a trailing pack cannot follow a defaulted
+    // advertisement
+    TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, OBSERVERs&... observers)
+        : TypeCDrp(tcpc, vbus, timer, rp_value::usb_default, observers...)
     {
     }
 
@@ -546,21 +553,26 @@ public:
     }
 
 private:
-    // Drains the TCPC's pending alerts; a client providing
-    // onPdAlert(alert_status) receives the bits this layer does not
-    // consume - the hook for the PD layers above
+    // Drains the TCPC's pending alerts; the bits this layer does not
+    // consume go to the observers providing onPdAlert(alert_status)
     void alert()
     {
         if (auto const alerts = tcpc_.readAlert()) {
             if (any(*alerts & alert_status::cc_status_changed)) {
                 ccAlert();
             }
-            if constexpr (requires { client_.onPdAlert(*alerts); }) {
-                auto const residual = *alerts & ~alert_status::cc_status_changed;
-                if (any(residual)) {
-                    client_.onPdAlert(residual);
-                }
+            auto const residual = *alerts & ~alert_status::cc_status_changed;
+            if (any(residual)) {
+                std::apply([&](auto&... observer) { (forwardPdAlert(observer, residual), ...); },
+                           observers_);
             }
+        }
+    }
+
+    static void forwardPdAlert(auto& observer, alert_status alerts)
+    {
+        if constexpr (requires { observer.onPdAlert(alerts); }) {
+            observer.onPdAlert(alerts);
         }
     }
 
@@ -611,36 +623,14 @@ private:
         }
     }
 
-    // Tells the client about attach results with the attached role,
-    // dispatched on the attached state's info type
-    struct attach_reporter : fsm::observing<attach_reporter> {
-        explicit attach_reporter(CLIENT& client_ref) : client(client_ref) {}
-
-        static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.attachedInfo()))
-        {
-            return state.attachedInfo();
-        }
-        void notifyEntry(tc::attach_info info)
-        {
-            client.onAttachedSnk(info.orientation, info.advertisement);
-        }
-        void notifyExit(tc::attach_info) { client.onDetached(); }
-        void notifyEntry(plug_orientation orientation) { client.onAttachedSrc(orientation); }
-        void notifyExit(plug_orientation) { client.onDetached(); }
-
-        CLIENT& client;
-    };
-
     TCPC& tcpc_;
     tc::drp_hw_driver<TCPC, VBUS> hw_;
     tc::vbus_watcher<VBUS> vbus_;
-    CLIENT& client_;
-    attach_reporter reporter_{client_};
     fsm::timed<TIMER&> timed_;
+    std::tuple<OBSERVERs&...> observers_;
     fsm::state_machine<tc::drp::table_for_t<TIMING, PREFERENCE>, fsm::timed<TIMER&>,
-                       tc::drp_hw_driver<TCPC, VBUS>, tc::vbus_watcher<VBUS>, attach_reporter>
-        sm_{timed_, hw_, vbus_, reporter_};
+                       tc::drp_hw_driver<TCPC, VBUS>, tc::vbus_watcher<VBUS>, OBSERVERs...>
+        sm_;
 };
 
 } // namespace usbc

@@ -26,13 +26,20 @@ LOG_MODULE_REGISTER(source_sample, LOG_LEVEL_INF);
 
 namespace {
 
-struct AttachLogger {
-    void onAttached(usbc::plug_orientation orientation)
+// Observer injected into the source's machine, watching the attached
+// state's attachedInfo() (a source reports the orientation only)
+struct AttachLogger : fsm::observing<AttachLogger> {
+    static constexpr auto observe_nonstatic(auto const& state)
+        -> decltype((state.attachedInfo()))
+    {
+        return state.attachedInfo();
+    }
+    void notifyEntry(usbc::plug_orientation orientation)
     {
         LOG_INF("sink attached: CC%d, VBUS on",
                 orientation == usbc::plug_orientation::cc1 ? 1 : 2);
     }
-    void onDetached() { LOG_INF("sink detached, VBUS off"); }
+    void notifyExit(usbc::plug_orientation) { LOG_INF("sink detached, VBUS off"); }
 };
 
 using Source =
@@ -43,7 +50,7 @@ usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
 usbc::zephyr::Timer timer;
 AttachLogger logger;
 // Default Rp advertisement: the board sources default USB current
-Source source{tcpc, vbus, timer, logger, usbc::rp_value::usb_default};
+Source source{tcpc, vbus, timer, usbc::rp_value::usb_default, logger};
 
 } // namespace
 

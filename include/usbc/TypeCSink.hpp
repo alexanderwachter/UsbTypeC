@@ -25,8 +25,9 @@
  * source is already present. The drivers must invoke their callbacks
  * from the stack's serialized context (the Zephyr adapters deliver on
  * a workqueue), and the timer is serialized with them by the
- * integrator (mtl timer contract). Client callbacks
- * (onAttached/onDetached) may originate from the timer context on
+ * integrator (mtl timer contract). Attach results reach injected
+ * observers watching the attached state's attachedInfo(); their
+ * notifications may originate from the timer context on
  * debounce-timeout paths.
  *
  * DRP and Try.SNK/Try.SRC build on this layer's states in
@@ -48,18 +49,9 @@
 #include <mtl/Typelist.hpp>
 
 #include <concepts>
+#include <tuple>
 
 namespace usbc {
-
-namespace concepts {
-
-template<typename T>
-concept tc_sink_client = requires(T client, plug_orientation orientation, rp_value advertisement) {
-    client.onAttached(orientation, advertisement);
-    client.onDetached();
-};
-
-} // namespace concepts
 
 namespace tc {
 
@@ -270,13 +262,19 @@ struct hw_driver : fsm::observing<hw_driver<TCPC>> {
 } // namespace tc
 
 template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         concepts::tc_sink_client CLIENT>
+         typename... OBSERVERs>
 class TypeCSink {
 public:
     // Construction rests in Disabled with open terminations; the port
-    // goes live on start()
-    TypeCSink(TCPC& tcpc, VBUS& vbus, TIMER& timer, CLIENT& client)
-        : tcpc_(tcpc), hw_(tcpc), vbus_(vbus), client_(client), timed_(timer)
+    // goes live on start(). The observers are injected into the
+    // machine after the built-in ones (timer, hw driver, vbus watcher);
+    // attach results are observed on the attached state's
+    // attachedInfo(), and an observer providing onPdAlert(alert_status)
+    // receives the alert bits this layer does not consume - the hook
+    // for the PD layers above
+    TypeCSink(TCPC& tcpc, VBUS& vbus, TIMER& timer, OBSERVERs&... observers)
+        : tcpc_(tcpc), hw_(tcpc), vbus_(vbus), timed_(timer), observers_(observers...),
+          sm_(timed_, hw_, vbus_, observers...)
     {
     }
 
@@ -298,21 +296,27 @@ public:
 
 private:
     // Drains the TCPC's pending alerts and dispatches them; invoked
-    // through the alert handler registered at construction. A client
-    // providing onPdAlert(alert_status) receives the bits this layer
-    // does not consume - the hook for the PD layers above
+    // through the alert handler registered at construction. The bits
+    // this layer does not consume go to the observers providing
+    // onPdAlert(alert_status)
     void alert()
     {
         if (auto const alerts = tcpc_.readAlert()) {
             if (any(*alerts & alert_status::cc_status_changed)) {
                 ccAlert();
             }
-            if constexpr (requires { client_.onPdAlert(*alerts); }) {
-                auto const residual = *alerts & ~alert_status::cc_status_changed;
-                if (any(residual)) {
-                    client_.onPdAlert(residual);
-                }
+            auto const residual = *alerts & ~alert_status::cc_status_changed;
+            if (any(residual)) {
+                std::apply([&](auto&... observer) { (forwardPdAlert(observer, residual), ...); },
+                           observers_);
             }
+        }
+    }
+
+    static void forwardPdAlert(auto& observer, alert_status alerts)
+    {
+        if constexpr (requires { observer.onPdAlert(alerts); }) {
+            observer.onPdAlert(alerts);
         }
     }
 
@@ -344,33 +348,14 @@ private:
         }
     }
 
-    // Tells the client about attach results, from the live attached state
-    struct attach_reporter : fsm::observing<attach_reporter> {
-        explicit attach_reporter(CLIENT& client_ref) : client(client_ref) {}
-
-        static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.attachedInfo()))
-        {
-            return state.attachedInfo();
-        }
-        void notifyEntry(tc::attach_info info)
-        {
-            client.onAttached(info.orientation, info.advertisement);
-        }
-        void notifyExit(tc::attach_info) { client.onDetached(); }
-
-        CLIENT& client;
-    };
-
     TCPC& tcpc_;
     tc::hw_driver<TCPC> hw_;
     tc::vbus_watcher<VBUS> vbus_;
-    CLIENT& client_;
-    attach_reporter reporter_{client_};
     fsm::timed<TIMER&> timed_;
+    std::tuple<OBSERVERs&...> observers_;
     fsm::state_machine<tc::sink_table, fsm::timed<TIMER&>, tc::hw_driver<TCPC>,
-                       tc::vbus_watcher<VBUS>, attach_reporter>
-        sm_{timed_, hw_, vbus_, reporter_};
+                       tc::vbus_watcher<VBUS>, OBSERVERs...>
+        sm_;
 };
 
 } // namespace usbc

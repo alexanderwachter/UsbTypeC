@@ -16,8 +16,10 @@
  * the go-live moment - it fires the started event, whose transition
  * presents Rp and arms the vSafe0V monitor, then registers the
  * callbacks, re-arms the monitor for its initial report, and seeds the
- * CC state when a sink is already present. Client callbacks may
- * originate from the timer context on debounce-timeout paths.
+ * CC state when a sink is already present. Attach results reach
+ * injected observers watching the attached state's attachedInfo();
+ * their notifications may originate from the timer context on
+ * debounce-timeout paths.
  *
  * DRP and Try.SRC/Try.SNK build on this layer's states in
  * TypeCDrp.hpp. Not covered yet: debug accessories (both-Rd results
@@ -38,19 +40,9 @@
 #include <mtl/Typelist.hpp>
 
 #include <concepts>
+#include <tuple>
 
 namespace usbc {
-
-namespace concepts {
-
-// A source advertises its own Rp: attach reports the orientation only
-template<typename T>
-concept tc_source_client = requires(T client, plug_orientation orientation) {
-    client.onAttached(orientation);
-    client.onDetached();
-};
-
-} // namespace concepts
 
 namespace tc {
 
@@ -303,15 +295,28 @@ struct src_hw_driver : fsm::observing<src_hw_driver<TCPC, VBUS>> {
 } // namespace tc
 
 template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         concepts::tc_source_client CLIENT>
+         typename... OBSERVERs>
 class TypeCSource {
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). The advertisement is the Rp the port
-    // presents (and must honor)
-    TypeCSource(TCPC& tcpc, VBUS& vbus, TIMER& timer, CLIENT& client,
-                rp_value advertisement = rp_value::usb_default)
-        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), client_(client), timed_(timer)
+    // presents (and must honor). The observers are injected into the
+    // machine after the built-in ones (timer, hw driver, vbus watcher);
+    // attach results are observed on the attached state's
+    // attachedInfo() (a source reports the orientation only), and an
+    // observer providing onPdAlert(alert_status) receives the alert
+    // bits this layer does not consume - the hook for the PD layers
+    // above
+    TypeCSource(TCPC& tcpc, VBUS& vbus, TIMER& timer, rp_value advertisement,
+                OBSERVERs&... observers)
+        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timed_(timer),
+          observers_(observers...), sm_(timed_, hw_, vbus_, observers...)
+    {
+    }
+    // Default-Rp convenience: a trailing pack cannot follow a defaulted
+    // advertisement
+    TypeCSource(TCPC& tcpc, VBUS& vbus, TIMER& timer, OBSERVERs&... observers)
+        : TypeCSource(tcpc, vbus, timer, rp_value::usb_default, observers...)
     {
     }
 
@@ -332,21 +337,26 @@ public:
     }
 
 private:
-    // Drains the TCPC's pending alerts; a client providing
-    // onPdAlert(alert_status) receives the bits this layer does not
-    // consume - the hook for the PD layers above
+    // Drains the TCPC's pending alerts; the bits this layer does not
+    // consume go to the observers providing onPdAlert(alert_status)
     void alert()
     {
         if (auto const alerts = tcpc_.readAlert()) {
             if (any(*alerts & alert_status::cc_status_changed)) {
                 ccAlert();
             }
-            if constexpr (requires { client_.onPdAlert(*alerts); }) {
-                auto const residual = *alerts & ~alert_status::cc_status_changed;
-                if (any(residual)) {
-                    client_.onPdAlert(residual);
-                }
+            auto const residual = *alerts & ~alert_status::cc_status_changed;
+            if (any(residual)) {
+                std::apply([&](auto&... observer) { (forwardPdAlert(observer, residual), ...); },
+                           observers_);
             }
+        }
+    }
+
+    static void forwardPdAlert(auto& observer, alert_status alerts)
+    {
+        if constexpr (requires { observer.onPdAlert(alerts); }) {
+            observer.onPdAlert(alerts);
         }
     }
 
@@ -376,30 +386,14 @@ private:
         }
     }
 
-    // Tells the client about attach results, from the live attached state
-    struct attach_reporter : fsm::observing<attach_reporter> {
-        explicit attach_reporter(CLIENT& client_ref) : client(client_ref) {}
-
-        static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.attachedInfo()))
-        {
-            return state.attachedInfo();
-        }
-        void notifyEntry(plug_orientation orientation) { client.onAttached(orientation); }
-        void notifyExit(plug_orientation) { client.onDetached(); }
-
-        CLIENT& client;
-    };
-
     TCPC& tcpc_;
     tc::src_hw_driver<TCPC, VBUS> hw_;
     tc::vbus_watcher<VBUS> vbus_;
-    CLIENT& client_;
-    attach_reporter reporter_{client_};
     fsm::timed<TIMER&> timed_;
+    std::tuple<OBSERVERs&...> observers_;
     fsm::state_machine<tc::source_table, fsm::timed<TIMER&>, tc::src_hw_driver<TCPC, VBUS>,
-                       tc::vbus_watcher<VBUS>, attach_reporter>
-        sm_{timed_, hw_, vbus_, reporter_};
+                       tc::vbus_watcher<VBUS>, OBSERVERs...>
+        sm_;
 };
 
 } // namespace usbc

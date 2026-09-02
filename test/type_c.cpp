@@ -44,42 +44,51 @@ struct manual_timer {
 };
 static_assert(fsm::concepts::timer<manual_timer>);
 
-// --- user notification test double ------------------------------------------
-struct mock_tc_client {
+// --- user observer test doubles ---------------------------------------------
+// Injected into the machine, watching the attached state's attachedInfo()
+struct mock_tc_client : fsm::observing<mock_tc_client> {
     int attached                       = 0;
     int detached                       = 0;
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
     usbc::rp_value advertisement       = usbc::rp_value::usb_default;
 
-    void onAttached(usbc::plug_orientation o, usbc::rp_value rp)
+    static constexpr auto observe_nonstatic(auto const& state)
+        -> decltype((state.attachedInfo()))
+    {
+        return state.attachedInfo();
+    }
+    void notifyEntry(usbc::tc::attach_info info)
     {
         ++attached;
-        orientation   = o;
-        advertisement = rp;
+        orientation   = info.orientation;
+        advertisement = info.advertisement;
     }
-    void onDetached() { ++detached; }
+    void notifyExit(usbc::tc::attach_info) { ++detached; }
 };
-static_assert(usbc::concepts::tc_sink_client<mock_tc_client>);
 
-// a client may additionally take the PD alert bits the layer ignores
+// an observer may additionally take the PD alert bits the layer ignores
 struct mock_pd_forwarding_client : mock_tc_client {
     usbc::alert_status forwarded = usbc::alert_status::none;
     void onPdAlert(usbc::alert_status alerts) { forwarded |= alerts; }
 };
 
-struct mock_src_client {
+struct mock_src_client : fsm::observing<mock_src_client> {
     int attached                       = 0;
     int detached                       = 0;
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
 
-    void onAttached(usbc::plug_orientation o)
+    static constexpr auto observe_nonstatic(auto const& state)
+        -> decltype((state.attachedInfo()))
+    {
+        return state.attachedInfo();
+    }
+    void notifyEntry(usbc::plug_orientation o)
     {
         ++attached;
         orientation = o;
     }
-    void onDetached() { ++detached; }
+    void notifyExit(usbc::plug_orientation) { ++detached; }
 };
-static_assert(usbc::concepts::tc_source_client<mock_src_client>);
 
 // --- compile-time checks ----------------------------------------------------
 namespace compile_time {
@@ -228,7 +237,7 @@ int typeCSourceTests()
     mock_vbus vbus;
     mock_src_client client;
     manual_timer timer;
-    source tc{tcpc, vbus, timer, client, usbc::rp_value::p_3a0};
+    source tc{tcpc, vbus, timer, usbc::rp_value::p_3a0, client};
 
     // construction rests in Disabled: nothing registered, nothing driven
     check(tcpc.callback == nullptr && !vbus.monitored);

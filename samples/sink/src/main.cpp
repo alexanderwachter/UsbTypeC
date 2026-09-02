@@ -34,14 +34,21 @@ unsigned advertisedMilliamps(usbc::rp_value advertisement)
     }
 }
 
-struct AttachLogger {
-    void onAttached(usbc::plug_orientation orientation, usbc::rp_value advertisement)
+// Observer injected into the sink's machine, watching the attached
+// state's attachedInfo()
+struct AttachLogger : fsm::observing<AttachLogger> {
+    static constexpr auto observe_nonstatic(auto const& state)
+        -> decltype((state.attachedInfo()))
+    {
+        return state.attachedInfo();
+    }
+    void notifyEntry(usbc::tc::attach_info info)
     {
         LOG_INF("attached: CC%d, source advertises %u mA",
-                orientation == usbc::plug_orientation::cc1 ? 1 : 2,
-                advertisedMilliamps(advertisement));
+                info.orientation == usbc::plug_orientation::cc1 ? 1 : 2,
+                advertisedMilliamps(info.advertisement));
     }
-    void onDetached() { LOG_INF("detached"); }
+    void notifyExit(usbc::tc::attach_info) { LOG_INF("detached"); }
 };
 
 using Sink =

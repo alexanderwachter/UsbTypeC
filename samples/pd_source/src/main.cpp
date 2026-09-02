@@ -80,16 +80,23 @@ struct Contract : usbc::SourcePower<Contract> {
 using Engine = usbc::SourcePolicyEngine<usbc::zephyr::Tcpc, usbc::zephyr::Timer,
                                         usbc::RequestPolicy, Supply, Contract>;
 
-// Reacts to the connection layer and feeds the engine
-struct PortClient {
+// Observer injected into the source's machine: watches the attached
+// state and feeds the engine, taking the PD alert bits the connection
+// layer does not consume
+struct PortClient : fsm::observing<PortClient> {
     Engine& engine;
 
-    void onAttached(usbc::plug_orientation orientation)
+    static constexpr auto observe_nonstatic(auto const& state)
+        -> decltype((state.attachedInfo()))
+    {
+        return state.attachedInfo();
+    }
+    void notifyEntry(usbc::plug_orientation orientation)
     {
         LOG_INF("sink attached: CC%d", orientation == usbc::plug_orientation::cc1 ? 1 : 2);
         engine.attached();
     }
-    void onDetached()
+    void notifyExit(usbc::plug_orientation)
     {
         engine.detached();
         LOG_INF("sink detached");
@@ -110,9 +117,9 @@ usbc::RequestPolicy policy;
 Supply supply;
 Contract contract;
 Engine engine{tcpc, prl_timer, pe_timer, source_caps, policy, supply, contract};
-PortClient port_client{engine};
+PortClient port_client{.engine = engine};
 // The Rp matches the 5 V capability the port advertises through PD
-Source source{tcpc, vbus, tc_timer, port_client, usbc::rp_value::p_1a5};
+Source source{tcpc, vbus, tc_timer, usbc::rp_value::p_1a5, port_client};
 
 } // namespace
 

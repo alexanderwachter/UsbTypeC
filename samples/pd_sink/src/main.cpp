@@ -50,17 +50,23 @@ struct Power : usbc::SinkPower<Power> {
 using Engine = usbc::SinkPolicyEngine<usbc::zephyr::Tcpc, usbc::zephyr::Timer, usbc::PowerPolicy,
                                       Power>;
 
-// Reacts to the connection layer and feeds the engine
-struct PortClient {
+// Observer injected into the sink's machine: watches the attached
+// state and feeds the engine, taking the PD alert bits the connection
+// layer does not consume
+struct PortClient : fsm::observing<PortClient> {
     Engine& engine;
 
-    void onAttached(usbc::plug_orientation orientation, usbc::rp_value advertisement)
+    static constexpr auto observe_nonstatic(auto const& state)
+        -> decltype((state.attachedInfo()))
     {
-        LOG_INF("attached: CC%d", orientation == usbc::plug_orientation::cc1 ? 1 : 2);
-        static_cast<void>(advertisement);
+        return state.attachedInfo();
+    }
+    void notifyEntry(usbc::tc::attach_info info)
+    {
+        LOG_INF("attached: CC%d", info.orientation == usbc::plug_orientation::cc1 ? 1 : 2);
         engine.vbusPresent(); // a sink's attach implies VBUS
     }
-    void onDetached()
+    void notifyExit(usbc::tc::attach_info)
     {
         engine.vbusRemoved();
         LOG_INF("detached");
@@ -80,7 +86,7 @@ usbc::zephyr::Timer pe_timer;
 usbc::PowerPolicy policy{5000, 27000}; // at least 5 W, aim for 27 W
 Power power;
 Engine engine{tcpc, prl_timer, pe_timer, sink_capabilities, policy, power};
-PortClient port_client{engine};
+PortClient port_client{.engine = engine};
 Sink sink{tcpc, vbus, tc_timer, port_client};
 
 } // namespace

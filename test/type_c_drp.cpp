@@ -43,28 +43,35 @@ struct manual_timer {
 };
 static_assert(fsm::concepts::timer<manual_timer>);
 
-// --- user notification test double ------------------------------------------
-struct mock_drp_client {
+// --- user observer test double ----------------------------------------------
+// Watches both attached states' attachedInfo(); the info type encodes
+// the attached role
+struct mock_drp_client : fsm::observing<mock_drp_client> {
     int attached_snk                   = 0;
     int attached_src                   = 0;
     int detached                       = 0;
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
     usbc::rp_value advertisement       = usbc::rp_value::usb_default;
 
-    void onAttachedSnk(usbc::plug_orientation o, usbc::rp_value rp)
+    static constexpr auto observe_nonstatic(auto const& state)
+        -> decltype((state.attachedInfo()))
+    {
+        return state.attachedInfo();
+    }
+    void notifyEntry(usbc::tc::attach_info info)
     {
         ++attached_snk;
-        orientation   = o;
-        advertisement = rp;
+        orientation   = info.orientation;
+        advertisement = info.advertisement;
     }
-    void onAttachedSrc(usbc::plug_orientation o)
+    void notifyExit(usbc::tc::attach_info) { ++detached; }
+    void notifyEntry(usbc::plug_orientation o)
     {
         ++attached_src;
         orientation = o;
     }
-    void onDetached() { ++detached; }
+    void notifyExit(usbc::plug_orientation) { ++detached; }
 };
-static_assert(usbc::concepts::tc_drp_client<mock_drp_client>);
 
 // --- compile-time checks ----------------------------------------------------
 namespace compile_time {
@@ -119,12 +126,13 @@ struct fixture {
 int typeCDrpTests()
 {
     using timing = usbc::default_drp_timing;
-    using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, mock_drp_client>;
+    using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
+                                  usbc::drp_preference::none, mock_drp_client>;
     constexpr auto snk_slice = timing::t_drp - usbc::tc::drp::t_src_slice<timing>;
     constexpr auto src_slice = usbc::tc::drp::t_src_slice<timing>;
 
     fixture f;
-    drp tc{f.tcpc, f.vbus, f.timer, f.client, usbc::rp_value::p_1a5};
+    drp tc{f.tcpc, f.vbus, f.timer, usbc::rp_value::p_1a5, f.client};
 
     // construction rests in Disabled: nothing registered, nothing driven
     check(f.tcpc.callback == nullptr && !f.vbus.monitored);
@@ -199,8 +207,8 @@ int typeCDrpTests()
 int typeCDrpTrySrcTests()
 {
     using timing = usbc::default_drp_timing;
-    using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, mock_drp_client, timing,
-                                  usbc::drp_preference::source>;
+    using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
+                                  usbc::drp_preference::source, mock_drp_client>;
 
     // a source-preferring port answers a sink attach with Try.SRC and
     // resolves to Attached.SRC when the partner presents Rd
@@ -276,8 +284,8 @@ int typeCDrpTrySrcTests()
 int typeCDrpTrySnkTests()
 {
     using timing = usbc::default_drp_timing;
-    using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, mock_drp_client, timing,
-                                  usbc::drp_preference::sink>;
+    using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
+                                  usbc::drp_preference::sink, mock_drp_client>;
 
     // a sink-preferring port answers a sink's attach with Try.SNK and
     // resolves to Attached.SNK when the partner turns source
