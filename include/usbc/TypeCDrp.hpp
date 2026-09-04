@@ -509,6 +509,17 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
     {
     }
 
+    // A state the dispatch would silently skip is a table bug: the
+    // previous state's terminations would stay applied. notified_of
+    // also proves each annotation is one of the two role configs the
+    // entry hooks accept
+    template<fsm::concepts::transition_table TABLE>
+    static constexpr void validate()
+    {
+        static_assert(fsm::all_states_notified_v<drp_hw_driver, TABLE>,
+                      "drp_hw_driver: every state must annotate a role hw config");
+    }
+
     template<typename STATE>
     static constexpr auto observe_static() -> decltype(STATE::hw)
     {

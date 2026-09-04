@@ -50,6 +50,25 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
         vbus.monitor(level);
     }
 
+    // Only a state presenting no terminations (Disabled, ErrorRecovery)
+    // may go unwatched: nothing can attach while the pull is open
+    template<typename STATE, bool HAS_HW = requires { STATE::hw; }>
+    struct idle_without_watch : std::bool_constant<STATE::hw.pull == cc_pull::open> {};
+
+    template<typename STATE>
+    struct idle_without_watch<STATE, false> : std::false_type {};
+
+    template<typename STATE>
+    struct watched_or_idle : std::bool_constant<fsm::is_notified_of_v<vbus_watcher, STATE> ||
+                                                idle_without_watch<STATE>::value> {};
+
+    template<fsm::concepts::transition_table TABLE>
+    static constexpr void validate()
+    {
+        static_assert(mtl::all_of_v<typename TABLE::states, watched_or_idle>,
+                      "vbus_watcher: a state presenting terminations must watch a VBUS level");
+    }
+
     VBUS& vbus;
     vbus_level monitored = vbus_level::safe5v;
 };

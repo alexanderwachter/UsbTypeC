@@ -247,6 +247,15 @@ template<concepts::tcpc TCPC>
 struct hw_driver : fsm::observing<hw_driver<TCPC>> {
     explicit hw_driver(TCPC& tcpc_ref) : tcpc(tcpc_ref) {}
 
+    // A state the dispatch would silently skip is a table bug: the
+    // previous state's terminations would stay applied
+    template<fsm::concepts::transition_table TABLE>
+    static constexpr void validate()
+    {
+        static_assert(fsm::all_states_notified_v<hw_driver, TABLE>,
+                      "hw_driver: every state must annotate an hw config");
+    }
+
     template<typename STATE>
     static constexpr auto observe_static() -> decltype(STATE::hw)
     {
