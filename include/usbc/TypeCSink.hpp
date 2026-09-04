@@ -238,7 +238,7 @@ using sink_table = mtl::rebind_t<
                         fsm::to<state::unattached_snk>>,
         sink_attach_flow<state::unattached_snk, state::attached_snk>>>,
     fsm::transition_table>;
-static_assert(fsm::timeoutsWithinBounds<sink_table, sink_timer_ranges>());
+static_assert(fsm::timeouts_within_bounds_v<sink_table, sink_timer_ranges>);
 static_assert(fsm::all_states_reachable_v<sink_table>);
 
 // Applies each state's hw annotation (suppressed while unchanged) and

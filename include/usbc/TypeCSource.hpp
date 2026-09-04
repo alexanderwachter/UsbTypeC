@@ -263,7 +263,7 @@ using source_table = mtl::rebind_t<
                         fsm::to<state::unattached_src>>,
         source_attach_flow<state::unattached_src, state::attached_src>>>,
     fsm::transition_table>;
-static_assert(fsm::timeoutsWithinBounds<source_table, source_timer_ranges>());
+static_assert(fsm::timeouts_within_bounds_v<source_table, source_timer_ranges>);
 static_assert(fsm::all_states_reachable_v<source_table>);
 
 // Applies each state's src_hw annotation (suppressed while unchanged)

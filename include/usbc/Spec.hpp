@@ -4,7 +4,7 @@
  * can be reviewed against the standard. Ranged timing parameters are
  * fsm::timeout_range values; each state machine pairs its table with a
  * timer-range map from its states to these ranges, checked table-wide
- * by fsm::timeoutsWithinBounds. Fixed values and counters are
+ * by fsm::timeouts_within_bounds. Fixed values and counters are
  * referenced directly.
  *
  * SPDX-License-Identifier: Apache-2.0

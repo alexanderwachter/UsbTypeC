@@ -459,7 +459,7 @@ struct table_for {
                                        sink_flow<TIMING, state::attached_snk>,
                                        source_flow<TIMING, state::attached_src>>>,
         fsm::transition_table>;
-    static_assert(fsm::timeoutsWithinBounds<type, core_timer_ranges<TIMING>>());
+    static_assert(fsm::timeouts_within_bounds_v<type, core_timer_ranges<TIMING>>);
     static_assert(fsm::all_states_reachable_v<type>);
 };
 
@@ -472,9 +472,9 @@ struct table_for<TIMING, drp_preference::source> {
                                        source_flow<TIMING, state::attached_src>,
                                        try_src_flow<TIMING>>>,
         fsm::transition_table>;
-    static_assert(fsm::timeoutsWithinBounds<
+    static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
-                                                       try_src_timer_ranges<TIMING>>>>());
+                                                       try_src_timer_ranges<TIMING>>>>);
     static_assert(fsm::all_states_reachable_v<type>);
 };
 
@@ -487,9 +487,9 @@ struct table_for<TIMING, drp_preference::sink> {
                                        source_flow<TIMING, try_snk<TIMING>>,
                                        try_snk_flow<TIMING>>>,
         fsm::transition_table>;
-    static_assert(fsm::timeoutsWithinBounds<
+    static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
-                                                       try_snk_timer_ranges<TIMING>>>>());
+                                                       try_snk_timer_ranges<TIMING>>>>);
     static_assert(fsm::all_states_reachable_v<type>);
 };
 

@@ -15,7 +15,7 @@
 
 // No timeout-value assertions in these tests: every state timeout is
 // formally verified against the spec ranges at compile time by the
-// fsm::timeoutsWithinBounds check next to each transition table.
+// fsm::timeouts_within_bounds check next to each transition table.
 
 using namespace std::chrono_literals;
 
