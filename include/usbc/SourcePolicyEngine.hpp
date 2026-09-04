@@ -121,6 +121,8 @@ inline constexpr auto t_typec_send_source_cap = std::chrono::milliseconds{150}; 
 inline constexpr auto t_src_transition        = std::chrono::milliseconds{30};  // tSrcTransition
 inline constexpr auto t_src_recover           = std::chrono::milliseconds{800}; // tSrcRecover
 inline constexpr auto t_source_start          = std::chrono::milliseconds{30};  // tSwapSourceStart
+inline constexpr auto t_src_pr_swap_wait      = std::chrono::milliseconds{150}; // tPRSwapWait
+inline constexpr auto t_src_dr_swap_wait      = std::chrono::milliseconds{150}; // tDRSwapWait
 
 inline constexpr std::uint8_t n_caps_count = spec::n_caps_count;
 
@@ -409,7 +411,12 @@ struct pe_src_send_dr_swap {
         : context(ctx), message_(event.message)
     {
     }
-    explicit pe_src_send_dr_swap(src_context& ctx) : context(ctx) {}
+    // re-entry from the tDRSwapWait retry rebuilds the request
+    explicit pe_src_send_dr_swap(src_context& ctx)
+        : context(ctx), message_(makeControlMessage(control_message_type::dr_swap,
+                                                    power_role::source, ctx.data))
+    {
+    }
 
     pd_message const& txMessage() const { return message_; }
 
@@ -478,7 +485,12 @@ struct pe_src_send_pr_swap {
         : context(ctx), message_(event.message)
     {
     }
-    explicit pe_src_send_pr_swap(src_context& ctx) : context(ctx) {}
+    // re-entry from the tPRSwapWait retry rebuilds the request
+    explicit pe_src_send_pr_swap(src_context& ctx)
+        : context(ctx), message_(makeControlMessage(control_message_type::pr_swap,
+                                                    power_role::source, ctx.data))
+    {
+    }
 
     pd_message const& txMessage() const { return message_; }
 
@@ -507,6 +519,28 @@ struct pe_src_accept_pr_swap {
 
 private:
     pd_message message_{};
+};
+
+// The partner answered Wait: the swap request is retried after the
+// spec's pause (still Ready, spec-wise)
+struct pe_src_dr_swap_wait {
+    static constexpr auto timeout = t_src_dr_swap_wait; // tDRSwapWait
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_dr_swap_wait(src_context& ctx) : context(ctx) {}
+    src_context& context;
+};
+
+struct pe_src_pr_swap_wait {
+    static constexpr auto timeout = t_src_pr_swap_wait; // tPRSwapWait
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_pr_swap_wait(src_context& ctx) : context(ctx) {}
+    src_context& context;
 };
 
 // PE_PRS_SRC_SNK_Transition_to_off, the spec's tSrcTransition wait
@@ -730,7 +764,9 @@ using source_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_src_send_dr_swap, spec::t_sender_response>,
     fsm::timed_by<state::pe_src_send_pr_swap, spec::t_sender_response>,
     fsm::timed_by<state::pe_src_swap_transition_to_off, spec::t_src_transition>,
-    fsm::timed_by<state::pe_src_swap_source_start, spec::t_swap_source_start>>;
+    fsm::timed_by<state::pe_src_swap_source_start, spec::t_swap_source_start>,
+    fsm::timed_by<state::pe_src_dr_swap_wait, spec::t_dr_swap_wait>,
+    fsm::timed_by<state::pe_src_pr_swap_wait, spec::t_pr_swap_wait>>;
 
 using source_table = fsm::transition_table<
     fsm::initial<state::pe_src_startup>,
@@ -814,7 +850,9 @@ using source_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::reject>,
                     fsm::to<state::pe_src_ready>>,
     fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::wait>,
-                    fsm::to<state::pe_src_ready>>,
+                    fsm::to<state::pe_src_dr_swap_wait>>,
+    fsm::transition<fsm::from<state::pe_src_dr_swap_wait>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_send_dr_swap>>,
     fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_src_ready>>,
     fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::protocol_error>,
@@ -836,7 +874,9 @@ using source_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::reject>,
                     fsm::to<state::pe_src_ready>>,
     fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::wait>,
-                    fsm::to<state::pe_src_ready>>,
+                    fsm::to<state::pe_src_pr_swap_wait>>,
+    fsm::transition<fsm::from<state::pe_src_pr_swap_wait>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_send_pr_swap>>,
     fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_src_ready>>,
     fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::protocol_error>,

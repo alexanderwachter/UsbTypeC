@@ -171,13 +171,17 @@ namespace pe {
 
 inline constexpr auto t_sink_wait_cap = std::chrono::milliseconds{465}; // tSinkWaitCap
 inline constexpr auto t_ps_transition = std::chrono::milliseconds{500}; // tPSTransition
+inline constexpr auto t_sink_request  = std::chrono::milliseconds{150}; // tSinkRequest
+inline constexpr auto t_pr_swap_wait  = std::chrono::milliseconds{150}; // tPRSwapWait
+inline constexpr auto t_dr_swap_wait  = std::chrono::milliseconds{150}; // tDRSwapWait
 
 inline constexpr milliamp i_snk_stdby = spec::i_snk_stdby; // at any voltage
 
 struct pe_context {
-    contract_request pending{}; // proposed by the last Request
-    contract_request request{}; // accepted by the source
-    pd_message reply{};         // pending Not_Supported answer
+    contract_request pending{};  // proposed by the last Request
+    contract_request request{};  // accepted by the source
+    pd_message reply{};          // pending Not_Supported answer
+    pd_message request_message{}; // the last Request, for the Wait retry
     bool explicit_contract = false;
     data_role data = data_role::ufp; // flipped by an agreed DR_Swap
 };
@@ -267,9 +271,14 @@ struct pe_snk_select_capability {
     pe_snk_select_capability(event::capabilities_evaluated const& event, pe_context& ctx)
         : context(ctx), message_(event.message)
     {
-        context.pending = event.terms;
+        context.pending         = event.terms;
+        context.request_message = event.message; // kept for the Wait retry
     }
-    explicit pe_snk_select_capability(pe_context& ctx) : context(ctx) {}
+    // re-entry from the SinkRequestTimer: the same Request again
+    explicit pe_snk_select_capability(pe_context& ctx)
+        : context(ctx), message_(ctx.request_message)
+    {
+    }
 
     pd_message const& txMessage() const { return message_; }
 
@@ -329,6 +338,19 @@ struct pe_snk_give_sink_cap {
 
 private:
     pd_message message_{};
+};
+
+// The spec's Ready-with-SinkRequestTimer after a Wait answer to our
+// Request: the same Request goes out again after tSinkRequest; new
+// capabilities from the source preempt the retry
+struct pe_snk_request_wait {
+    static constexpr auto timeout = t_sink_request; // SinkRequestTimer
+    static constexpr power_level power          = power_level::contract_or_default;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_snk_request_wait(pe_context& ctx) : context(ctx) {}
+    pe_context& context;
 };
 
 // PE_DR_SNK_Give_Source_Cap: a DRP answers Get_Source_Cap with its
@@ -402,7 +424,12 @@ struct pe_snk_send_dr_swap {
         : context(ctx), message_(event.message)
     {
     }
-    explicit pe_snk_send_dr_swap(pe_context& ctx) : context(ctx) {}
+    // re-entry from the tDRSwapWait retry rebuilds the request
+    explicit pe_snk_send_dr_swap(pe_context& ctx)
+        : context(ctx), message_(makeControlMessage(control_message_type::dr_swap,
+                                                    power_role::sink, ctx.data))
+    {
+    }
 
     pd_message const& txMessage() const { return message_; }
 
@@ -468,7 +495,12 @@ struct pe_snk_send_pr_swap {
         : context(ctx), message_(event.message)
     {
     }
-    explicit pe_snk_send_pr_swap(pe_context& ctx) : context(ctx) {}
+    // re-entry from the tPRSwapWait retry rebuilds the request
+    explicit pe_snk_send_pr_swap(pe_context& ctx)
+        : context(ctx), message_(makeControlMessage(control_message_type::pr_swap,
+                                                    power_role::sink, ctx.data))
+    {
+    }
 
     pd_message const& txMessage() const { return message_; }
 
@@ -497,6 +529,28 @@ struct pe_snk_accept_pr_swap {
 
 private:
     pd_message message_{};
+};
+
+// The partner answered Wait: the swap request is retried after the
+// spec's pause (still Ready, spec-wise)
+struct pe_snk_dr_swap_wait {
+    static constexpr auto timeout = t_dr_swap_wait; // tDRSwapWait
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_snk_dr_swap_wait(pe_context& ctx) : context(ctx) {}
+    pe_context& context;
+};
+
+struct pe_snk_pr_swap_wait {
+    static constexpr auto timeout = t_pr_swap_wait; // tPRSwapWait
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_snk_pr_swap_wait(pe_context& ctx) : context(ctx) {}
+    pe_context& context;
 };
 
 // PE_PRS_SNK_SRC_Transition_to_off: draw drops to standby while the
@@ -666,7 +720,10 @@ using sink_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_snk_chunk_received, spec::t_chunking_not_supported>,
     fsm::timed_by<state::pe_snk_send_soft_reset, spec::t_sender_response>,
     fsm::timed_by<state::pe_snk_send_dr_swap, spec::t_sender_response>,
-    fsm::timed_by<state::pe_snk_send_pr_swap, spec::t_sender_response>>;
+    fsm::timed_by<state::pe_snk_send_pr_swap, spec::t_sender_response>,
+    fsm::timed_by<state::pe_snk_request_wait, spec::t_sink_request>,
+    fsm::timed_by<state::pe_snk_dr_swap_wait, spec::t_dr_swap_wait>,
+    fsm::timed_by<state::pe_snk_pr_swap_wait, spec::t_pr_swap_wait>>;
 
 using sink_table = fsm::transition_table<
     fsm::initial<state::pe_snk_startup>,
@@ -692,10 +749,14 @@ using sink_table = fsm::transition_table<
                     fsm::to<state::pe_snk_ready>, fsm::guard<has_explicit_contract>>,
     fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::reject>,
                     fsm::to<state::pe_snk_wait_for_capabilities>>,
+    // Wait: retry the same Request after tSinkRequest; fresh
+    // capabilities preempt the retry
     fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::wait>,
-                    fsm::to<state::pe_snk_ready>, fsm::guard<has_explicit_contract>>,
-    fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::wait>,
-                    fsm::to<state::pe_snk_wait_for_capabilities>>,
+                    fsm::to<state::pe_snk_request_wait>>,
+    fsm::transition<fsm::from<state::pe_snk_request_wait>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_select_capability>>,
+    fsm::transition<fsm::from<state::pe_snk_request_wait>, fsm::on<event::source_capabilities>,
+                    fsm::to<state::pe_snk_evaluate_capability>>,
     fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_snk_hard_reset>>,
     fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::protocol_error>,
@@ -735,7 +796,9 @@ using sink_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<event::reject>,
                     fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<event::wait>,
-                    fsm::to<state::pe_snk_ready>>,
+                    fsm::to<state::pe_snk_dr_swap_wait>>,
+    fsm::transition<fsm::from<state::pe_snk_dr_swap_wait>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_send_dr_swap>>,
     fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<event::protocol_error>,
@@ -757,7 +820,9 @@ using sink_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<event::reject>,
                     fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<event::wait>,
-                    fsm::to<state::pe_snk_ready>>,
+                    fsm::to<state::pe_snk_pr_swap_wait>>,
+    fsm::transition<fsm::from<state::pe_snk_pr_swap_wait>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_send_pr_swap>>,
     fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<event::protocol_error>,

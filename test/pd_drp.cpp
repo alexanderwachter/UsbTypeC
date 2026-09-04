@@ -222,9 +222,17 @@ int pdDrpTests()
           static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities));
     txSuccess();
 
-    // DR_Swap, our request: DR_Swap out, the Accept flips both sides
+    // DR_Swap, our request: DR_Swap out; the partner's Wait retries it
+    // after tDRSwapWait, the Accept then flips both sides
     check(port.swapDataRole());
     check(transmittedControl(tcpc, usbc::control_message_type::dr_swap));
+    txSuccess();
+    deliver(partnerControl(usbc::control_message_type::wait, usbc::power_role::source,
+                           usbc::data_role::dfp));
+    check(port.dataRole() == usbc::data_role::ufp); // nothing flipped
+    check(timers.sink_pe.armed);                    // tDRSwapWait runs
+    timers.sink_pe.expire();
+    check(transmittedControl(tcpc, usbc::control_message_type::dr_swap)); // retried
     txSuccess();
     deliver(partnerControl(usbc::control_message_type::accept, usbc::power_role::source,
                            usbc::data_role::dfp));

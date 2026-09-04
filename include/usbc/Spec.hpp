@@ -88,6 +88,12 @@ inline constexpr timeout_range t_ps_source_on{milliseconds{390}, milliseconds{48
 // the maximum here is a practical bound for the compile-time check
 inline constexpr timeout_range t_swap_source_start{milliseconds{20}, milliseconds{100}};
 
+// Retry pauses after a Wait answer; the spec gives only the 100 ms
+// minimums, the maximums are practical bounds for the compile-time check
+inline constexpr timeout_range t_sink_request{milliseconds{100}, milliseconds{1000}};
+inline constexpr timeout_range t_pr_swap_wait{milliseconds{100}, milliseconds{1000}};
+inline constexpr timeout_range t_dr_swap_wait{milliseconds{100}, milliseconds{1000}};
+
 // Counters
 inline constexpr std::uint8_t n_retry_count      = 2;  // nRetryCount, PD rev 3.x
 inline constexpr std::uint8_t n_retry_count_rev2 = 3;  // nRetryCount, PD rev 2.0
