@@ -214,6 +214,14 @@ int pdDrpTests()
                            usbc::data_role::dfp));
     check(sink_power.limits > 0); // the contract reached the load
 
+    // a DRP answers Get_Source_Cap while sinking with its source-role
+    // capabilities (PE_DR_SNK_Give_Source_Cap)
+    deliver(partnerControl(usbc::control_message_type::get_source_cap,
+                           usbc::power_role::source, usbc::data_role::dfp));
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities));
+    txSuccess();
+
     // DR_Swap, our request: DR_Swap out, the Accept flips both sides
     check(port.swapDataRole());
     check(transmittedControl(tcpc, usbc::control_message_type::dr_swap));
@@ -274,6 +282,14 @@ int pdDrpTests()
     timers.source_pe.expire(); // tSrcTransition
     supply.settle();
     check(transmittedControl(tcpc, usbc::control_message_type::ps_rdy));
+    txSuccess();
+
+    // ... and Get_Sink_Cap while sourcing with its sink-role
+    // capabilities (PE_DR_SRC_Give_Sink_Cap)
+    deliver(partnerControl(usbc::control_message_type::get_sink_cap, usbc::power_role::sink,
+                           usbc::data_role::ufp));
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::data_message_type::sink_capabilities));
     txSuccess();
 
     // PR_Swap, the partner's request (source -> sink): Accept,

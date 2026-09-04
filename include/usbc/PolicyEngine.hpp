@@ -24,6 +24,13 @@
 
 namespace usbc {
 
+// One contract the sink side can accept, and the Sink_Capabilities
+// content (also answered by a DRP asked while sourcing)
+struct sink_capability {
+    millivolt voltage;
+    milliamp current;
+};
+
 namespace pe {
 
 inline constexpr auto t_sender_response        = std::chrono::milliseconds{27}; // tSenderResponse

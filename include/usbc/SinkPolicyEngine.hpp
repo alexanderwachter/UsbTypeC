@@ -79,12 +79,6 @@
 
 namespace usbc {
 
-// One contract the sink can accept, and the Sink_Capabilities content
-struct sink_capability {
-    millivolt voltage;
-    milliamp current;
-};
-
 // A policy's answer: which source PDO to request and at what current
 struct contract_request {
     std::uint8_t position = 0; // 1-based object position in the source capabilities
@@ -206,6 +200,9 @@ struct capabilities_evaluated {
 struct send_sink_caps {
     pd_message message;
 };
+struct send_source_caps { // a DRP asked for its source-role caps
+    pd_message message;
+};
 struct default_level_reached {};
 
 } // namespace event
@@ -325,6 +322,27 @@ struct pe_snk_give_sink_cap {
     {
     }
     explicit pe_snk_give_sink_cap(pe_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return message_; }
+
+    pe_context& context;
+
+private:
+    pd_message message_{};
+};
+
+// PE_DR_SNK_Give_Source_Cap: a DRP answers Get_Source_Cap with its
+// source-role capabilities, then returns to Ready
+struct pe_dr_snk_give_source_cap {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    pe_dr_snk_give_source_cap(event::send_source_caps const& event, pe_context& ctx)
+        : context(ctx), message_(event.message)
+    {
+    }
+    explicit pe_dr_snk_give_source_cap(pe_context& ctx) : context(ctx) {}
 
     pd_message const& txMessage() const { return message_; }
 
@@ -692,6 +710,12 @@ using sink_table = fsm::transition_table<
                     fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_give_sink_cap>, fsm::on<event::protocol_error>,
                     fsm::to<state::pe_snk_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_source_caps>,
+                    fsm::to<state::pe_dr_snk_give_source_cap>>,
+    fsm::transition<fsm::from<state::pe_dr_snk_give_source_cap>, fsm::on<event::message_sent>,
+                    fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_dr_snk_give_source_cap>,
+                    fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::unsupported>,
                     fsm::to<state::pe_snk_send_not_supported>>,
     fsm::transition<fsm::from<state::pe_snk_send_not_supported>, fsm::on<event::message_sent>,
@@ -973,6 +997,13 @@ public:
     // The revision the protocol layer negotiated with this partner
     pd_revision negotiatedRevision() const { return prl_.revision(); }
 
+    // A DRP announces its source-role capabilities: Get_Source_Cap is
+    // answered with them instead of Not_Supported
+    void provideSourceCapabilities(std::span<std::uint32_t const> capabilities)
+    {
+        source_capabilities_ = capabilities;
+    }
+
     // The swap completed into Attached.SNK: resume the sink flow (the
     // new source's PS_RDY implies VBUS is live)
     void finishSwap()
@@ -1099,6 +1130,8 @@ private:
                 makeControl(control_message_type::accept)});
         } else if (isControl(header, control_message_type::get_sink_cap)) {
             sendSinkCapabilities();
+        } else if (isControl(header, control_message_type::get_source_cap)) {
+            sendSourceCapabilities();
         } else if (isControl(header, control_message_type::soft_reset)) {
             sm_.process(pe::event::soft_reset_received{
                 makeControl(control_message_type::accept)});
@@ -1191,8 +1224,27 @@ private:
         sm_.process(pe::event::send_sink_caps{caps});
     }
 
+    // PE_DR_SNK_Give_Source_Cap; a sink-only port answers Not_Supported
+    void sendSourceCapabilities()
+    {
+        if (source_capabilities_.empty()) {
+            sm_.process(pe::event::unsupported{makeControl(control_message_type::not_supported)});
+            return;
+        }
+        auto const n = std::min<std::size_t>(source_capabilities_.size(), 7);
+        pd_message caps{
+            .sop    = sop_type::sop,
+            .header = makeHeader(static_cast<std::uint8_t>(data_message_type::source_capabilities),
+                                 static_cast<std::uint8_t>(n))};
+        for (std::size_t index = 0; index < n; ++index) {
+            putObject(caps, source_capabilities_[index]);
+        }
+        sm_.process(pe::event::send_source_caps{caps});
+    }
+
     TCPC& tcpc_;
     std::span<sink_capability const> capabilities_;
+    std::span<std::uint32_t const> source_capabilities_{}; // empty: not a DRP
     POLICY& policy_;
     PrlPort port_{*this};
     ProtocolLayer<TCPC, TIMER, PrlPort> prl_; // also an observer of sm_

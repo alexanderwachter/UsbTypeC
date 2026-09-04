@@ -154,6 +154,9 @@ struct request_bad {
     pd_message reject;
 };
 struct get_source_caps {};
+struct give_sink_caps { // a DRP asked for its sink-role caps
+    pd_message message;
+};
 struct supply_settled {};
 
 } // namespace event
@@ -331,6 +334,27 @@ struct pe_src_capability_response {
     pd_message const& txMessage() const { return context.reply; }
 
     src_context& context;
+};
+
+// PE_DR_SRC_Give_Sink_Cap: a DRP answers Get_Sink_Cap with its
+// sink-role capabilities, then returns to Ready
+struct pe_dr_src_give_sink_cap {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    pe_dr_src_give_sink_cap(event::give_sink_caps const& event, src_context& ctx)
+        : context(ctx), message_(event.message)
+    {
+    }
+    explicit pe_dr_src_give_sink_cap(src_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return message_; }
+
+    src_context& context;
+
+private:
+    pd_message message_{};
 };
 
 // PE_SRC_Send_Not_Supported: answers a message the source does not
@@ -765,6 +789,12 @@ using source_table = fsm::transition_table<
                     fsm::to<state::pe_src_negotiate_capability>>,
     fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::get_source_caps>,
                     fsm::to<state::pe_src_send_capabilities>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::give_sink_caps>,
+                    fsm::to<state::pe_dr_src_give_sink_cap>>,
+    fsm::transition<fsm::from<state::pe_dr_src_give_sink_cap>, fsm::on<pe::event::message_sent>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_dr_src_give_sink_cap>,
+                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
     fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::unsupported>,
                     fsm::to<state::pe_src_send_not_supported>>,
     fsm::transition<fsm::from<state::pe_src_send_not_supported>,
@@ -1053,6 +1083,13 @@ public:
     // The revision the protocol layer negotiated with this partner
     pd_revision negotiatedRevision() const { return prl_.revision(); }
 
+    // A DRP announces its sink-role capabilities: Get_Sink_Cap is
+    // answered with them instead of Not_Supported
+    void provideSinkCapabilities(std::span<sink_capability const> capabilities)
+    {
+        sink_capabilities_ = capabilities;
+    }
+
     // The facade's deferred port actions run through this hook once an
     // engine-internal event source (the supply settle callback) is done
     // processing - the machines are idle then
@@ -1171,6 +1208,25 @@ private:
                (static_cast<std::uint32_t>(message.payload[offset + 3]) << 24u);
     }
 
+    // PE_DR_SRC_Give_Sink_Cap; a source-only port answers Not_Supported
+    void sendSinkCapabilities()
+    {
+        if (sink_capabilities_.empty()) {
+            sm_.process(pe::event::unsupported{makeControl(control_message_type::not_supported)});
+            return;
+        }
+        auto const n = std::min<std::size_t>(sink_capabilities_.size(), 7);
+        pd_message caps{
+            .sop    = sop_type::sop,
+            .header = makeHeader(static_cast<std::uint8_t>(data_message_type::sink_capabilities),
+                                 static_cast<std::uint8_t>(n))};
+        for (std::size_t index = 0; index < n; ++index) {
+            putObject(caps, pdo::makeFixedSink(sink_capabilities_[index].voltage,
+                                               sink_capabilities_[index].current));
+        }
+        sm_.process(pe::event::give_sink_caps{caps});
+    }
+
     void transmitSourceCaps()
     {
         auto const n = std::min<std::size_t>(capabilities_.size(), 7);
@@ -1219,6 +1275,8 @@ private:
                 makeControl(control_message_type::accept)});
         } else if (isControl(header, control_message_type::get_source_cap)) {
             sm_.process(pe::event::get_source_caps{});
+        } else if (isControl(header, control_message_type::get_sink_cap)) {
+            sendSinkCapabilities();
         } else if (isControl(header, control_message_type::soft_reset)) {
             sm_.process(pe::event::soft_reset_received{
                 makeControl(control_message_type::accept)});
@@ -1280,6 +1338,7 @@ private:
 
     TCPC& tcpc_;
     std::span<std::uint32_t const> capabilities_;
+    std::span<sink_capability const> sink_capabilities_{}; // empty: not a DRP
     POLICY& policy_;
     SUPPLY& supply_;
     void (*idle_hook_)(void*) = nullptr;

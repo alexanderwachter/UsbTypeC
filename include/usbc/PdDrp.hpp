@@ -78,6 +78,9 @@ public:
     {
         source_engine_.setIdleHook([](void* self) { static_cast<PdDrp*>(self)->pump(); },
                                    this);
+        // a DRP answers Get_Source_Cap/Get_Sink_Cap in either role
+        sink_engine_.provideSourceCapabilities(source_capabilities);
+        source_engine_.provideSinkCapabilities(sink_capabilities);
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
     // advertisement
