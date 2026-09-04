@@ -572,6 +572,7 @@ using source_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_src_transition_to_default>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_src_startup>>>;
 static_assert(fsm::timeoutsWithinBounds<source_table, source_timer_ranges>());
+static_assert(fsm::all_states_reachable_v<source_table>);
 
 // The member observers behind SourcePower (POWER is
 // SourcePower<DERIVED>); injected together as one fsm::observer_group

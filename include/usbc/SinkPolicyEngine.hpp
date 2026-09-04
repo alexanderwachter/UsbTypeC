@@ -527,6 +527,7 @@ using sink_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_transition_to_default>,
                     fsm::on<event::default_level_reached>, fsm::to<state::pe_snk_startup>>>;
 static_assert(fsm::timeoutsWithinBounds<sink_table, sink_timer_ranges>());
+static_assert(fsm::all_states_reachable_v<sink_table>);
 
 // The member observers behind SinkPower (POWER is SinkPower<DERIVED>);
 // injected together as one fsm::observer_group
