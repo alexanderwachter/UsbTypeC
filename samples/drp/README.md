@@ -12,12 +12,8 @@ derive from `usbc::default_drp_timing` (spec ranges enforced at
 compile time) and pick `usbc::drp_preference::source`/`::sink` for
 Try.SRC/Try.SNK role resolution.
 
-PD-directed role swaps (`swapToSource()`/`swapToSink()`/
-`swapDataRole()`) are arbitrated by injected observers providing
-`allowSwap(power_role)`/`allowSwap(data_role)` - without one, swaps of
-that kind are refused. The sample injects an accepting arbiter, a data
-role observer (`onDataRole`), and attempts a data role swap every few
-seconds while attached, standing in for the PD layer.
+Role swaps belong to USB PD and are demonstrated by the `pd_drp`
+sample.
 
 ## Build
 
