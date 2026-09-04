@@ -14,13 +14,14 @@ int typeCDrpTests();
 int typeCDrpTrySrcTests();
 int typeCDrpTrySnkTests();
 int typeCDrpSwapTests();
+int pdDrpTests();
 int policyEngineTests();
 int policyEngineSourceTests();
 
 int main(int argc, const char* argv[]) {
     int const failures = tcpcTests() + protocolLayerTests() + typeCTests() + typeCSourceTests() +
                          typeCDrpTests() + typeCDrpTrySrcTests() + typeCDrpTrySnkTests() +
-                         typeCDrpSwapTests() +
+                         typeCDrpSwapTests() + pdDrpTests() +
                          policyEngineTests() + policyEngineSourceTests();
     if (failures != 0) {
         std::print("{} check(s) FAILED\n", failures);
