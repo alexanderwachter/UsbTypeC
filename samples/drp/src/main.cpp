@@ -55,25 +55,70 @@ struct AttachLogger : fsm::observing<AttachLogger> {
     void notifyExit(usbc::plug_orientation) { LOG_INF("sink detached, VBUS off"); }
 };
 
+// Swap-policy observer: the runtime say over PD-directed role swaps,
+// consulted with the role the port would take. Without an observer
+// providing allowSwap, swaps of that kind are refused
+struct SwapArbiter {
+    bool allowSwap(usbc::power_role role)
+    {
+        LOG_INF("power role swap to %s allowed",
+                role == usbc::power_role::source ? "source" : "sink");
+        return true;
+    }
+    bool allowSwap(usbc::data_role role)
+    {
+        LOG_INF("data role swap to %s allowed", role == usbc::data_role::dfp ? "DFP" : "UFP");
+        return true;
+    }
+};
+
+// Hears every data role change (a DR_Swap flips no terminations, so
+// the port forwards the new role to observers providing onDataRole) -
+// the place to retarget the USB stack between host and device
+struct DataRoleLogger {
+    void onDataRole(usbc::data_role role)
+    {
+        LOG_INF("data role now %s", role == usbc::data_role::dfp ? "DFP" : "UFP");
+    }
+};
+
 // The StateLogger traces every transition (module usbc_fsm, debug
 // level) - a toggling DRP logs several per tDRP
 using Drp = usbc::TypeCDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
                            usbc::default_drp_timing, usbc::drp_preference::none, AttachLogger,
-                           usbc::zephyr::StateLogger>;
+                           SwapArbiter, DataRoleLogger, usbc::zephyr::StateLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
 usbc::zephyr::Timer timer;
 AttachLogger logger;
+SwapArbiter arbiter;
+DataRoleLogger data_role_logger;
 usbc::zephyr::StateLogger state_logger;
 // Default Rp advertisement while presenting the source role
-Drp drp{tcpc, vbus, timer, usbc::rp_value::usb_default, logger, state_logger};
+Drp drp{tcpc, vbus, timer, usbc::rp_value::usb_default, logger, arbiter, data_role_logger,
+        state_logger};
+
+// Demo stand-in for the PD layer: attempt a data role swap every few
+// seconds, on the stack's work queue - the serialization swapDataRole()
+// requires. Refused while not attached
+void swapDemo(k_work* work)
+{
+    if (!drp.swapDataRole()) {
+        LOG_INF("data role swap refused");
+    }
+    k_work_schedule_for_queue(&usbc::zephyr::workQueue(), k_work_delayable_from_work(work),
+                              K_SECONDS(5));
+}
+
+K_WORK_DELAYABLE_DEFINE(swap_demo_work, swapDemo);
 
 } // namespace
 
 int main()
 {
     drp.start(); // leave Disabled: toggle Rd/Rp, resolve with the partner
+    k_work_schedule_for_queue(&usbc::zephyr::workQueue(), &swap_demo_work, K_SECONDS(5));
 
     LOG_INF("USB-C dual-role port running");
     return 0;

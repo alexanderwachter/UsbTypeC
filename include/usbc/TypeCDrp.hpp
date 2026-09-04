@@ -84,6 +84,15 @@ struct default_drp_timing {
 
 namespace concepts {
 
+// An injected observer with the runtime say over PD-directed role
+// swaps of the given kind (power_role or data_role), consulted with
+// the role the port would swap to. Every such observer may veto; with
+// none injected, swaps of that kind are refused
+template<typename T, typename ROLE>
+concept drp_swap_policy = requires(T policy, ROLE role) {
+    { policy.allowSwap(role) } -> std::convertible_to<bool>;
+};
+
 template<typename T>
 concept drp_timing = requires {
     { T::t_drp } -> std::convertible_to<std::chrono::milliseconds>;
@@ -144,7 +153,7 @@ struct unattached_src : state::source_state {
     static constexpr auto timeout     = t_src_slice<TIMING>;
 
     // entering on the discharge-complete event records what it means
-    unattached_src(event::vbus_reached_safe0v const&, src_context& ctx) : source_state(ctx)
+    unattached_src(event::vbus_reached_safe0v const&, port_context& ctx) : source_state(ctx)
     {
         context.vbus_safe0v = true;
     }
@@ -171,7 +180,7 @@ struct try_src_debounce : state::source_state {
     static constexpr vbus_level watch = vbus_level::safe0v;
     static constexpr auto timeout     = TIMING::t_try_cc_debounce;
 
-    try_src_debounce(event::cc_changed const& event, src_context& ctx) : source_state(ctx)
+    try_src_debounce(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
     {
         context.cc = event.cc;
     }
@@ -245,7 +254,7 @@ struct try_wait_src_debounce : state::source_state {
     static constexpr vbus_level watch = vbus_level::safe0v;
     static constexpr auto timeout     = TIMING::t_try_cc_debounce;
 
-    try_wait_src_debounce(event::cc_changed const& event, src_context& ctx) : source_state(ctx)
+    try_wait_src_debounce(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
     {
         context.cc = event.cc;
     }
@@ -443,6 +452,20 @@ using try_snk_flow = mtl::typelist<
     fsm::transition<fsm::from<try_wait_src_safe0v<TIMING>>, fsm::on<event::cc_changed>,
                     fsm::to<try_wait_src<TIMING>>>>;
 
+// PD-directed role swaps (spec: Attached.SNK <-> Attached.SRC "as
+// directed by USB PD"): a power swap flips the terminations while the
+// pair stays attached, a data role swap changes no terminations and
+// only flips the context's data role. VBUS sequencing and the decision
+// to swap are the PD layer's business, gated by the injected policy
+// observers
+using swap_flow = mtl::typelist<
+    fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::swap_to_source>,
+                    fsm::to<state::attached_src>>,
+    fsm::transition<fsm::from<state::attached_src>, fsm::on<event::swap_to_sink>,
+                    fsm::to<state::attached_snk>>,
+    fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::swap_data_role>>,
+    fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::swap_data_role>>>;
+
 // The port rests in the sink layer's Disabled state and goes live
 // toggling at Rd
 template<typename TIMING>
@@ -457,7 +480,7 @@ struct table_for {
     using type = mtl::rebind_t<
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, state::attached_snk>,
-                                       source_flow<TIMING, state::attached_src>>>,
+                                       source_flow<TIMING, state::attached_src>, swap_flow>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<type, core_timer_ranges<TIMING>>);
     static_assert(fsm::all_states_reachable_v<type>);
@@ -470,7 +493,7 @@ struct table_for<TIMING, drp_preference::source> {
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, try_src<TIMING>>,
                                        source_flow<TIMING, state::attached_src>,
-                                       try_src_flow<TIMING>>>,
+                                       try_src_flow<TIMING>, swap_flow>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
@@ -485,7 +508,7 @@ struct table_for<TIMING, drp_preference::sink> {
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, state::attached_snk>,
                                        source_flow<TIMING, try_snk<TIMING>>,
-                                       try_snk_flow<TIMING>>>,
+                                       try_snk_flow<TIMING>, swap_flow>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
@@ -564,8 +587,9 @@ public:
     // injected into the machine after the built-in ones (timer, hw
     // driver, vbus watcher); attach results are observed on the
     // attached states' attachedInfo() with the role encoded in the
-    // info type, and an observer providing onPdAlert(alert_status)
-    // receives the alert bits this layer does not consume
+    // info type, an observer providing onPdAlert(alert_status)
+    // receives the alert bits this layer does not consume, and one
+    // providing allowSwap(power_role) is a swap policy
     TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, rp_value advertisement,
              OBSERVERs&... observers)
         : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timed_(timer),
@@ -577,6 +601,62 @@ public:
     TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, OBSERVERs&... observers)
         : TypeCDrp(tcpc, vbus, timer, rp_value::usb_default, observers...)
     {
+    }
+
+    // Power role swap directed by the layer above (a USB PD PR_Swap):
+    // the pair stays attached and the terminations flip - VBUS
+    // sequencing is the caller's business. Every injected observer
+    // providing allowSwap(power_role) is consulted and may veto; with
+    // no such observer, swaps are refused. False when vetoed or not
+    // attached in the departing role. Call from the stack's serialized
+    // context
+    bool swapToSource()
+    {
+        if (!sm_.template is<tc::state::attached_snk>() || !swapAllowed(power_role::source)) {
+            return false;
+        }
+        return sm_.process(tc::event::swap_to_source{});
+    }
+
+    bool swapToSink()
+    {
+        if (!sm_.template is<tc::state::attached_src>() || !swapAllowed(power_role::sink)) {
+            return false;
+        }
+        return sm_.process(tc::event::swap_to_sink{});
+    }
+
+    // Data role swap directed by the layer above (a USB PD DR_Swap):
+    // no termination changes, only the context's data role flips. Same
+    // arbitration, asked with the data role the port would take. The
+    // flip is an internal transition without machine hooks, so the new
+    // role is forwarded to the observers providing onDataRole(data_role)
+    bool swapDataRole()
+    {
+        auto const current = dataRole();
+        if (!current ||
+            !swapAllowed(*current == data_role::ufp ? data_role::dfp : data_role::ufp)) {
+            return false;
+        }
+        if (!sm_.process(tc::event::swap_data_role{})) {
+            return false;
+        }
+        auto const swapped = *dataRole();
+        std::apply([&](auto&... observer) { (forwardDataRole(observer, swapped), ...); },
+                   observers_);
+        return true;
+    }
+
+    // The attached pair's data role; nullopt while not attached
+    std::optional<data_role> dataRole() const
+    {
+        if (auto const* attached = sm_.template getIf<tc::state::attached_snk>()) {
+            return attached->dataRole();
+        }
+        if (auto const* attached = sm_.template getIf<tc::state::attached_src>()) {
+            return attached->dataRole();
+        }
+        return std::nullopt;
     }
 
     // Leaves Disabled toggling at Rd: terminations and monitoring apply
@@ -663,6 +743,39 @@ private:
         if (cc && (tc::isRp(cc->cc1) || tc::isRp(cc->cc2) || tc::isRd(cc->cc1) ||
                    tc::isRd(cc->cc2))) {
             sm_.process(tc::event::cc_changed{*cc});
+        }
+    }
+
+    // Every policy observer for the role kind is consulted and each
+    // may veto; with no such observer among the injected ones there is
+    // nobody to say yes, and swaps of that kind are refused
+    template<typename ROLE>
+    bool swapAllowed(ROLE role)
+    {
+        constexpr bool any_policy =
+            (concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, ROLE> || ...);
+        return any_policy && std::apply(
+                                 [role](auto&... observer) {
+                                     return (allowsSwap(observer, role) && ...);
+                                 },
+                                 observers_);
+    }
+
+    template<typename ROLE>
+    static bool allowsSwap(auto& observer, ROLE role)
+    {
+        if constexpr (concepts::drp_swap_policy<std::remove_cvref_t<decltype(observer)>,
+                                                ROLE>) {
+            return observer.allowSwap(role);
+        } else {
+            return true;
+        }
+    }
+
+    static void forwardDataRole(auto& observer, data_role role)
+    {
+        if constexpr (requires { observer.onDataRole(role); }) {
+            observer.onDataRole(role);
         }
     }
 

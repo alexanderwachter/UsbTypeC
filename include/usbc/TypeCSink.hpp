@@ -95,11 +95,6 @@ struct attach_info {
     rp_value advertisement;
 };
 
-struct port_context {
-    cc_status cc{cc_state::snk_open, cc_state::snk_open};
-    bool vbus_present = false;
-};
-
 namespace state {
 
 // The spec's Disabled state: the port is not operating, terminations
@@ -116,6 +111,11 @@ struct sink_state {
     void handle(event::cc_changed const& event) { context.cc = event.cc; }
     void handle(event::vbus_present const&) { context.vbus_present = true; }
     void handle(event::vbus_removed const&) { context.vbus_present = false; }
+    // a DR_Swap flips the data role in place (DRP only)
+    void handle(event::swap_data_role const&)
+    {
+        context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
+    }
 
     port_context& context;
 };
@@ -152,10 +152,10 @@ struct attached_snk : sink_state {
     static constexpr vbus_level watch = vbus_level::sink_disconnect;
 
     explicit attached_snk(port_context& ctx)
-        : sink_state(ctx),
-          orientation_(orientationOf(ctx.cc)),
-          advertisement_(advertisementOf(ctx.cc))
+        : sink_state(ctx), advertisement_(advertisementOf(ctx.cc))
     {
+        context.orientation = orientationOf(context.cc);
+        context.data        = data_role::ufp; // the sink attaches as UFP
     }
     // entered on a CC event (the DRP's TryWait.SNK attach): the payload
     // must land in the context before the orientation is derived
@@ -163,12 +163,20 @@ struct attached_snk : sink_state {
         : attached_snk((ctx.cc = event.cc, ctx))
     {
     }
+    // entered on a PD-directed role swap (the DRP layer): the plug
+    // stays put - the orientation is already in the context - and the
+    // current draw is governed by the PD contract, not the Rp
+    // advertisement
+    attached_snk(event::swap_to_sink const&, port_context& ctx)
+        : sink_state(ctx), advertisement_(rp_value::usb_default)
+    {
+    }
 
-    plug_orientation orientation() const { return orientation_; }
-    attach_info attachedInfo() const { return {orientation_, advertisement_}; }
+    plug_orientation orientation() const { return context.orientation; }
+    data_role dataRole() const { return context.data; }
+    attach_info attachedInfo() const { return {context.orientation, advertisement_}; }
 
 private:
-    plug_orientation orientation_;
     rp_value advertisement_;
 };
 

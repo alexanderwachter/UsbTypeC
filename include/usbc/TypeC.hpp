@@ -39,7 +39,28 @@ struct vbus_removed {};
 struct vbus_reached_safe0v {};
 struct vbus_left_safe0v {};
 
+// Role swaps directed by the layer above (USB PD PR_Swap/DR_Swap),
+// DRP only: the pair stays attached and the plug orientation carries
+// over in the shared context. A data role swap changes no
+// terminations at all - it only flips the context's data role
+struct swap_to_source {};
+struct swap_to_sink {};
+struct swap_data_role {};
+
 } // namespace event
+
+// Machine-owned context shared by every connection-layer state, across
+// both roles: the latest CC status (interpreted through the presented
+// pull), the vbus conditions, and the resolved plug orientation and
+// data role - kept here so they survive a role swap (a power swap
+// leaves the data role alone, per the PD spec)
+struct port_context {
+    cc_status cc{cc_state::snk_open, cc_state::snk_open};
+    bool vbus_present = false;
+    bool vbus_safe0v  = false;
+    plug_orientation orientation = plug_orientation::cc1;
+    data_role data               = data_role::ufp;
+};
 
 // A watching state must consume the event family its armed level
 // makes the driver deliver - a missing transition would silently drop

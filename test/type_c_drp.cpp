@@ -9,6 +9,7 @@
 #include <usbc/TypeCDrp.hpp>
 
 #include <chrono>
+#include <optional>
 #include <print>
 #include <source_location>
 
@@ -124,6 +125,33 @@ struct fixture {
         tcpc.callback(tcpc.context);
     }
 };
+
+// A swap-policy observer: consulted with the role the port would swap
+// to, arbitrating both swap kinds; it also hears the data role flips
+struct mock_swap_policy {
+    bool allow    = true;
+    int consulted = 0;
+    usbc::power_role asked{};
+    usbc::data_role asked_data{};
+    std::optional<usbc::data_role> data_seen{};
+
+    bool allowSwap(usbc::power_role role)
+    {
+        ++consulted;
+        asked = role;
+        return allow;
+    }
+    bool allowSwap(usbc::data_role role)
+    {
+        ++consulted;
+        asked_data = role;
+        return allow;
+    }
+    void onDataRole(usbc::data_role role) { data_seen = role; }
+};
+static_assert(usbc::concepts::drp_swap_policy<mock_swap_policy, usbc::power_role>);
+static_assert(usbc::concepts::drp_swap_policy<mock_swap_policy, usbc::data_role>);
+static_assert(!usbc::concepts::drp_swap_policy<mock_drp_client, usbc::power_role>);
 
 } // namespace
 
@@ -353,6 +381,92 @@ int typeCDrpTrySnkTests()
         f.timer.expire(); // tDRPTryWait -> Unattached.SNK
         check(f.tcpc.pull == usbc::cc_pull::rd);
         check(f.client.attached_snk == 0 && f.client.attached_src == 0);
+    }
+
+    return failures;
+}
+
+int typeCDrpSwapTests()
+{
+    using timing = usbc::default_drp_timing;
+
+    // no swap-policy observer injected: swaps are refused
+    {
+        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
+                                   usbc::drp_preference::none, mock_drp_client>;
+        fixture f;
+        drp tc{f.tcpc, f.vbus, f.timer, f.client};
+        tc.start();
+        f.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        f.timer.expire();
+        check(f.tcpc.sinking);
+        check(!tc.swapToSource());
+        check(!tc.swapDataRole());
+        check(f.tcpc.sinking && !f.tcpc.sourcing);
+        check(tc.dataRole() == usbc::data_role::ufp); // a sink attaches as UFP
+    }
+
+    // a policy observer arbitrates: swap both ways, veto respected
+    {
+        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
+                                   usbc::drp_preference::none, mock_drp_client,
+                                   mock_swap_policy>;
+        fixture f;
+        mock_swap_policy policy;
+        drp tc{f.tcpc, f.vbus, f.timer, f.client, policy};
+        tc.start();
+
+        // not attached: refused without consulting the policy
+        check(!tc.swapToSource() && policy.consulted == 0);
+
+        // attach as sink on CC2
+        f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_power_3a0};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        f.timer.expire();
+        check(f.tcpc.sinking && f.client.attached_snk == 1);
+        check(f.client.orientation == usbc::plug_orientation::cc2);
+
+        // vetoed: nothing changes
+        policy.allow = false;
+        check(!tc.swapToSource());
+        check(policy.consulted == 1 && policy.asked == usbc::power_role::source);
+        check(f.tcpc.sinking && !f.tcpc.sourcing);
+
+        // data role swap: only the context's data role flips, forwarded
+        // to the observers - no attach/detach seen
+        policy.allow = true;
+        check(tc.dataRole() == usbc::data_role::ufp);
+        check(tc.swapDataRole());
+        check(policy.asked_data == usbc::data_role::dfp);
+        check(tc.dataRole() == usbc::data_role::dfp);
+        check(policy.data_seen == usbc::data_role::dfp);
+        check(f.tcpc.sinking && f.client.detached == 0);
+
+        // allowed: the pair stays attached, the orientation carries
+        // over - and so does the swapped data role (a PR_Swap leaves
+        // the data role alone)
+        check(tc.swapToSource());
+        check(f.tcpc.sourcing && !f.tcpc.sinking && f.tcpc.pull == usbc::cc_pull::rp);
+        check(f.client.attached_src == 1 && f.client.detached == 1);
+        check(f.client.orientation == usbc::plug_orientation::cc2);
+        check(tc.dataRole() == usbc::data_role::dfp);
+
+        // and back: sink again, still the same plug
+        check(tc.swapToSink());
+        check(policy.asked == usbc::power_role::sink);
+        check(f.tcpc.sinking && !f.tcpc.sourcing && f.tcpc.pull == usbc::cc_pull::rd);
+        check(f.client.attached_snk == 2 && f.client.detached == 2);
+        check(f.client.orientation == usbc::plug_orientation::cc2);
+        check(tc.dataRole() == usbc::data_role::dfp); // survives both swaps
+        // the current draw after a swap is the PD contract's business
+        check(f.client.advertisement == usbc::rp_value::usb_default);
+
+        // detach ends the attached pair as usual
+        f.vbus.setVoltage(0);
+        check(!f.tcpc.sinking && f.client.detached == 3);
     }
 
     return failures;

@@ -70,11 +70,6 @@ struct src_hw_config {
     constexpr bool operator==(src_hw_config const&) const = default;
 };
 
-struct src_context {
-    cc_status cc{cc_state::src_open, cc_state::src_open};
-    bool vbus_safe0v = false;
-};
-
 namespace state {
 
 // The spec's Disabled state: the port is not operating, terminations
@@ -87,13 +82,18 @@ struct disabled_src {
 // Common context plus the internal-transition handlers keeping it
 // current without disturbing a running debounce
 struct source_state {
-    explicit source_state(src_context& ctx) : context(ctx) {}
+    explicit source_state(port_context& ctx) : context(ctx) {}
 
     void handle(event::cc_changed const& event) { context.cc = event.cc; }
     void handle(event::vbus_reached_safe0v const&) { context.vbus_safe0v = true; }
     void handle(event::vbus_left_safe0v const&) { context.vbus_safe0v = false; }
+    // a DR_Swap flips the data role in place (DRP only)
+    void handle(event::swap_data_role const&)
+    {
+        context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
+    }
 
-    src_context& context;
+    port_context& context;
 };
 
 struct unattached_src : source_state {
@@ -102,7 +102,7 @@ struct unattached_src : source_state {
 
     // entering on the discharge-complete event records what it means -
     // a transition does not run the internal handlers
-    unattached_src(event::vbus_reached_safe0v const&, src_context& ctx) : source_state(ctx)
+    unattached_src(event::vbus_reached_safe0v const&, port_context& ctx) : source_state(ctx)
     {
         context.vbus_safe0v = true;
     }
@@ -114,7 +114,7 @@ struct attach_wait_src : source_state {
     static constexpr vbus_level watch = vbus_level::safe0v;
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
-    attach_wait_src(event::cc_changed const& event, src_context& ctx) : source_state(ctx)
+    attach_wait_src(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
     {
         context.cc = event.cc;
     }
@@ -134,20 +134,22 @@ struct attached_src : source_state {
     static constexpr vbus_level watch = vbus_level::safe0v;
 
     // entered from the debounced wait on the vSafe0V event
-    attached_src(event::vbus_reached_safe0v const&, src_context& ctx) : attached_src(ctx)
+    attached_src(event::vbus_reached_safe0v const&, port_context& ctx) : attached_src(ctx)
     {
         context.vbus_safe0v = true;
     }
-    explicit attached_src(src_context& ctx)
-        : source_state(ctx), orientation_(srcOrientationOf(ctx.cc))
+    // entered on a PD-directed role swap (the DRP layer): the plug
+    // stays put - the orientation is already in the context
+    attached_src(event::swap_to_source const&, port_context& ctx) : source_state(ctx) {}
+    explicit attached_src(port_context& ctx) : source_state(ctx)
     {
+        context.orientation = srcOrientationOf(context.cc);
+        context.data        = data_role::dfp; // the source attaches as DFP
     }
 
-    plug_orientation orientation() const { return orientation_; }
-    plug_orientation attachedInfo() const { return orientation_; }
-
-private:
-    plug_orientation orientation_;
+    plug_orientation orientation() const { return context.orientation; }
+    data_role dataRole() const { return context.data; }
+    plug_orientation attachedInfo() const { return context.orientation; }
 };
 
 // Discharges VBUS to vSafe0V before presenting Rp for a new attach
@@ -155,7 +157,7 @@ struct unattached_wait_src : source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = true};
     static constexpr vbus_level watch = vbus_level::safe0v;
 
-    unattached_wait_src(event::cc_changed const& event, src_context& ctx) : source_state(ctx)
+    unattached_wait_src(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
     {
         context.cc = event.cc;
     }
