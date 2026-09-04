@@ -100,13 +100,6 @@ struct port_context {
     bool vbus_present = false;
 };
 
-namespace event {
-
-struct vbus_present {};
-struct vbus_removed {};
-
-} // namespace event
-
 namespace state {
 
 // The spec's Disabled state: the port is not operating, terminations

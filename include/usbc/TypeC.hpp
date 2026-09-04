@@ -31,7 +31,42 @@ struct cc_changed {
 };
 struct started {}; // start(): leave Disabled, apply the terminations
 
+// The vbus driver's report, mapped through the level the watcher
+// armed: presence for the sink-role levels (vSafe5V, vSinkDisconnect),
+// the discharge condition for vSafe0V
+struct vbus_present {};
+struct vbus_removed {};
+struct vbus_reached_safe0v {};
+struct vbus_left_safe0v {};
+
 } // namespace event
+
+// A watching state must consume the event family its armed level
+// makes the driver deliver - a missing transition would silently drop
+// a report (a lost detach at worst)
+template<typename TABLE>
+struct watch_family_handled {
+    template<typename STATE, bool WATCHING = requires { STATE::watch; }>
+    struct pred
+        : std::bool_constant<
+              STATE::watch == vbus_level::safe0v
+                  ? (fsm::handles_event_v<TABLE, STATE, event::vbus_reached_safe0v> &&
+                     fsm::handles_event_v<TABLE, STATE, event::vbus_left_safe0v>)
+                  : (fsm::handles_event_v<TABLE, STATE, event::vbus_present> &&
+                     fsm::handles_event_v<TABLE, STATE, event::vbus_removed>)> {};
+
+    // an unwatched state gets no reports and implies nothing
+    template<typename STATE>
+    struct pred<STATE, false> : std::true_type {};
+};
+
+template<typename TABLE>
+struct watch_events_consistent
+    : std::bool_constant<mtl::all_of_v<typename TABLE::states,
+                                       watch_family_handled<TABLE>::template pred>> {};
+
+template<typename TABLE>
+inline constexpr bool watch_events_consistent_v = watch_events_consistent<TABLE>::value;
 
 // Arms the vbus driver with each state's watched level; the class maps
 // the callback's meaning through the level it armed last
@@ -67,6 +102,8 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
     {
         static_assert(mtl::all_of_v<typename TABLE::states, watched_or_idle>,
                       "vbus_watcher: a state presenting terminations must watch a VBUS level");
+        static_assert(watch_events_consistent_v<TABLE>,
+                      "vbus_watcher: a watching state must handle its level's event family");
     }
 
     VBUS& vbus;

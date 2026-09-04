@@ -75,13 +75,6 @@ struct src_context {
     bool vbus_safe0v = false;
 };
 
-namespace event {
-
-struct vbus_reached_safe0v {};
-struct vbus_left_safe0v {};
-
-} // namespace event
-
 namespace state {
 
 // The spec's Disabled state: the port is not operating, terminations

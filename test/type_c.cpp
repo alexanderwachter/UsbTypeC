@@ -117,6 +117,21 @@ static_assert(!usbc::tc::singleRd(cc_status{cc_state::src_open, cc_state::src_ra
 static_assert(usbc::tc::srcOrientationOf(cc_status{cc_state::src_open, cc_state::src_rd}) ==
               usbc::plug_orientation::cc2);
 
+// every watching state consumes its level's vbus event family
+static_assert(usbc::tc::watch_events_consistent_v<usbc::tc::sink_table>);
+static_assert(usbc::tc::watch_events_consistent_v<usbc::tc::source_table>);
+
+// a watching state whose table drops a family event is rejected
+namespace inconsistent {
+    struct deaf {
+        static constexpr usbc::vbus_level watch = usbc::vbus_level::safe5v;
+    };
+    struct poke {};
+    using table = fsm::transition_table<
+        fsm::transition<fsm::from<deaf>, fsm::on<poke>, fsm::to<deaf>>>;
+    static_assert(!usbc::tc::watch_events_consistent_v<table>);
+} // namespace inconsistent
+
 } // namespace compile_time
 
 // --- runtime checks ---------------------------------------------------------
