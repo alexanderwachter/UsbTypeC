@@ -163,11 +163,15 @@ struct attached_snk : sink_state {
         : attached_snk((ctx.cc = event.cc, ctx))
     {
     }
-    // entered on a PD-directed role swap (the DRP layer): the plug
-    // stays put - the orientation is already in the context - and the
-    // current draw is governed by the PD contract, not the Rp
-    // advertisement
-    attached_snk(event::swap_to_sink const&, port_context& ctx)
+    // entered from a PD-directed role swap's standby (the DRP layer),
+    // completed or aborted: the plug stays put - the orientation is
+    // already in the context - and the current draw is governed by the
+    // PD contract, not the Rp advertisement
+    attached_snk(event::swap_complete const&, port_context& ctx)
+        : sink_state(ctx), advertisement_(rp_value::usb_default)
+    {
+    }
+    attached_snk(event::swap_abort const&, port_context& ctx)
         : sink_state(ctx), advertisement_(rp_value::usb_default)
     {
     }

@@ -78,6 +78,11 @@ inline constexpr timeout_range t_src_recover{milliseconds{660}, milliseconds{100
 inline constexpr timeout_range t_sink_wait_cap{milliseconds{310}, milliseconds{620}};
 inline constexpr timeout_range t_ps_transition{milliseconds{450}, milliseconds{550}};
 
+// PR_Swap sequencing: how long the new source waits for the old
+// source's PS_RDY, and the old source for the new source's
+inline constexpr timeout_range t_ps_source_off{milliseconds{750}, milliseconds{920}};
+inline constexpr timeout_range t_ps_source_on{milliseconds{390}, milliseconds{480}};
+
 // Counters
 inline constexpr std::uint8_t n_retry_count = 2;  // nRetryCount, PD rev 3.x
 inline constexpr std::uint8_t n_caps_count  = 50; // nCapsCount

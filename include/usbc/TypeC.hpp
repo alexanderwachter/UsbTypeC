@@ -41,10 +41,17 @@ struct vbus_left_safe0v {};
 
 // Role swaps directed by the layer above (USB PD PR_Swap/DR_Swap),
 // DRP only: the pair stays attached and the plug orientation carries
-// over in the shared context. A data role swap changes no
-// terminations at all - it only flips the context's data role
+// over in the shared context. A power swap runs in two phases - the
+// swap_to_* events enter a standby with the power paths off and
+// detach detection suspended (VBUS is legitimately absent while the
+// roles change hands), swap_complete lands in the new attached state
+// on the partner's PS_RDY, and swap_abort restores the departing
+// role. A data role swap changes no terminations at all - it only
+// flips the context's data role
 struct swap_to_source {};
 struct swap_to_sink {};
+struct swap_complete {};
+struct swap_abort {};
 struct swap_data_role {};
 
 } // namespace event

@@ -138,9 +138,11 @@ struct attached_src : source_state {
     {
         context.vbus_safe0v = true;
     }
-    // entered on a PD-directed role swap (the DRP layer): the plug
-    // stays put - the orientation is already in the context
-    attached_src(event::swap_to_source const&, port_context& ctx) : source_state(ctx) {}
+    // entered from a PD-directed role swap's standby (the DRP layer),
+    // completed or aborted: the plug stays put - the orientation is
+    // already in the context
+    attached_src(event::swap_complete const&, port_context& ctx) : source_state(ctx) {}
+    attached_src(event::swap_abort const&, port_context& ctx) : source_state(ctx) {}
     explicit attached_src(port_context& ctx) : source_state(ctx)
     {
         context.orientation = srcOrientationOf(context.cc);

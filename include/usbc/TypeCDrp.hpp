@@ -270,6 +270,37 @@ struct try_wait_src_safe0v : state::source_state {
     using state::source_state::source_state;
 };
 
+// --- PR_Swap standby ---------------------------------------------------------
+
+// Operating values for the PS_RDY waits, within the spec ranges
+inline constexpr auto t_ps_source_off = std::chrono::milliseconds{835}; // tPSSourceOff
+inline constexpr auto t_ps_source_on  = std::chrono::milliseconds{435}; // tPSSourceOn
+
+// The window of a PR_Swap where the roles change hands: power paths
+// off, Rd presented, and CC/VBUS reports absorbed - VBUS is
+// legitimately absent and the partner's terminations flap, neither is
+// a detach. The timeout is the safety net for a PD layer that never
+// completes: a swap without the partner's PS_RDY has failed, and
+// connection resolution restarts from Unattached.SNK
+
+// The old sink, waiting for the old source's PS_RDY before taking over
+struct swap_standby_to_src : state::sink_state {
+    static constexpr hw_config hw{cc_pull::rd, false};
+    static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto timeout     = t_ps_source_off;
+
+    using state::sink_state::sink_state;
+};
+
+// The old source, its PS_RDY sent, waiting for the new source's
+struct swap_standby_to_snk : state::sink_state {
+    static constexpr hw_config hw{cc_pull::rd, false};
+    static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto timeout     = t_ps_source_on;
+
+    using state::sink_state::sink_state;
+};
+
 // --- guards ------------------------------------------------------------------
 
 // Guards deciding on the event's CC payload (the context still holds
@@ -325,7 +356,9 @@ template<typename TIMING>
 using core_timer_ranges = mtl::linearize_t<mtl::typelist<
     sink_timer_ranges, source_timer_ranges,
     fsm::timed_by<unattached_snk<TIMING>, spec::t_drp_pw>,
-    fsm::timed_by<unattached_src<TIMING>, spec::t_drp_pw>>>;
+    fsm::timed_by<unattached_src<TIMING>, spec::t_drp_pw>,
+    fsm::timed_by<swap_standby_to_src, spec::t_ps_source_off>,
+    fsm::timed_by<swap_standby_to_snk, spec::t_ps_source_on>>>;
 
 template<typename TIMING>
 using try_src_timer_ranges = mtl::typelist<
@@ -453,16 +486,35 @@ using try_snk_flow = mtl::typelist<
                     fsm::to<try_wait_src<TIMING>>>>;
 
 // PD-directed role swaps (spec: Attached.SNK <-> Attached.SRC "as
-// directed by USB PD"): a power swap flips the terminations while the
-// pair stays attached, a data role swap changes no terminations and
-// only flips the context's data role. VBUS sequencing and the decision
-// to swap are the PD layer's business, gated by the injected policy
-// observers
+// directed by USB PD"): a power swap passes through its standby while
+// the roles change hands, a data role swap changes no terminations and
+// only flips the context's data role. The message choreography and the
+// decision to swap are the PD layer's business, gated by the injected
+// policy observers
+template<concepts::drp_timing TIMING>
 using swap_flow = mtl::typelist<
     fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::swap_to_source>,
-                    fsm::to<state::attached_src>>,
+                    fsm::to<swap_standby_to_src>>,
     fsm::transition<fsm::from<state::attached_src>, fsm::on<event::swap_to_sink>,
+                    fsm::to<swap_standby_to_snk>>,
+    fsm::transition<fsm::from<swap_standby_to_src>, fsm::on<event::swap_complete>,
+                    fsm::to<state::attached_src>>,
+    fsm::transition<fsm::from<swap_standby_to_src>, fsm::on<event::swap_abort>,
                     fsm::to<state::attached_snk>>,
+    fsm::transition<fsm::from<swap_standby_to_src>, fsm::on<fsm::timeout>,
+                    fsm::to<unattached_snk<TIMING>>>,
+    fsm::internal_transition<fsm::from<swap_standby_to_src>, fsm::on<event::cc_changed>>,
+    fsm::internal_transition<fsm::from<swap_standby_to_src>, fsm::on<event::vbus_present>>,
+    fsm::internal_transition<fsm::from<swap_standby_to_src>, fsm::on<event::vbus_removed>>,
+    fsm::transition<fsm::from<swap_standby_to_snk>, fsm::on<event::swap_complete>,
+                    fsm::to<state::attached_snk>>,
+    fsm::transition<fsm::from<swap_standby_to_snk>, fsm::on<event::swap_abort>,
+                    fsm::to<state::attached_src>>,
+    fsm::transition<fsm::from<swap_standby_to_snk>, fsm::on<fsm::timeout>,
+                    fsm::to<unattached_snk<TIMING>>>,
+    fsm::internal_transition<fsm::from<swap_standby_to_snk>, fsm::on<event::cc_changed>>,
+    fsm::internal_transition<fsm::from<swap_standby_to_snk>, fsm::on<event::vbus_present>>,
+    fsm::internal_transition<fsm::from<swap_standby_to_snk>, fsm::on<event::vbus_removed>>,
     fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::swap_data_role>>,
     fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::swap_data_role>>>;
 
@@ -480,7 +532,7 @@ struct table_for {
     using type = mtl::rebind_t<
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, state::attached_snk>,
-                                       source_flow<TIMING, state::attached_src>, swap_flow>>,
+                                       source_flow<TIMING, state::attached_src>, swap_flow<TIMING>>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<type, core_timer_ranges<TIMING>>);
     static_assert(fsm::all_states_reachable_v<type>);
@@ -493,7 +545,7 @@ struct table_for<TIMING, drp_preference::source> {
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, try_src<TIMING>>,
                                        source_flow<TIMING, state::attached_src>,
-                                       try_src_flow<TIMING>, swap_flow>>,
+                                       try_src_flow<TIMING>, swap_flow<TIMING>>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
@@ -508,7 +560,7 @@ struct table_for<TIMING, drp_preference::sink> {
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, state::attached_snk>,
                                        source_flow<TIMING, try_snk<TIMING>>,
-                                       try_snk_flow<TIMING>, swap_flow>>,
+                                       try_snk_flow<TIMING>, swap_flow<TIMING>>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
@@ -603,14 +655,18 @@ public:
     {
     }
 
-    // Power role swap directed by the layer above (a USB PD PR_Swap):
-    // the pair stays attached and the terminations flip - VBUS
-    // sequencing is the caller's business. Every injected observer
-    // providing allowSwap(power_role) is consulted and may veto; with
-    // no such observer, swaps are refused. False when vetoed or not
-    // attached in the departing role. Call from the stack's serialized
-    // context
-    bool swapToSource()
+    // Power role swap directed by the layer above (a USB PD PR_Swap),
+    // in phases: begin enters the swap standby - power paths off, Rd
+    // presented, detach detection suspended while VBUS is legitimately
+    // absent - completeSwap() (the partner's PS_RDY) lands in the new
+    // attached state, abortSwap() restores the departing role. A
+    // standby left to its spec timeout (tPSSourceOff/tPSSourceOn)
+    // falls back to the departing role on its own. Every injected
+    // observer providing allowSwap(power_role) is consulted at begin
+    // and may veto; with no such observer, swaps are refused. False
+    // when vetoed or not attached in the departing role. Call from the
+    // stack's serialized context
+    bool beginSwapToSource()
     {
         if (!sm_.template is<tc::state::attached_snk>() || !swapAllowed(power_role::source)) {
             return false;
@@ -618,13 +674,17 @@ public:
         return sm_.process(tc::event::swap_to_source{});
     }
 
-    bool swapToSink()
+    bool beginSwapToSink()
     {
         if (!sm_.template is<tc::state::attached_src>() || !swapAllowed(power_role::sink)) {
             return false;
         }
         return sm_.process(tc::event::swap_to_sink{});
     }
+
+    bool completeSwap() { return sm_.process(tc::event::swap_complete{}); }
+
+    bool abortSwap() { return sm_.process(tc::event::swap_abort{}); }
 
     // Data role swap directed by the layer above (a USB PD DR_Swap):
     // no termination changes, only the context's data role flips. Same
@@ -645,6 +705,19 @@ public:
         std::apply([&](auto&... observer) { (forwardDataRole(observer, swapped), ...); },
                    observers_);
         return true;
+    }
+
+    // The attached pair's power role; nullopt while not attached (a
+    // swap standby included)
+    std::optional<power_role> powerRole() const
+    {
+        if (sm_.template is<tc::state::attached_snk>()) {
+            return power_role::sink;
+        }
+        if (sm_.template is<tc::state::attached_src>()) {
+            return power_role::source;
+        }
+        return std::nullopt;
     }
 
     // The attached pair's data role; nullopt while not attached

@@ -402,7 +402,7 @@ int typeCDrpSwapTests()
         f.vbus.setVoltage(5000);
         f.timer.expire();
         check(f.tcpc.sinking);
-        check(!tc.swapToSource());
+        check(!tc.beginSwapToSource());
         check(!tc.swapDataRole());
         check(f.tcpc.sinking && !f.tcpc.sourcing);
         check(tc.dataRole() == usbc::data_role::ufp); // a sink attaches as UFP
@@ -418,8 +418,10 @@ int typeCDrpSwapTests()
         drp tc{f.tcpc, f.vbus, f.timer, f.client, policy};
         tc.start();
 
-        // not attached: refused without consulting the policy
-        check(!tc.swapToSource() && policy.consulted == 0);
+        // not attached: refused without consulting the policy, and
+        // there is no standby to complete or abort
+        check(!tc.beginSwapToSource() && policy.consulted == 0);
+        check(!tc.completeSwap() && !tc.abortSwap());
 
         // attach as sink on CC2
         f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_power_3a0};
@@ -431,7 +433,7 @@ int typeCDrpSwapTests()
 
         // vetoed: nothing changes
         policy.allow = false;
-        check(!tc.swapToSource());
+        check(!tc.beginSwapToSource());
         check(policy.consulted == 1 && policy.asked == usbc::power_role::source);
         check(f.tcpc.sinking && !f.tcpc.sourcing);
 
@@ -445,28 +447,54 @@ int typeCDrpSwapTests()
         check(policy.data_seen == usbc::data_role::dfp);
         check(f.tcpc.sinking && f.client.detached == 0);
 
-        // allowed: the pair stays attached, the orientation carries
+        // allowed: standby with the power paths off, Rd presented, the
+        // PS_RDY wait armed - and the old source dropping VBUS is NOT
+        // a detach
+        check(tc.beginSwapToSource());
+        check(!f.tcpc.sinking && !f.tcpc.sourcing && f.tcpc.pull == usbc::cc_pull::rd);
+        check(f.timer.armed && f.timer.duration == usbc::tc::drp::t_ps_source_off);
+        f.vbus.setVoltage(0); // the old source turns off
+        check(f.client.detached == 1); // the attached pair left standby once
+        check(f.client.attached_snk == 1); // ... but no spurious re-attach cycle
+
+        // PS_RDY: the pair stays attached, the orientation carries
         // over - and so does the swapped data role (a PR_Swap leaves
         // the data role alone)
-        check(tc.swapToSource());
+        check(tc.completeSwap());
         check(f.tcpc.sourcing && !f.tcpc.sinking && f.tcpc.pull == usbc::cc_pull::rp);
-        check(f.client.attached_src == 1 && f.client.detached == 1);
+        check(f.client.attached_src == 1);
         check(f.client.orientation == usbc::plug_orientation::cc2);
         check(tc.dataRole() == usbc::data_role::dfp);
+        f.vbus.setVoltage(5000); // we source now
 
-        // and back: sink again, still the same plug
-        check(tc.swapToSink());
+        // and back: standby waits for the new source's PS_RDY
+        check(tc.beginSwapToSink());
         check(policy.asked == usbc::power_role::sink);
+        check(!f.tcpc.sourcing && f.tcpc.pull == usbc::cc_pull::rd);
+        check(f.timer.armed && f.timer.duration == usbc::tc::drp::t_ps_source_on);
+        f.vbus.setVoltage(0); // bus decays until the new source takes over
+        f.vbus.setVoltage(5000);
+        check(tc.completeSwap());
         check(f.tcpc.sinking && !f.tcpc.sourcing && f.tcpc.pull == usbc::cc_pull::rd);
-        check(f.client.attached_snk == 2 && f.client.detached == 2);
+        check(f.client.attached_snk == 2);
         check(f.client.orientation == usbc::plug_orientation::cc2);
         check(tc.dataRole() == usbc::data_role::dfp); // survives both swaps
         // the current draw after a swap is the PD contract's business
         check(f.client.advertisement == usbc::rp_value::usb_default);
 
-        // detach ends the attached pair as usual
+        // an aborted swap restores the departing role
+        check(tc.beginSwapToSource());
+        check(tc.abortSwap());
+        check(f.tcpc.sinking && !f.tcpc.sourcing && f.tcpc.pull == usbc::cc_pull::rd);
+        check(tc.dataRole() == usbc::data_role::dfp);
+
+        // a standby left to its timeout falls back on its own; the
+        // dead bus then detaches naturally
+        check(tc.beginSwapToSource());
         f.vbus.setVoltage(0);
-        check(!f.tcpc.sinking && f.client.detached == 3);
+        f.timer.expire(); // tPSSourceOff: no PS_RDY came
+        check(!f.tcpc.sinking); // back in Attached.SNK, VBUS gone: detach
+        check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.armed); // toggling again
     }
 
     return failures;
