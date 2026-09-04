@@ -23,12 +23,12 @@ namespace {
 
 // --- mock source power supply -----------------------------------------------
 struct mock_supply {
-    usbc::supply_callback callback = nullptr;
+    usbc::supply_ready_callback callback = nullptr;
     void* context                  = nullptr;
     usbc::millivolt target_mv      = 5000;
     usbc::milliamp limit_ma        = 0;
 
-    void setCallback(usbc::supply_callback cb, void* ctx)
+    void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
     {
         callback = cb;
         context  = ctx;
@@ -280,7 +280,8 @@ int tcpcTests()
     // source supply: program the contract, PS_RDY trigger on settle
     mock_supply supply;
     bool at_target = false;
-    supply.setCallback([](void* ctx, bool at) { *static_cast<bool*>(ctx) = at; }, &at_target);
+    supply.setReadyCallback([](void* ctx, bool at) { *static_cast<bool*>(ctx) = at; },
+                            &at_target);
     check(requestOutput(supply, 9000, 3000));
     check(supply.target_mv == 9000 && supply.limit_ma == 3000);
     check(!at_target); // still transitioning

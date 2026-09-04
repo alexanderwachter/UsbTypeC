@@ -2,18 +2,28 @@
 
 DRP toggling plus PD power negotiation in whichever role the attach
 resolves to: a charger makes the port a negotiating sink, a sink makes
-it an advertising source. One policy engine per role is instantiated
-up front; the `PortRouter` observer activates the one the resolved
-role needs, routes the PD alerts, arbitrates role swaps
-(`allowSwap`), and keeps the TCPC's message header aligned with the
-current power and data roles.
+it an advertising source. The `usbc::PdDrp` facade owns both policy
+engines and the routing between them - the application provides only
+the domain pieces: drivers, timers, capabilities, policies, and the
+power effects (the source offers come from the connector node's
+`source-pdos`).
 
-Role swaps ride the attach observation: a swap's standby exits the old
-attached state (tearing that engine down) and its completion enters
-the new one (bringing the other engine up) - the same path as a
-plug-in. The joystick stands in for the PD swap messaging: SEL swaps
-the power role, LEFT the data role. Both are local-only until the
-policy engines speak PR_Swap/DR_Swap; a partner will not follow.
+On the STM32G081B-EVAL the sample drives the board's real source
+power path, the same wiring as Zephyr's `usb_c/drp` sample: a PWM
+duty cycle selects the DCDC output voltage (5/9/15 V), GPIOs gate the
+DCDC and the VBUS source switch, and the ADC-based vbus driver
+measures and discharges VBUS.
+
+Role swaps are full PD exchanges. A DR_Swap flips the data role on the
+partner's Accept. A PR_Swap runs the spec's choreography: Accept, the
+old source's transition to off, the PS_RDY hand-off, and the Type-C
+termination flip at the Assert_Rd/Assert_Rp moments - the connection
+layer's swap standby suspends detach detection while VBUS is
+legitimately absent, and its tPSSourceOff/tPSSourceOn timeouts restart
+connection resolution if the partner never completes. The joystick
+triggers the requests: SEL a PR_Swap, LEFT a DR_Swap; the partner's
+incoming requests are arbitrated by the injected observers'
+allowSwap hooks.
 
 ## Build
 
@@ -30,6 +40,8 @@ west flash
 ## Requirements
 
 A board whose devicetree provides a `usb-c-connector` node with `tcpc`
-and `vbus` phandles, dual power-role support, and two buttons (`sw0`,
-`sw1` aliases). The DRP actively drives both terminations, so the TCPC
-must not be strapped for dead-battery Rd.
+and `vbus` phandles, dual power-role support, a
+`zephyr,usb-c-pwrctrl` node (aliased `usbc-port0-pwrctrl`) for the
+source power path, and two buttons (`sw0`, `sw1` aliases). The DRP
+actively drives both terminations, so the TCPC must not be strapped
+for dead-battery Rd.

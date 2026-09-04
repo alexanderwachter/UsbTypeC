@@ -46,11 +46,6 @@ namespace usbc {
 
 namespace tc {
 
-constexpr bool isRd(cc_state state)
-{
-    return state == cc_state::src_rd;
-}
-
 constexpr bool singleRd(cc_status status)
 {
     return isRd(status.cc1) != isRd(status.cc2);
@@ -309,7 +304,8 @@ struct src_hw_driver : fsm::observing<src_hw_driver<TCPC, VBUS>> {
 
 template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
          typename... OBSERVERs>
-class TypeCSource {
+class TypeCSource : public tc::port_frontend<TypeCSource<TCPC, VBUS, TIMER, OBSERVERs...>,
+                                             TCPC, VBUS> {
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). The advertisement is the Rp the port
@@ -333,71 +329,11 @@ public:
     {
     }
 
-    // Leaves Disabled: Rp and monitoring apply through the machine,
-    // the callbacks register, and a present sink is seeded from the CC
-    // status. A second start() finds no started transition and does
-    // nothing
-    void start()
-    {
-        if (!sm_.process(tc::event::started{})) {
-            return;
-        }
-        vbus_.vbus.setCallback(
-            [](void* self, bool met) { static_cast<TypeCSource*>(self)->vbusEvent(met); }, this);
-        tcpc_.setAlertHandler([](void* self) { static_cast<TypeCSource*>(self)->alert(); }, this);
-        vbus_.vbus.monitor(vbus_level::safe0v); // deliver the initial condition
-        seedCcState();
-    }
+    // The go-live moment, provided by the shared frontend
+    void start() { this->startPort(); }
 
 private:
-    // Drains the TCPC's pending alerts; the bits this layer does not
-    // consume go to the observers providing onPdAlert(alert_status)
-    void alert()
-    {
-        if (auto const alerts = tcpc_.readAlert()) {
-            if (any(*alerts & alert_status::cc_status_changed)) {
-                ccAlert();
-            }
-            auto const residual = *alerts & ~alert_status::cc_status_changed;
-            if (any(residual)) {
-                std::apply([&](auto&... observer) { (forwardPdAlert(observer, residual), ...); },
-                           observers_);
-            }
-        }
-    }
-
-    static void forwardPdAlert(auto& observer, alert_status alerts)
-    {
-        if constexpr (requires { observer.onPdAlert(alerts); }) {
-            observer.onPdAlert(alerts);
-        }
-    }
-
-    void ccAlert()
-    {
-        if (auto const cc = tcpc_.readCcStatus()) {
-            sm_.process(tc::event::cc_changed{*cc});
-        }
-    }
-
-    // The vbus driver reported the vSafe0V condition the layer monitors
-    void vbusEvent(bool met)
-    {
-        if (met) {
-            sm_.process(tc::event::vbus_reached_safe0v{});
-        } else {
-            sm_.process(tc::event::vbus_left_safe0v{});
-        }
-    }
-
-    // A sink plugged in before construction has no alert to announce it
-    void seedCcState()
-    {
-        auto const cc = tcpc_.readCcStatus();
-        if (cc && (tc::isRd(cc->cc1) || tc::isRd(cc->cc2))) {
-            sm_.process(tc::event::cc_changed{*cc});
-        }
-    }
+    friend tc::port_frontend<TypeCSource, TCPC, VBUS>;
 
     TCPC& tcpc_;
     tc::src_hw_driver<TCPC, VBUS> hw_;

@@ -628,7 +628,9 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
 template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
          drp_timing const& TIMING = default_drp_timing,
          drp_preference PREFERENCE = drp_preference::none, typename... OBSERVERs>
-class TypeCDrp {
+class TypeCDrp
+    : public tc::port_frontend<
+          TypeCDrp<TCPC, VBUS, TIMER, TIMING, PREFERENCE, OBSERVERs...>, TCPC, VBUS> {
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). The advertisement is the Rp presented
@@ -695,6 +697,14 @@ public:
             !swapAllowed(*current == data_role::ufp ? data_role::dfp : data_role::ufp)) {
             return false;
         }
+        return applyDataRoleSwap();
+    }
+
+    // The flip without the arbitration: for a PD layer applying a
+    // DR_Swap it already negotiated (the verdict was asked when the
+    // message exchange began)
+    bool applyDataRoleSwap()
+    {
         if (!sm_.process(tc::event::swap_data_role{})) {
             return false;
         }
@@ -702,6 +712,21 @@ public:
         std::apply([&](auto&... observer) { (forwardDataRole(observer, swapped), ...); },
                    observers_);
         return true;
+    }
+
+    // The arbitration alone, for a PD layer answering the partner's
+    // swap request: every injected policy observer for the role kind
+    // is consulted with the role the port would take
+    template<typename ROLE>
+    bool swapAllowed(ROLE role)
+    {
+        constexpr bool any_policy =
+            (concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, ROLE> || ...);
+        return any_policy && std::apply(
+                                 [role](auto&... observer) {
+                                     return (allowsSwap(observer, role) && ...);
+                                 },
+                                 observers_);
     }
 
     // The attached pair's power role; nullopt while not attached (a
@@ -729,107 +754,11 @@ public:
         return std::nullopt;
     }
 
-    // Leaves Disabled toggling at Rd: terminations and monitoring apply
-    // through the machine, the callbacks register, and a present
-    // partner is seeded from the CC status. A second start() finds no
-    // started transition and does nothing
-    void start()
-    {
-        if (!sm_.process(tc::event::started{})) {
-            return;
-        }
-        vbus_.vbus.setCallback(
-            [](void* self, bool met) { static_cast<TypeCDrp*>(self)->vbusEvent(met); }, this);
-        tcpc_.setAlertHandler([](void* self) { static_cast<TypeCDrp*>(self)->alert(); }, this);
-        vbus_.vbus.monitor(vbus_.monitored); // deliver the initial condition
-        seedCcState();
-    }
+    // The go-live moment, provided by the shared frontend
+    void start() { this->startPort(); }
 
 private:
-    // Drains the TCPC's pending alerts; the bits this layer does not
-    // consume go to the observers providing onPdAlert(alert_status)
-    void alert()
-    {
-        if (auto const alerts = tcpc_.readAlert()) {
-            if (any(*alerts & alert_status::cc_status_changed)) {
-                ccAlert();
-            }
-            auto const residual = *alerts & ~alert_status::cc_status_changed;
-            if (any(residual)) {
-                std::apply([&](auto&... observer) { (forwardPdAlert(observer, residual), ...); },
-                           observers_);
-            }
-        }
-    }
-
-    static void forwardPdAlert(auto& observer, alert_status alerts)
-    {
-        if constexpr (requires { observer.onPdAlert(alerts); }) {
-            observer.onPdAlert(alerts);
-        }
-    }
-
-    void ccAlert()
-    {
-        if (auto const cc = tcpc_.readCcStatus()) {
-            sm_.process(tc::event::cc_changed{*cc});
-        }
-    }
-
-    // The vbus driver reports the level the active state watches; the
-    // event family follows the armed level's role
-    void vbusEvent(bool met)
-    {
-        switch (vbus_.monitored) {
-        case vbus_level::safe0v:
-            if (met) {
-                sm_.process(tc::event::vbus_reached_safe0v{});
-            } else {
-                sm_.process(tc::event::vbus_left_safe0v{});
-            }
-            break;
-        case vbus_level::sink_disconnect:
-        case vbus_level::sink_disconnect_pd:
-            if (met) {
-                sm_.process(tc::event::vbus_removed{});
-            } else {
-                sm_.process(tc::event::vbus_present{});
-            }
-            break;
-        case vbus_level::safe5v:
-            if (met) {
-                sm_.process(tc::event::vbus_present{});
-            } else {
-                sm_.process(tc::event::vbus_removed{});
-            }
-            break;
-        }
-    }
-
-    // A partner plugged in before construction has no alert to announce it
-    void seedCcState()
-    {
-        auto const cc = tcpc_.readCcStatus();
-        if (cc && (tc::isRp(cc->cc1) || tc::isRp(cc->cc2) || tc::isRd(cc->cc1) ||
-                   tc::isRd(cc->cc2))) {
-            sm_.process(tc::event::cc_changed{*cc});
-        }
-    }
-
-    // Every policy observer for the role kind is consulted and each
-    // may veto; with no such observer among the injected ones there is
-    // nobody to say yes, and swaps of that kind are refused
-    template<typename ROLE>
-    bool swapAllowed(ROLE role)
-    {
-        constexpr bool any_policy =
-            (concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, ROLE> || ...);
-        return any_policy && std::apply(
-                                 [role](auto&... observer) {
-                                     return (allowsSwap(observer, role) && ...);
-                                 },
-                                 observers_);
-    }
+    friend tc::port_frontend<TypeCDrp, TCPC, VBUS>;
 
     template<typename ROLE>
     static bool allowsSwap(auto& observer, ROLE role)

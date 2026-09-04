@@ -83,6 +83,11 @@ inline constexpr timeout_range t_ps_transition{milliseconds{450}, milliseconds{5
 inline constexpr timeout_range t_ps_source_off{milliseconds{750}, milliseconds{920}};
 inline constexpr timeout_range t_ps_source_on{milliseconds{390}, milliseconds{480}};
 
+// tSwapSourceStart: the new source's pause between its PS_RDY and the
+// first Source_Capabilities. The spec gives only the 20 ms minimum;
+// the maximum here is a practical bound for the compile-time check
+inline constexpr timeout_range t_swap_source_start{milliseconds{20}, milliseconds{100}};
+
 // Counters
 inline constexpr std::uint8_t n_retry_count = 2;  // nRetryCount, PD rev 3.x
 inline constexpr std::uint8_t n_caps_count  = 50; // nCapsCount

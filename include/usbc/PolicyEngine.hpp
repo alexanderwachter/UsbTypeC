@@ -89,15 +89,53 @@ struct active_contract {
     milliamp current  = i_default_current;
 };
 
+// Swap observations: an engine state reporting one of these through
+// swapReport() tells the port-level integration (the PdDrp facade)
+// what the negotiated swap needs from the Type-C layer
+struct data_role_changed { // an agreed DR_Swap: both sides flipped
+    data_role role;
+};
+struct assert_new_role { // a PR_Swap reached the termination change
+    power_role role;
+};
+struct enter_swap_standby { // agreed PR_Swap: hold the connection
+    power_role role;        // layer's swap standby toward this role
+};
+struct swap_completed {}; // the new source's PS_RDY: the swap is done
+
 namespace event {
 
 // The protocol layer's reports, common to both engine roles
 struct message_sent {};   // PRL: transmission confirmed
 struct protocol_error {}; // PRL: transmission failed
 struct accept {};
+struct reject {};
+struct wait {};
+struct ps_rdy {};
 struct soft_reset_received {
     pd_message accept;
 };
+
+// Role swap messaging, shared by both engine roles
+struct send_pr_swap { // our PR_Swap goes out
+    pd_message message;
+};
+struct send_dr_swap { // our DR_Swap goes out
+    pd_message message;
+};
+struct pr_swap_accepted { // the partner's PR_Swap passed arbitration
+    pd_message accept;
+};
+struct dr_swap_accepted { // the partner's DR_Swap passed arbitration
+    pd_message accept;
+};
+struct swap_wait_source_on { // the port asserted Rd mid PR_Swap: this
+    data_role role;          // engine announces the supply is off
+};
+struct attached_swap { // activation continuing a PR_Swap (new source)
+    data_role role;
+};
+struct swap_done {};     // advances the transient swap states
 struct unsupported {
     pd_message reply;
 };

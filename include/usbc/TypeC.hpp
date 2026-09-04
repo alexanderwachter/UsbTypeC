@@ -17,12 +17,26 @@
 #include <mtl/StateMachine.hpp>
 
 #include <chrono>
+#include <tuple>
 
 namespace usbc {
 
 namespace tc {
 
-inline constexpr auto t_cc_debounce = std::chrono::milliseconds{150}; // 100 ms - 200 ms
+inline constexpr auto t_cc_debounce = std::chrono::milliseconds{150}; // tCCDebounce
+
+// What one CC line's voltage says about the partner's termination:
+// an Rp seen while presenting Rd, an Rd seen while presenting Rp
+constexpr bool isRp(cc_state state)
+{
+    return state == cc_state::snk_default || state == cc_state::snk_power_1a5 ||
+           state == cc_state::snk_power_3a0;
+}
+
+constexpr bool isRd(cc_state state)
+{
+    return state == cc_state::src_rd;
+}
 
 namespace event {
 
@@ -69,6 +83,23 @@ struct port_context {
     data_role data               = data_role::ufp;
 };
 
+// The one place tying a VBUS level to the events its reports become:
+// the sink-role levels report presence, vSafe0V reports the discharge
+// condition - and on the below-threshold levels a met report means the
+// bus is gone. The ports' report mapping and the verification below
+// both consume this
+enum class vbus_family : std::uint8_t { presence, discharge };
+
+constexpr vbus_family familyOf(vbus_level level)
+{
+    return level == vbus_level::safe0v ? vbus_family::discharge : vbus_family::presence;
+}
+
+constexpr bool metMeansPresent(vbus_level level)
+{
+    return level == vbus_level::safe5v;
+}
+
 // A watching state must consume the event family its armed level
 // makes the driver deliver - a missing transition would silently drop
 // a report (a lost detach at worst)
@@ -77,7 +108,7 @@ struct watch_family_handled {
     template<typename STATE, bool WATCHING = requires { STATE::watch; }>
     struct pred
         : std::bool_constant<
-              STATE::watch == vbus_level::safe0v
+              familyOf(STATE::watch) == vbus_family::discharge
                   ? (fsm::handles_event_v<TABLE, STATE, event::vbus_reached_safe0v> &&
                      fsm::handles_event_v<TABLE, STATE, event::vbus_left_safe0v>)
                   : (fsm::handles_event_v<TABLE, STATE, event::vbus_present> &&
@@ -136,6 +167,96 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
 
     VBUS& vbus;
     vbus_level monitored = vbus_level::safe5v;
+};
+
+// The driver-facing frontend every connection layer shares (CRTP):
+// start() wiring, the TCPC alert pump with residual forwarding to the
+// observers providing onPdAlert, the vbus report mapped through the
+// armed level's family, and the seeding of a partner already present.
+// The derived port provides tcpc_, vbus_ (the watcher), observers_,
+// and sm_, and befriends this base
+template<typename DERIVED, concepts::tcpc TCPC, concepts::vbus VBUS>
+class port_frontend {
+protected:
+    // Leaves Disabled through the started event; when it fires, the
+    // callbacks register, the monitor re-arms for its initial report,
+    // and a present partner is seeded from the CC status. A second
+    // start() finds no started transition and does nothing
+    void startPort()
+    {
+        auto& self = derived();
+        if (!self.sm_.process(event::started{})) {
+            return;
+        }
+        self.vbus_.vbus.setCallback(
+            [](void* frontend, bool met) {
+                static_cast<port_frontend*>(frontend)->vbusEvent(met);
+            },
+            this);
+        self.tcpc_.setAlertHandler(
+            [](void* frontend) { static_cast<port_frontend*>(frontend)->alert(); }, this);
+        self.vbus_.vbus.monitor(self.vbus_.monitored); // deliver the initial condition
+        seedCcState();
+    }
+
+private:
+    DERIVED& derived() { return static_cast<DERIVED&>(*this); }
+
+    // Drains the TCPC's pending alerts; the bits this layer does not
+    // consume go to the observers providing onPdAlert(alert_status)
+    void alert()
+    {
+        auto& self = derived();
+        if (auto const alerts = self.tcpc_.readAlert()) {
+            if (any(*alerts & alert_status::cc_status_changed)) {
+                if (auto const cc = self.tcpc_.readCcStatus()) {
+                    self.sm_.process(event::cc_changed{*cc});
+                }
+            }
+            auto const residual = *alerts & ~alert_status::cc_status_changed;
+            if (any(residual)) {
+                std::apply([&](auto&... observer) { (forwardPdAlert(observer, residual), ...); },
+                           self.observers_);
+            }
+        }
+    }
+
+    static void forwardPdAlert(auto& observer, alert_status alerts)
+    {
+        if constexpr (requires { observer.onPdAlert(alerts); }) {
+            observer.onPdAlert(alerts);
+        }
+    }
+
+    // The vbus driver reports the condition the watcher armed; the
+    // event follows the level's family - events a table does not
+    // handle are dropped by the machine
+    void vbusEvent(bool met)
+    {
+        auto& self = derived();
+        if (familyOf(self.vbus_.monitored) == vbus_family::discharge) {
+            if (met) {
+                self.sm_.process(event::vbus_reached_safe0v{});
+            } else {
+                self.sm_.process(event::vbus_left_safe0v{});
+            }
+        } else if (met == metMeansPresent(self.vbus_.monitored)) {
+            self.sm_.process(event::vbus_present{});
+        } else {
+            self.sm_.process(event::vbus_removed{});
+        }
+    }
+
+    // A partner plugged in before construction has no alert to
+    // announce it
+    void seedCcState()
+    {
+        auto& self    = derived();
+        auto const cc = self.tcpc_.readCcStatus();
+        if (cc && (isRp(cc->cc1) || isRp(cc->cc2) || isRd(cc->cc1) || isRd(cc->cc2))) {
+            self.sm_.process(event::cc_changed{*cc});
+        }
+    }
 };
 
 } // namespace tc

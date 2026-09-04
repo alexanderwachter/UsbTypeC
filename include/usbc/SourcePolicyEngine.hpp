@@ -63,6 +63,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <type_traits>
 
 namespace usbc {
 
@@ -119,6 +120,7 @@ namespace pe {
 inline constexpr auto t_typec_send_source_cap = std::chrono::milliseconds{150}; // tTypeCSendSourceCap
 inline constexpr auto t_src_transition        = std::chrono::milliseconds{30};  // tSrcTransition
 inline constexpr auto t_src_recover           = std::chrono::milliseconds{800}; // tSrcRecover
+inline constexpr auto t_source_start          = std::chrono::milliseconds{30};  // tSwapSourceStart
 
 inline constexpr std::uint8_t n_caps_count = spec::n_caps_count;
 
@@ -134,6 +136,7 @@ struct src_context {
     bool attached              = false;
     bool pd_connected          = false; // a Source_Capabilities got its GoodCRC
     bool explicit_contract     = false;
+    data_role data = data_role::dfp; // flipped by an agreed DR_Swap
     supply_target target{};
     pd_message reply{};
 };
@@ -286,7 +289,7 @@ struct pe_src_transition_supply_ps_rdy {
     explicit pe_src_transition_supply_ps_rdy(src_context& ctx) : context(ctx)
     {
         context.reply = makeControlMessage(control_message_type::ps_rdy, power_role::source,
-                                           data_role::dfp);
+                                           context.data);
     }
 
     pd_message const& txMessage() const { return context.reply; }
@@ -367,6 +370,226 @@ struct pe_src_chunk_received {
     src_context& context;
 };
 
+// --- role swap messaging (PE_DRS / PE_PRS, source side) ----------------------
+
+// PE_DRS_DFP_UFP/UFP_DFP_Send_Swap: our DR_Swap is out; no answer
+// within tSenderResponse means the partner ignored it - stay Ready
+struct pe_src_send_dr_swap {
+    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends DR_Swap";
+
+    pe_src_send_dr_swap(pe::event::send_dr_swap const& event, src_context& ctx)
+        : context(ctx), message_(event.message)
+    {
+    }
+    explicit pe_src_send_dr_swap(src_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return message_; }
+
+    src_context& context;
+
+private:
+    pd_message message_{};
+};
+
+// PE_DRS_*_Accept_Swap: the partner's DR_Swap passed the arbitration
+struct pe_src_accept_dr_swap {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends Accept";
+
+    pe_src_accept_dr_swap(pe::event::dr_swap_accepted const& event, src_context& ctx)
+        : context(ctx), message_(event.accept)
+    {
+    }
+    explicit pe_src_accept_dr_swap(src_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return message_; }
+
+    src_context& context;
+
+private:
+    pd_message message_{};
+};
+
+// PE_DRS_*_Change_to_*: the agreed swap flips the data role; the
+// report lets the port update the TCPC header and the Type-C context
+struct pe_src_dr_swap_change {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "flips the data role";
+
+    pe_src_dr_swap_change(pe::event::accept const&, src_context& ctx)
+        : pe_src_dr_swap_change(ctx)
+    {
+    }
+    pe_src_dr_swap_change(pe::event::message_sent const&, src_context& ctx)
+        : pe_src_dr_swap_change(ctx)
+    {
+    }
+    explicit pe_src_dr_swap_change(src_context& ctx) : context(ctx)
+    {
+        context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
+    }
+
+    data_role_changed swapReport() const { return {context.data}; }
+
+    src_context& context;
+};
+
+// PE_PRS_SRC_SNK_Send_Swap: our PR_Swap is out
+struct pe_src_send_pr_swap {
+    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends PR_Swap";
+
+    pe_src_send_pr_swap(pe::event::send_pr_swap const& event, src_context& ctx)
+        : context(ctx), message_(event.message)
+    {
+    }
+    explicit pe_src_send_pr_swap(src_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return message_; }
+
+    src_context& context;
+
+private:
+    pd_message message_{};
+};
+
+// PE_PRS_SRC_SNK_Accept_Swap: the partner's PR_Swap passed arbitration
+struct pe_src_accept_pr_swap {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends Accept";
+
+    pe_src_accept_pr_swap(pe::event::pr_swap_accepted const& event, src_context& ctx)
+        : context(ctx), message_(event.accept)
+    {
+    }
+    explicit pe_src_accept_pr_swap(src_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return message_; }
+
+    src_context& context;
+
+private:
+    pd_message message_{};
+};
+
+// PE_PRS_SRC_SNK_Transition_to_off, the spec's tSrcTransition wait
+// between the agreement and removing power
+struct pe_src_swap_transition_to_off {
+    static constexpr auto timeout = t_src_transition; // tSrcTransition
+    static constexpr power_level power          = power_level::transition;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    pe_src_swap_transition_to_off(pe::event::accept const&, src_context& ctx)
+        : pe_src_swap_transition_to_off(ctx)
+    {
+    }
+    pe_src_swap_transition_to_off(pe::event::message_sent const&, src_context& ctx)
+        : pe_src_swap_transition_to_off(ctx)
+    {
+    }
+    explicit pe_src_swap_transition_to_off(src_context& ctx) : context(ctx) {}
+
+    src_context& context;
+};
+
+// ... the supply is commanded off and its settled report awaited
+struct pe_src_swap_supply_off {
+    static constexpr power_level power           = power_level::transition;
+    static constexpr pd_status pd                = pd_status::connected;
+    static constexpr std::string_view dot_note   = specNote(power, pd);
+    static constexpr std::string_view dot_action = "turns the supply off";
+
+    explicit pe_src_swap_supply_off(src_context& ctx) : context(ctx) {}
+
+    supply_target supplyTarget() const { return {0, 0}; }
+
+    src_context& context;
+};
+
+// PE_PRS_SRC_SNK_Assert_Rd: VBUS is off - the port flips its
+// termination now; the sink engine then announces our PS_RDY
+struct pe_src_swap_assert_rd {
+    static constexpr power_level power          = power_level::transition;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_swap_assert_rd(src_context& ctx) : context(ctx) {}
+
+    assert_new_role swapReport() const { return {power_role::sink}; }
+
+    src_context& context;
+};
+
+// PE_PRS_SNK_SRC_Source_on, this engine's half: the port was the sink
+// and asserted Rp - VBUS is driven to vSafe5V first
+struct pe_src_swap_source_on {
+    static constexpr power_level power           = power_level::transition;
+    static constexpr pd_status pd                = pd_status::connected;
+    static constexpr std::string_view dot_note   = specNote(power, pd);
+    static constexpr std::string_view dot_action = "drives VBUS to vSafe5V";
+
+    pe_src_swap_source_on(pe::event::attached_swap const& event, src_context& ctx)
+        : context(ctx)
+    {
+        context.attached     = true;
+        context.pd_connected = true;       // the swap was PD-negotiated
+        context.data         = event.role; // a power swap preserves the data role
+    }
+    explicit pe_src_swap_source_on(src_context& ctx) : context(ctx) {}
+
+    supply_target supplyTarget() const { return {v_safe_5v, i_default_current}; }
+
+    src_context& context;
+};
+
+// ... at vSafe5V the PS_RDY completes the partner's wait
+struct pe_src_swap_source_on_ps_rdy {
+    static constexpr power_level power          = power_level::transition;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends PS_RDY";
+
+    explicit pe_src_swap_source_on_ps_rdy(src_context& ctx) : context(ctx)
+    {
+        context.reply = makeControlMessage(control_message_type::ps_rdy, power_role::source,
+                                           context.data);
+    }
+
+    pd_message const& txMessage() const { return context.reply; }
+
+    src_context& context;
+};
+
+// SwapSourceStartTimer: the new source pauses before its first
+// Source_Capabilities
+struct pe_src_swap_source_start {
+    static constexpr auto timeout = t_source_start; // SwapSourceStartTimer
+    static constexpr power_level power          = power_level::transition;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_swap_source_start(src_context& ctx) : context(ctx)
+    {
+        context.caps_counter = 0; // the advertisement starts over
+    }
+
+    src_context& context;
+};
+
 // Accepts a received Soft_Reset; the protocol layer resets before the
 // Accept goes out (guaranteed hook order), then re-advertises
 struct pe_src_soft_reset {
@@ -400,7 +623,7 @@ struct pe_src_send_soft_reset {
     explicit pe_src_send_soft_reset(src_context& ctx) : context(ctx)
     {
         context.reply = makeControlMessage(control_message_type::soft_reset, power_role::source,
-                                           data_role::dfp);
+                                           context.data);
     }
 
     pd_message const& txMessage() const { return context.reply; }
@@ -479,7 +702,11 @@ using source_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_src_transition_supply_delay, spec::t_src_transition>,
     fsm::timed_by<state::pe_src_chunk_received, spec::t_chunking_not_supported>,
     fsm::timed_by<state::pe_src_send_soft_reset, spec::t_sender_response>,
-    fsm::timed_by<state::pe_src_transition_to_default, spec::t_src_recover>>;
+    fsm::timed_by<state::pe_src_transition_to_default, spec::t_src_recover>,
+    fsm::timed_by<state::pe_src_send_dr_swap, spec::t_sender_response>,
+    fsm::timed_by<state::pe_src_send_pr_swap, spec::t_sender_response>,
+    fsm::timed_by<state::pe_src_swap_transition_to_off, spec::t_src_transition>,
+    fsm::timed_by<state::pe_src_swap_source_start, spec::t_swap_source_start>>;
 
 using source_table = fsm::transition_table<
     fsm::initial<state::pe_src_startup>,
@@ -548,6 +775,64 @@ using source_table = fsm::transition_table<
                     fsm::to<state::pe_src_chunk_received>>,
     fsm::transition<fsm::from<state::pe_src_chunk_received>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_src_send_not_supported>>,
+    // DR_Swap: sent from Ready, or accepted there; both sides flip on
+    // the agreement, an ignored request falls back to Ready
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_dr_swap>,
+                    fsm::to<state::pe_src_send_dr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::accept>,
+                    fsm::to<state::pe_src_dr_swap_change>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::reject>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::wait>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::protocol_error>,
+                    fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::dr_swap_accepted>,
+                    fsm::to<state::pe_src_accept_dr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_accept_dr_swap>, fsm::on<pe::event::message_sent>,
+                    fsm::to<state::pe_src_dr_swap_change>>,
+    fsm::transition<fsm::from<state::pe_src_accept_dr_swap>, fsm::on<pe::event::protocol_error>,
+                    fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_dr_swap_change>, fsm::on<pe::event::swap_done>,
+                    fsm::to<state::pe_src_ready>>,
+    // PR_Swap while sourcing: the agreement leads through tSrcTransition
+    // into the supply-off wait, then the termination flip
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_pr_swap>,
+                    fsm::to<state::pe_src_send_pr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::accept>,
+                    fsm::to<state::pe_src_swap_transition_to_off>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::reject>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::wait>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::protocol_error>,
+                    fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::pr_swap_accepted>,
+                    fsm::to<state::pe_src_accept_pr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_accept_pr_swap>, fsm::on<pe::event::message_sent>,
+                    fsm::to<state::pe_src_swap_transition_to_off>>,
+    fsm::transition<fsm::from<state::pe_src_accept_pr_swap>, fsm::on<pe::event::protocol_error>,
+                    fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_swap_transition_to_off>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_swap_supply_off>>,
+    fsm::transition<fsm::from<state::pe_src_swap_supply_off>, fsm::on<event::supply_settled>,
+                    fsm::to<state::pe_src_swap_assert_rd>>,
+    // PR_Swap's other half: this port was the sink and asserted Rp -
+    // VBUS on, PS_RDY out, a pause, then the capabilities
+    fsm::transition<fsm::from<state::pe_src_startup>, fsm::on<pe::event::attached_swap>,
+                    fsm::to<state::pe_src_swap_source_on>>,
+    fsm::transition<fsm::from<state::pe_src_swap_source_on>, fsm::on<event::supply_settled>,
+                    fsm::to<state::pe_src_swap_source_on_ps_rdy>>,
+    fsm::transition<fsm::from<state::pe_src_swap_source_on_ps_rdy>,
+                    fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_swap_source_start>>,
+    fsm::transition<fsm::from<state::pe_src_swap_source_on_ps_rdy>,
+                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_swap_source_start>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_send_capabilities>>,
     // resets
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<pe::event::soft_reset_received>,
                     fsm::to<state::pe_src_soft_reset>>,
@@ -711,11 +996,14 @@ public:
         tcpc_.setMessageHeaderInfo(
             {power_role::source, data_role::dfp, pd_revision::rev_3_x});
         tcpc_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
-        supply_.setCallback(
+        supply_.setReadyCallback(
             [](void* self, bool at_target) {
+                auto& engine = *static_cast<SourcePolicyEngine*>(self);
                 if (at_target) {
-                    static_cast<SourcePolicyEngine*>(self)->sm_.process(
-                        pe::event::supply_settled{});
+                    engine.sm_.process(pe::event::supply_settled{});
+                }
+                if (engine.idle_hook_ != nullptr) {
+                    engine.idle_hook_(engine.idle_context_);
                 }
             },
             this);
@@ -730,13 +1018,51 @@ public:
     // Feed the TCPC's PD alerts (message/transmit/hard reset bits)
     void onAlert(alert_status alerts) { prl_.onAlert(alerts); }
 
+    // --- DRP integration: PD-negotiated role swaps ---------------------------
+
+    // Sends the PR_Swap / DR_Swap; false while not Ready under an
+    // explicit contract (the spec allows swaps only there)
+    bool requestPowerSwap()
+    {
+        return sm_.process(
+            pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
+    }
+
+    bool requestDataSwap()
+    {
+        return sm_.process(
+            pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
+    }
+
+    // The port was the sink and asserted Rp mid PR_Swap: drive VBUS to
+    // vSafe5V, announce PS_RDY, pause tSwapSourceStart, then advertise.
+    // The event carries the preserved data role; the entered state
+    // seeds the context with it
+    void attachedAfterSwap(data_role role)
+    {
+        sm_.process(pe::event::attached_swap{role});
+    }
+
+    // The facade's deferred port actions run through this hook once an
+    // engine-internal event source (the supply settle callback) is done
+    // processing - the machines are idle then
+    void setIdleHook(void (*hook)(void*), void* hook_context)
+    {
+        idle_hook_ = hook;
+        idle_context_ = hook_context;
+    }
+
 private:
     // The protocol layer's client, forwarding into the engine
     struct PrlPort {
         SourcePolicyEngine& pe;
 
         void onMessage(pd_message const& message) { pe.dispatch(message); }
-        void onTxDone() { pe.sm_.process(pe::event::message_sent{}); }
+        void onTxDone()
+        {
+            pe.sm_.process(pe::event::message_sent{});
+            pe.advanceTransients();
+        }
         void onTxDiscarded() {} // the preempting message drives the engine
         void onTxError() { pe.sm_.process(pe::event::protocol_error{}); }
         void onHardReset() { pe.sm_.process(pe::event::hard_reset_received{}); }
@@ -785,10 +1111,19 @@ private:
         SourcePolicyEngine& pe;
     };
 
+    // A transient state left standing after its trigger was processed
+    // is advanced here (the spec chains them without further input)
+    void advanceTransients()
+    {
+        if (sm_.template is<pe::state::pe_src_dr_swap_change>()) {
+            sm_.process(pe::event::swap_done{});
+        }
+    }
+
     std::uint16_t makeHeader(std::uint8_t message_type, std::uint8_t data_objects) const
     {
         return pd_header{.message_type     = message_type,
-                         .port_data_role   = data_role::dfp,
+                         .port_data_role   = sm_.template context<pe::src_context>().data,
                          .revision         = pd_revision::rev_3_x,
                          .port_power_role  = power_role::source,
                          .num_data_objects = data_objects}
@@ -852,6 +1187,19 @@ private:
             negotiate(message);
         } else if (isControl(header, control_message_type::accept)) {
             sm_.process(pe::event::accept{});
+            advanceTransients();
+        } else if (isControl(header, control_message_type::reject)) {
+            sm_.process(pe::event::reject{});
+        } else if (isControl(header, control_message_type::wait)) {
+            sm_.process(pe::event::wait{});
+        } else if (isControl(header, control_message_type::ps_rdy)) {
+            // the PS_RDY exchange of a PR_Swap runs on the sink engine
+        } else if (isControl(header, control_message_type::dr_swap)) {
+            answerSwap<data_role>(pe::event::dr_swap_accepted{
+                makeControl(control_message_type::accept)});
+        } else if (isControl(header, control_message_type::pr_swap)) {
+            answerSwap<power_role>(pe::event::pr_swap_accepted{
+                makeControl(control_message_type::accept)});
         } else if (isControl(header, control_message_type::get_source_cap)) {
             sm_.process(pe::event::get_source_caps{});
         } else if (isControl(header, control_message_type::soft_reset)) {
@@ -861,6 +1209,40 @@ private:
                    !isControl(header, control_message_type::ping)) {
             // answered from Ready only; ignored while negotiating
             sm_.process(pe::event::unsupported{makeControl(control_message_type::not_supported)});
+        }
+    }
+
+    // The partner asks for a role swap, arbitrated by the injected
+    // policy's optional allowSwap(role) - consulted with the role this
+    // port would take. A policy without one keeps the non-DRP answer
+    // (Not_Supported); a refusal answers Reject; a request outside
+    // Ready is discarded (an AMS is running)
+    template<typename ROLE, typename ACCEPTED>
+    void answerSwap(ACCEPTED const& accepted)
+    {
+        if constexpr (requires(ROLE role) {
+                          { policy_.allowSwap(role) } -> std::convertible_to<bool>;
+                      }) {
+            if (policy_.allowSwap(swapTarget<ROLE>())) {
+                sm_.process(accepted);
+            } else {
+                sm_.process(
+                    pe::event::unsupported{makeControl(control_message_type::reject)});
+            }
+        } else {
+            sm_.process(
+                pe::event::unsupported{makeControl(control_message_type::not_supported)});
+        }
+    }
+
+    template<typename ROLE>
+    ROLE swapTarget() const
+    {
+        if constexpr (std::is_same_v<ROLE, power_role>) {
+            return power_role::sink; // a source swaps to sinking
+        } else {
+            auto const data = sm_.template context<pe::src_context>().data;
+            return data == data_role::ufp ? data_role::dfp : data_role::ufp;
         }
     }
 
@@ -883,6 +1265,8 @@ private:
     std::span<std::uint32_t const> capabilities_;
     POLICY& policy_;
     SUPPLY& supply_;
+    void (*idle_hook_)(void*) = nullptr;
+    void* idle_context_       = nullptr;
     PrlPort port_{*this};
     ProtocolLayer<TCPC, TIMER, PrlPort> prl_; // also an observer of sm_
     fsm::timed<TIMER&> timed_;

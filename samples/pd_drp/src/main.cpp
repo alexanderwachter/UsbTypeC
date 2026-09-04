@@ -5,10 +5,10 @@
  * policies, and the power effects. Engine routing, alert dispatch, and
  * message-header bookkeeping live in the library.
  *
- * The joystick stands in for the PD swap messaging: SEL swaps the
- * power role, LEFT the data role. Both swaps are local-only until the
- * policy engines speak PR_Swap/DR_Swap - a partner will not follow,
- * this demonstrates the port control.
+ * The joystick triggers the PD swap messaging: SEL requests a
+ * PR_Swap, LEFT a DR_Swap. The engines run the full exchange - the
+ * request, the partner's Accept, and for the power swap the PS_RDY
+ * hand-off with the termination flip in between.
  *
  * Copyright (c) 2026 Alexander Wachter
  *
@@ -22,21 +22,28 @@
 #include <usbc/zephyr/WorkQueue.hpp>
 
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pwm.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
 #include <array>
+#include <cstdint>
 
 LOG_MODULE_REGISTER(pd_drp_sample, LOG_LEVEL_INF);
 
 #define USBC_PORT0_NODE DT_ALIAS(usbc_port0)
+#define PWRCTRL_NODE DT_ALIAS(usbc_port0_pwrctrl)
 
 namespace {
 
 // What this port takes as a sink, and offers as a source
 constexpr std::array sink_capabilities{usbc::sink_capability{5000, 3000},
                                        usbc::sink_capability{9000, 3000}};
-constexpr std::array source_caps{usbc::pdo::makeFixedSource(5000, 1500)};
+// The source offers come straight from the connector node's
+// source-pdos: the DT PDO_FIXED words are the PD wire format that
+// usbc::pdo::makeFixedSource() builds
+constexpr std::array<std::uint32_t, DT_PROP_LEN(USBC_PORT0_NODE, source_pdos)> source_caps{
+    DT_FOREACH_PROP_ELEM_SEP(USBC_PORT0_NODE, source_pdos, DT_PROP_BY_IDX, (,))};
 
 // The sink engine's power side: no real input regulator, log its work
 struct Power : usbc::SinkPower<Power> {
@@ -52,13 +59,29 @@ struct Power : usbc::SinkPower<Power> {
     void onContractLost() { LOG_WRN("sink contract lost, back to vSafe5V"); }
 };
 
-// Log-only supply for the source engine: reports the target settled
-// from the stack's work queue (never synchronously - the engine is
-// mid-transition when setOutput() runs)
+// The eval board's source power path: a PWM duty cycle selects the
+// DCDC output voltage, GPIOs gate the DCDC and the VBUS source
+// switch. The settled report comes from the stack's work queue, never
+// synchronously - the engine is mid-transition when setOutput() runs
+// (no output-voltage feedback on this board, as in Zephyr's sample)
 struct Supply {
+    // duty cycles measured for the eval board's DCDC (50 us period)
+    static constexpr uint32_t pulseFor(usbc::millivolt voltage)
+    {
+        switch (voltage) {
+        case 5000:  return 21500;
+        case 9000:  return 30000;
+        case 15000: return 45000;
+        default:    return 0;
+        }
+    }
+
+    pwm_dt_spec const voltage_select = PWM_DT_SPEC_GET(PWRCTRL_NODE);
+    gpio_dt_spec const source_en     = GPIO_DT_SPEC_GET(PWRCTRL_NODE, source_en_gpios);
+    gpio_dt_spec const dcdc_en       = GPIO_DT_SPEC_GET(PWRCTRL_NODE, dcdc_en_gpios);
     k_work work{};
-    usbc::supply_callback callback = nullptr;
-    void* context                  = nullptr;
+    usbc::supply_ready_callback callback = nullptr;
+    void* context                        = nullptr;
 
     Supply()
     {
@@ -68,7 +91,14 @@ struct Supply {
         });
     }
 
-    void setCallback(usbc::supply_callback cb, void* ctx)
+    bool init()
+    {
+        return gpio_pin_configure_dt(&source_en, GPIO_OUTPUT_ACTIVE) == 0 &&
+               gpio_pin_configure_dt(&dcdc_en, GPIO_OUTPUT_ACTIVE) == 0 &&
+               pwm_set_pulse_dt(&voltage_select, pulseFor(0)) == 0;
+    }
+
+    void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
     {
         callback = cb;
         context  = ctx;
@@ -76,13 +106,21 @@ struct Supply {
     bool setOutput(usbc::millivolt voltage, usbc::milliamp current_limit)
     {
         LOG_INF("supply: %d mV, %d mA", voltage, current_limit);
+        if (pwm_set_pulse_dt(&voltage_select, pulseFor(voltage)) != 0) {
+            return false;
+        }
         k_work_submit_to_queue(&usbc::zephyr::workQueue(), &work);
         return true;
     }
 };
 static_assert(usbc::concepts::source_supply<Supply>);
 
-struct Contract : usbc::SourcePower<Contract> {
+// Signals that the power supply is live at the contract's operating
+// point: the engine has driven Supply::setOutput(), the output
+// settled, and PS_RDY is on the wire when onContract fires.
+// onContractLost reports the end (detach, Hard Reset), output back at
+// vSafe5V. Report-only - the engine programs the supply itself
+struct ContractMonitor : usbc::SourcePower<ContractMonitor> {
     void onContract(usbc::millivolt voltage, usbc::milliamp current)
     {
         LOG_INF("source contract: %d mV at %d mA", voltage, current);
@@ -93,7 +131,7 @@ struct Contract : usbc::SourcePower<Contract> {
 // The StateLogger rides along in the connection machine (module
 // usbc_fsm, debug level)
 using Port = usbc::PdDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                         usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, Contract,
+                         usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, ContractMonitor,
                          usbc::default_drp_timing, usbc::drp_preference::none,
                          usbc::zephyr::StateLogger>;
 
@@ -105,38 +143,34 @@ usbc::PowerPolicy sink_policy{5000, 27000}; // at least 5 W, aim for 27 W
 Power power;
 usbc::RequestPolicy source_policy;
 Supply supply;
-Contract contract;
+ContractMonitor contract_monitor;
 usbc::zephyr::StateLogger state_logger;
 
 // The Rp matches the 5 V capability the port advertises through PD
-Port port{tcpc,   vbus,     timers,        sink_capabilities,     sink_policy,  power,
-          source_caps, source_policy, supply, contract, usbc::rp_value::p_1a5, state_logger};
+Port port{tcpc,        vbus,          timers, sink_capabilities, sink_policy,           power,
+          source_caps, source_policy, supply, contract_monitor,  usbc::rp_value::p_1a5,
+          state_logger};
 
-// The joystick stands in for the PD swap messaging, submitted to the
-// stack's queue - the serialization the swap calls require. Without a
-// partner PS_RDY exchange the standby is completed right away
+// The joystick triggers the PD swap messaging, submitted to the
+// stack's queue - the serialization the swap calls require. The
+// request goes on the wire; the roles change once the partner accepts
+// and the PS_RDY hand-off completes
 void powerSwap(k_work*)
 {
-    auto const role  = port.powerRole();
-    bool const begun = role == usbc::power_role::sink     ? port.beginSwapToSource()
-                       : role == usbc::power_role::source ? port.beginSwapToSink()
-                                                          : false;
-    if (!begun) {
-        LOG_INF("power role swap refused");
+    if (!port.swapPowerRole()) {
+        LOG_INF("power role swap refused (no contract, busy, or vetoed)");
         return;
     }
-    port.completeSwap();
-    LOG_INF("power role now %s",
-            port.powerRole() == usbc::power_role::source ? "source" : "sink");
+    LOG_INF("PR_Swap sent");
 }
 
 void dataSwap(k_work*)
 {
     if (!port.swapDataRole()) {
-        LOG_INF("data role swap refused");
+        LOG_INF("data role swap refused (no contract, busy, or vetoed)");
         return;
     }
-    LOG_INF("data role now %s", port.dataRole() == usbc::data_role::dfp ? "DFP" : "UFP");
+    LOG_INF("DR_Swap sent");
 }
 
 K_WORK_DEFINE(power_swap_work, powerSwap);
@@ -160,6 +194,10 @@ void setupButton(gpio_dt_spec const& button, gpio_callback& callback,
 
 int main()
 {
+    if (!supply.init()) {
+        LOG_ERR("supply hardware init failed");
+        return -1;
+    }
     port.start(); // leave Disabled: toggle Rd/Rp, resolve with the partner
 
     setupButton(power_button, power_button_cb, [](const device*, gpio_callback*, uint32_t) {

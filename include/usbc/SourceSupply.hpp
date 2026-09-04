@@ -6,7 +6,7 @@
  *
  * The interface is event-driven like the others: setOutput() starts
  * the transition to a new operating point and returns once the driver
- * accepted it; the registered callback (typically interrupt context)
+ * accepted it; the ready callback (typically interrupt context)
  * reports with at_target = true when the output has settled within
  * tolerance at the target - the policy engine's trigger to send
  * PS_RDY. A later at_target = false reports lost regulation, which the
@@ -28,14 +28,14 @@
 
 namespace usbc {
 
-using supply_callback = void (*)(void* context, bool at_target);
+using supply_ready_callback = void (*)(void* context, bool at_target);
 
 namespace concepts {
 
 template<typename T>
 concept source_supply = requires(T s, millivolt voltage, milliamp current_limit,
-                                 supply_callback callback, void* context) {
-    s.setCallback(callback, context);
+                                 supply_ready_callback callback, void* context) {
+    s.setReadyCallback(callback, context);
     { s.setOutput(voltage, current_limit) } -> std::same_as<bool>;
 };
 

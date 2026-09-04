@@ -48,13 +48,13 @@ static_assert(fsm::concepts::timer<manual_timer>);
 
 // --- application test doubles ------------------------------------------------
 struct mock_supply {
-    usbc::supply_callback callback = nullptr;
+    usbc::supply_ready_callback callback = nullptr;
     void* context                  = nullptr;
     usbc::millivolt voltage        = 5000;
     usbc::milliamp current         = 0;
     int sets                       = 0;
 
-    void setCallback(usbc::supply_callback cb, void* ctx)
+    void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
     {
         callback = cb;
         context  = ctx;

@@ -43,8 +43,8 @@ constexpr std::array source_caps{usbc::pdo::makeFixedSource(5000, 1500),
 // setOutput() runs)
 struct Supply {
     k_work work{};
-    usbc::supply_callback callback = nullptr;
-    void* context                  = nullptr;
+    usbc::supply_ready_callback callback = nullptr;
+    void* context                        = nullptr;
 
     Supply()
     {
@@ -54,7 +54,7 @@ struct Supply {
         });
     }
 
-    void setCallback(usbc::supply_callback cb, void* ctx)
+    void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
     {
         callback = cb;
         context  = ctx;
@@ -68,8 +68,12 @@ struct Supply {
 };
 static_assert(usbc::concepts::source_supply<Supply>);
 
-// The contract-notification side of the engine, injected as an observer
-struct Contract : usbc::SourcePower<Contract> {
+// Signals that the power supply is live at the contract's operating
+// point: the engine has driven Supply::setOutput(), the output
+// settled, and PS_RDY is on the wire when onContract fires.
+// onContractLost reports the end (detach, Hard Reset), output back at
+// vSafe5V. Report-only - the engine programs the supply itself
+struct ContractMonitor : usbc::SourcePower<ContractMonitor> {
     void onContract(usbc::millivolt voltage, usbc::milliamp current)
     {
         LOG_INF("contract: %d mV at %d mA", voltage, current);
@@ -78,7 +82,7 @@ struct Contract : usbc::SourcePower<Contract> {
 };
 
 using Engine = usbc::SourcePolicyEngine<usbc::zephyr::Tcpc, usbc::zephyr::Timer,
-                                        usbc::RequestPolicy, Supply, Contract>;
+                                        usbc::RequestPolicy, Supply, ContractMonitor>;
 
 // Observer injected into the source's machine: watches the attached
 // state and feeds the engine, taking the PD alert bits the connection
@@ -115,8 +119,8 @@ usbc::zephyr::Timer pe_timer;
 
 usbc::RequestPolicy policy;
 Supply supply;
-Contract contract;
-Engine engine{tcpc, prl_timer, pe_timer, source_caps, policy, supply, contract};
+ContractMonitor contract_monitor;
+Engine engine{tcpc, prl_timer, pe_timer, source_caps, policy, supply, contract_monitor};
 PortClient port_client{.engine = engine};
 // The Rp matches the 5 V capability the port advertises through PD
 Source source{tcpc, vbus, tc_timer, usbc::rp_value::p_1a5, port_client};
