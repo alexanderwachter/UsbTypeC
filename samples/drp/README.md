@@ -8,9 +8,10 @@ charger makes it a sink, a sink makes it a source. The injected
 log module at debug level.
 
 Toggle timing and role preference are compile-time configuration:
-derive from `usbc::default_drp_timing` (spec ranges enforced at
-compile time) and pick `usbc::drp_preference::source`/`::sink` for
-Try.SRC/Try.SNK role resolution.
+pass a constexpr `usbc::drp_timing` instance (designated initializers
+over the defaults, spec ranges enforced at compile time) and pick
+`usbc::drp_preference::source`/`::sink` for Try.SRC/Try.SNK role
+resolution.
 
 Role swaps belong to USB PD and are demonstrated by the `pd_drp`
 sample.

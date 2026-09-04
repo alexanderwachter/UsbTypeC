@@ -70,17 +70,25 @@ namespace usbc {
 // Which role a DRP tries to resolve to when a partner attaches
 enum class drp_preference : std::uint8_t { none, source, sink };
 
-// Spec Table 4-30 DRP timing parameters; derive and override members
-// to configure, the ranges are enforced at compile time
-struct default_drp_timing {
-    static constexpr auto t_drp   = std::chrono::milliseconds{75}; // 50 - 100 ms
-    static constexpr unsigned dc_src = 50;                         // dcSRC.DRP, 30 - 70 %
-    static constexpr auto t_drp_try        = std::chrono::milliseconds{100}; // 75 - 150 ms
-    static constexpr auto t_drp_try_wait   = std::chrono::milliseconds{600}; // 400 - 800 ms
-    static constexpr auto t_try_cc_debounce = std::chrono::milliseconds{15}; // 10 - 20 ms
-    static constexpr auto t_try_timeout    = std::chrono::milliseconds{800}; // 550 - 1100 ms
-    static constexpr auto t_pd_debounce    = std::chrono::milliseconds{15};  // 10 - 20 ms
+// Spec Table 4-30 DRP timing parameters, passed to the port as a
+// reference to a constexpr instance (chrono durations are not
+// structural types, so the object cannot be a by-value template
+// argument). Configure with designated initializers over the member
+// defaults; the ranges are enforced at compile time:
+//
+//   inline constexpr usbc::drp_timing sink_heavy{.t_drp = std::chrono::milliseconds{100},
+//                                                .dc_src = 30};
+struct drp_timing {
+    std::chrono::milliseconds t_drp{75};             // tDRP, 50 - 100 ms
+    unsigned dc_src = 50;                            // dcSRC.DRP, 30 - 70 %
+    std::chrono::milliseconds t_drp_try{100};        // tDRPTry, 75 - 150 ms
+    std::chrono::milliseconds t_drp_try_wait{600};   // tDRPTryWait, 400 - 800 ms
+    std::chrono::milliseconds t_try_cc_debounce{15}; // tTryCCDebounce, 10 - 20 ms
+    std::chrono::milliseconds t_try_timeout{800};    // tTryTimeout, 550 - 1100 ms
+    std::chrono::milliseconds t_pd_debounce{15};     // tPDDebounce, 10 - 20 ms
 };
+
+inline constexpr drp_timing default_drp_timing{};
 
 namespace concepts {
 
@@ -93,60 +101,49 @@ concept drp_swap_policy = requires(T policy, ROLE role) {
     { policy.allowSwap(role) } -> std::convertible_to<bool>;
 };
 
-template<typename T>
-concept drp_timing = requires {
-    { T::t_drp } -> std::convertible_to<std::chrono::milliseconds>;
-    { T::dc_src } -> std::convertible_to<unsigned>;
-    { T::t_drp_try } -> std::convertible_to<std::chrono::milliseconds>;
-    { T::t_drp_try_wait } -> std::convertible_to<std::chrono::milliseconds>;
-    { T::t_try_cc_debounce } -> std::convertible_to<std::chrono::milliseconds>;
-    { T::t_try_timeout } -> std::convertible_to<std::chrono::milliseconds>;
-    { T::t_pd_debounce } -> std::convertible_to<std::chrono::milliseconds>;
-};
-
 } // namespace concepts
 
 namespace tc {
 
 namespace drp {
 
-template<concepts::drp_timing TIMING>
+template<drp_timing const& TIMING>
 consteval bool timingWithinSpec()
 {
-    static_assert(spec::t_drp.contains(TIMING::t_drp), "tDRP outside the spec's 50-100 ms");
-    static_assert(spec::within(TIMING::dc_src, spec::dc_src_drp_min, spec::dc_src_drp_max),
+    static_assert(spec::t_drp.contains(TIMING.t_drp), "tDRP outside the spec's 50-100 ms");
+    static_assert(spec::within(TIMING.dc_src, spec::dc_src_drp_min, spec::dc_src_drp_max),
                   "dcSRC.DRP outside the spec's 30-70 %");
-    static_assert(spec::t_drp_try.contains(TIMING::t_drp_try),
+    static_assert(spec::t_drp_try.contains(TIMING.t_drp_try),
                   "tDRPTry outside the spec's 75-150 ms");
-    static_assert(spec::t_drp_try_wait.contains(TIMING::t_drp_try_wait),
+    static_assert(spec::t_drp_try_wait.contains(TIMING.t_drp_try_wait),
                   "tDRPTryWait outside the spec's 400-800 ms");
-    static_assert(spec::t_try_cc_debounce.contains(TIMING::t_try_cc_debounce),
+    static_assert(spec::t_try_cc_debounce.contains(TIMING.t_try_cc_debounce),
                   "tTryCCDebounce outside the spec's 10-20 ms");
-    static_assert(spec::t_try_timeout.contains(TIMING::t_try_timeout),
+    static_assert(spec::t_try_timeout.contains(TIMING.t_try_timeout),
                   "tTryTimeout outside the spec's 550-1100 ms");
-    static_assert(spec::t_pd_debounce.contains(TIMING::t_pd_debounce),
+    static_assert(spec::t_pd_debounce.contains(TIMING.t_pd_debounce),
                   "tPDDebounce outside the spec's 10-20 ms");
     return true;
 }
 
 // The Rp slice of the toggle period; the Rd slice is the remainder
-template<typename TIMING>
-inline constexpr std::chrono::milliseconds t_src_slice = TIMING::t_drp * TIMING::dc_src / 100;
+template<drp_timing const& TIMING>
+inline constexpr std::chrono::milliseconds t_src_slice = TIMING.t_drp * TIMING.dc_src / 100;
 
 // --- toggling unattached states ---------------------------------------------
 
 // Unattached.SNK of a DRP: Rd presented for the sink slice of tDRP
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct unattached_snk : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto timeout     = TIMING::t_drp - t_src_slice<TIMING>;
+    static constexpr auto timeout     = TIMING.t_drp - t_src_slice<TIMING>;
 
     using state::sink_state::sink_state;
 };
 
 // Unattached.SRC of a DRP: Rp presented for the source slice of tDRP
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct unattached_src : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
@@ -164,21 +161,21 @@ struct unattached_src : state::source_state {
 
 // Rp presented where the sink flow would have attached; waits tDRPTry
 // for the partner's Rd
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct try_src : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto timeout     = TIMING::t_drp_try;
+    static constexpr auto timeout     = TIMING.t_drp_try;
 
     using state::source_state::source_state;
 };
 
 // A single Rd appeared in Try.SRC: stable for tTryCCDebounce attaches
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct try_src_debounce : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto timeout     = TIMING::t_try_cc_debounce;
+    static constexpr auto timeout     = TIMING.t_try_cc_debounce;
 
     try_src_debounce(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
     {
@@ -189,11 +186,11 @@ struct try_src_debounce : state::source_state {
 
 // The partner did not present Rd: back to Rd for tDRPTryWait, attaching
 // as sink when the partner sources VBUS
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct try_wait_snk : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto timeout     = TIMING::t_drp_try_wait;
+    static constexpr auto timeout     = TIMING.t_drp_try_wait;
 
     using state::sink_state::sink_state;
 };
@@ -202,32 +199,32 @@ struct try_wait_snk : state::sink_state {
 
 // Rd presented where the source flow would have attached; the spec
 // mandates waiting tDRPTry before the CC pins are even monitored
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct try_snk : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto timeout     = TIMING::t_drp_try;
+    static constexpr auto timeout     = TIMING.t_drp_try;
 
     using state::sink_state::sink_state;
 };
 
 // Monitoring phase of Try.SNK: the tTryTimeout budget minus the wait
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct try_snk_monitor : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto timeout     = TIMING::t_try_timeout - TIMING::t_drp_try;
+    static constexpr auto timeout     = TIMING.t_try_timeout - TIMING.t_drp_try;
 
     using state::sink_state::sink_state;
 };
 
 // A single Rp appeared in Try.SNK: stable for tPDDebounce with VBUS
 // present attaches
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct try_snk_debounce : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto timeout     = TIMING::t_pd_debounce;
+    static constexpr auto timeout     = TIMING.t_pd_debounce;
 
     try_snk_debounce(event::cc_changed const& event, port_context& ctx) : sink_state(ctx)
     {
@@ -237,22 +234,22 @@ struct try_snk_debounce : state::sink_state {
 };
 
 // The partner did not present Rp: back to Rp for tDRPTryWait
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct try_wait_src : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto timeout     = TIMING::t_drp_try_wait;
+    static constexpr auto timeout     = TIMING.t_drp_try_wait;
 
     using state::source_state::source_state;
 };
 
 // A single Rd appeared in TryWait.SRC: stable for tTryCCDebounce
 // attaches once VBUS is at vSafe0V
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct try_wait_src_debounce : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto timeout     = TIMING::t_try_cc_debounce;
+    static constexpr auto timeout     = TIMING.t_try_cc_debounce;
 
     try_wait_src_debounce(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
     {
@@ -262,7 +259,7 @@ struct try_wait_src_debounce : state::source_state {
 };
 
 // Rd debounced but VBUS not yet at vSafe0V: attach follows the report
-template<typename TIMING>
+template<drp_timing const& TIMING>
 struct try_wait_src_safe0v : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
@@ -352,7 +349,7 @@ inline constexpr fsm::timeout_range t_try_monitor{
 
 // Composed per preference like the flows they check; the shared attach
 // flows bring the sink and source maps along
-template<typename TIMING>
+template<drp_timing const& TIMING>
 using core_timer_ranges = mtl::linearize_t<mtl::typelist<
     sink_timer_ranges, source_timer_ranges,
     fsm::timed_by<unattached_snk<TIMING>, spec::t_drp_pw>,
@@ -360,13 +357,13 @@ using core_timer_ranges = mtl::linearize_t<mtl::typelist<
     fsm::timed_by<swap_standby_to_src, spec::t_ps_source_off>,
     fsm::timed_by<swap_standby_to_snk, spec::t_ps_source_on>>>;
 
-template<typename TIMING>
+template<drp_timing const& TIMING>
 using try_src_timer_ranges = mtl::typelist<
     fsm::timed_by<try_src<TIMING>, spec::t_drp_try>,
     fsm::timed_by<try_src_debounce<TIMING>, spec::t_try_cc_debounce>,
     fsm::timed_by<try_wait_snk<TIMING>, spec::t_drp_try_wait>>;
 
-template<typename TIMING>
+template<drp_timing const& TIMING>
 using try_snk_timer_ranges = mtl::typelist<
     fsm::timed_by<try_snk<TIMING>, spec::t_drp_try>,
     fsm::timed_by<try_snk_monitor<TIMING>, t_try_monitor>,
@@ -380,7 +377,7 @@ using try_snk_timer_ranges = mtl::typelist<
 // toggling Unattached.SNK, plus the toggle to the Rp phase; SNK_ATTACH
 // is where a successful attach leads - Attached.SNK, or Try.SRC for a
 // source-preferring port
-template<typename TIMING, typename SNK_ATTACH>
+template<drp_timing const& TIMING, typename SNK_ATTACH>
 using sink_flow = mtl::concat_t<
     mtl::typelist<fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>,
                                   fsm::to<unattached_src<TIMING>>>>,
@@ -388,13 +385,13 @@ using sink_flow = mtl::concat_t<
 
 // Source-role flow; SRC_ATTACH is Attached.SRC, or Try.SNK for a
 // sink-preferring port
-template<typename TIMING, typename SRC_ATTACH>
+template<drp_timing const& TIMING, typename SRC_ATTACH>
 using source_flow = mtl::concat_t<
     mtl::typelist<fsm::transition<fsm::from<unattached_src<TIMING>>, fsm::on<fsm::timeout>,
                                   fsm::to<unattached_snk<TIMING>>>>,
     source_attach_flow<unattached_src<TIMING>, SRC_ATTACH>>;
 
-template<typename TIMING>
+template<drp_timing const& TIMING>
 using try_src_flow = mtl::typelist<
     fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<event::cc_changed>,
                     fsm::to<try_src_debounce<TIMING>>, fsm::guard<rd_on_event>>,
@@ -426,7 +423,7 @@ using try_src_flow = mtl::typelist<
     fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<fsm::timeout>,
                     fsm::to<unattached_snk<TIMING>>>>;
 
-template<typename TIMING>
+template<drp_timing const& TIMING>
 using try_snk_flow = mtl::typelist<
     // the CC pins are not monitored during the initial tDRPTry wait
     fsm::internal_transition<fsm::from<try_snk<TIMING>>, fsm::on<event::cc_changed>>,
@@ -491,7 +488,7 @@ using try_snk_flow = mtl::typelist<
 // only flips the context's data role. The message choreography and the
 // decision to swap are the PD layer's business, gated by the injected
 // policy observers
-template<concepts::drp_timing TIMING>
+template<drp_timing const& TIMING>
 using swap_flow = mtl::typelist<
     fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::swap_to_source>,
                     fsm::to<swap_standby_to_src>>,
@@ -520,13 +517,13 @@ using swap_flow = mtl::typelist<
 
 // The port rests in the sink layer's Disabled state and goes live
 // toggling at Rd
-template<typename TIMING>
+template<drp_timing const& TIMING>
 using entry_flow = mtl::typelist<
     fsm::initial<state::disabled_snk>,
     fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
                     fsm::to<unattached_snk<TIMING>>>>;
 
-template<concepts::drp_timing TIMING, drp_preference PREFERENCE>
+template<drp_timing const& TIMING, drp_preference PREFERENCE>
 struct table_for {
     static_assert(timingWithinSpec<TIMING>());
     using type = mtl::rebind_t<
@@ -538,7 +535,7 @@ struct table_for {
     static_assert(fsm::all_states_reachable_v<type>);
 };
 
-template<concepts::drp_timing TIMING>
+template<drp_timing const& TIMING>
 struct table_for<TIMING, drp_preference::source> {
     static_assert(timingWithinSpec<TIMING>());
     using type = mtl::rebind_t<
@@ -553,7 +550,7 @@ struct table_for<TIMING, drp_preference::source> {
     static_assert(fsm::all_states_reachable_v<type>);
 };
 
-template<concepts::drp_timing TIMING>
+template<drp_timing const& TIMING>
 struct table_for<TIMING, drp_preference::sink> {
     static_assert(timingWithinSpec<TIMING>());
     using type = mtl::rebind_t<
@@ -568,7 +565,7 @@ struct table_for<TIMING, drp_preference::sink> {
     static_assert(fsm::all_states_reachable_v<type>);
 };
 
-template<concepts::drp_timing TIMING, drp_preference PREFERENCE>
+template<drp_timing const& TIMING, drp_preference PREFERENCE>
 using table_for_t = typename table_for<TIMING, PREFERENCE>::type;
 
 } // namespace drp
@@ -629,7 +626,7 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
 } // namespace tc
 
 template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         concepts::drp_timing TIMING = default_drp_timing,
+         drp_timing const& TIMING = default_drp_timing,
          drp_preference PREFERENCE = drp_preference::none, typename... OBSERVERs>
 class TypeCDrp {
 public:

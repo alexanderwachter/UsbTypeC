@@ -42,7 +42,7 @@ int main(int argc, char* argv[])
     write<usbc::prl::tx_table>(directory, "prl_tx");
     write<usbc::tc::sink_table>(directory, "tc_sink");
     write<usbc::tc::source_table>(directory, "tc_source");
-    using drp_timing = usbc::default_drp_timing;
+    constexpr auto& drp_timing = usbc::default_drp_timing;
     write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::none>>(directory,
                                                                               "tc_drp");
     write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::source>>(

@@ -81,21 +81,18 @@ struct mock_drp_client : fsm::observing<mock_drp_client> {
 // --- compile-time checks ----------------------------------------------------
 namespace compile_time {
 
-using timing = usbc::default_drp_timing;
-static_assert(usbc::concepts::drp_timing<timing>);
+constexpr auto& timing = usbc::default_drp_timing;
 
 // the toggle slices split tDRP by dcSRC.DRP
 static_assert(usbc::tc::drp::t_src_slice<timing> ==
-              timing::t_drp * timing::dc_src / 100);
+              timing.t_drp * timing.dc_src / 100);
 static_assert(usbc::tc::drp::unattached_src<timing>::timeout +
                   usbc::tc::drp::unattached_snk<timing>::timeout ==
-              timing::t_drp);
+              timing.t_drp);
 
-// a custom timing derives from the default and overrides members
-struct sink_heavy_timing : usbc::default_drp_timing {
-    static constexpr auto t_drp      = std::chrono::milliseconds{100};
-    static constexpr unsigned dc_src = 30;
-};
+// a custom timing overrides the defaults with designated initializers
+inline constexpr usbc::drp_timing sink_heavy_timing{.t_drp = std::chrono::milliseconds{100},
+                                                    .dc_src = 30};
 static_assert(usbc::tc::drp::unattached_src<sink_heavy_timing>::timeout == 30ms);
 static_assert(usbc::tc::drp::unattached_snk<sink_heavy_timing>::timeout == 70ms);
 static_assert(usbc::tc::drp::timingWithinSpec<sink_heavy_timing>());
@@ -157,7 +154,7 @@ static_assert(!usbc::concepts::drp_swap_policy<mock_drp_client, usbc::power_role
 
 int typeCDrpTests()
 {
-    using timing = usbc::default_drp_timing;
+    constexpr auto& timing = usbc::default_drp_timing;
     using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
                                   usbc::drp_preference::none, mock_drp_client>;
 
@@ -234,7 +231,7 @@ int typeCDrpTests()
 
 int typeCDrpTrySrcTests()
 {
-    using timing = usbc::default_drp_timing;
+    constexpr auto& timing = usbc::default_drp_timing;
     using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
                                   usbc::drp_preference::source, mock_drp_client>;
 
@@ -309,7 +306,7 @@ int typeCDrpTrySrcTests()
 
 int typeCDrpTrySnkTests()
 {
-    using timing = usbc::default_drp_timing;
+    constexpr auto& timing = usbc::default_drp_timing;
     using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
                                   usbc::drp_preference::sink, mock_drp_client>;
 
@@ -388,7 +385,7 @@ int typeCDrpTrySnkTests()
 
 int typeCDrpSwapTests()
 {
-    using timing = usbc::default_drp_timing;
+    constexpr auto& timing = usbc::default_drp_timing;
 
     // no swap-policy observer injected: swaps are refused
     {

@@ -9,10 +9,11 @@
  * the serialization the stack requires.
  *
  * Toggle timing and role preference are compile-time configuration:
- * derive from usbc::default_drp_timing to change tDRP/dcSRC.DRP (spec
- * ranges enforced), and pick usbc::drp_preference::source or ::sink to
- * resolve attaches through Try.SRC or Try.SNK. Role swaps belong to
- * USB PD - see the pd_drp sample.
+ * pass a constexpr usbc::drp_timing instance (designated initializers
+ * over the defaults, spec ranges enforced) to change tDRP/dcSRC.DRP,
+ * and pick usbc::drp_preference::source or ::sink to resolve attaches
+ * through Try.SRC or Try.SNK. Role swaps belong to USB PD - see the
+ * pd_drp sample.
  *
  * Copyright (c) 2026 Alexander Wachter
  *
