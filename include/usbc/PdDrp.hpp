@@ -220,6 +220,9 @@ private:
         enum class active_role { none, sink, source };
         active_role active = active_role::none;
         data_role data     = data_role::ufp; // for the header between hooks
+        // carried across the engine handover of a power role swap: the
+        // negotiated revision holds for the connection
+        pd_revision swap_revision = pd_revision::rev_3_x;
 
         template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
         void onEnterState(MACHINE& machine)
@@ -237,9 +240,10 @@ private:
                 data = machine.template getIf<NEW_STATE>()->dataRole();
                 header(power_role::source);
                 if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_src>) {
+                    swap_revision = snk.negotiatedRevision();
                     snk.vbusRemoved(); // the sink engine's half is done
                     active = active_role::source;
-                    src.attachedAfterSwap(data); // continue the PR_Swap
+                    src.attachedAfterSwap(data, swap_revision); // continue the PR_Swap
                 } else {
                     active = active_role::source;
                     src.attached();
@@ -249,7 +253,7 @@ private:
                 // engine takes over the PS_RDY exchange
                 header(power_role::sink);
                 active = active_role::sink;
-                snk.startSwapWaitSourceOn(data);
+                snk.startSwapWaitSourceOn(data, swap_revision);
             }
         }
 
@@ -264,6 +268,9 @@ private:
                     active = active_role::none;
                 }
             } else if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_src>) {
+                if constexpr (std::is_same_v<NEW_STATE, tc::drp::swap_standby_to_snk>) {
+                    swap_revision = src.negotiatedRevision(); // before the reset
+                }
                 src.detached();
                 active = active_role::none;
             } else if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_src>) {

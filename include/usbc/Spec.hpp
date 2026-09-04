@@ -89,8 +89,9 @@ inline constexpr timeout_range t_ps_source_on{milliseconds{390}, milliseconds{48
 inline constexpr timeout_range t_swap_source_start{milliseconds{20}, milliseconds{100}};
 
 // Counters
-inline constexpr std::uint8_t n_retry_count = 2;  // nRetryCount, PD rev 3.x
-inline constexpr std::uint8_t n_caps_count  = 50; // nCapsCount
+inline constexpr std::uint8_t n_retry_count      = 2;  // nRetryCount, PD rev 3.x
+inline constexpr std::uint8_t n_retry_count_rev2 = 3;  // nRetryCount, PD rev 2.0
+inline constexpr std::uint8_t n_caps_count       = 50; // nCapsCount
 
 // Sink standby draw during a transition, at any voltage
 inline constexpr milliamp i_snk_stdby = 500; // iSnkStdby

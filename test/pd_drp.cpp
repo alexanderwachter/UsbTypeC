@@ -93,12 +93,13 @@ struct mock_source_power : usbc::SourcePower<mock_source_power> {
 int next_id = 0;
 
 usbc::pd_message partnerMessage(std::uint8_t message_type, std::uint8_t data_objects,
-                                usbc::power_role power, usbc::data_role data)
+                                usbc::power_role power, usbc::data_role data,
+                                usbc::pd_revision revision = usbc::pd_revision::rev_2_0)
 {
     return {.sop    = usbc::sop_type::sop,
             .header = usbc::pd_header{.message_type     = message_type,
                                       .port_data_role   = data,
-                                      .revision         = usbc::pd_revision::rev_3_x,
+                                      .revision         = revision,
                                       .port_power_role  = power,
                                       .message_id = static_cast<std::uint8_t>(next_id++ & 0x7u),
                                       .num_data_objects = data_objects}
@@ -193,14 +194,19 @@ int pdDrpTests()
     check(timers.sink_pe.armed); // SinkWaitCapTimer runs
 
     // negotiation: the partner's capabilities, our Request, Accept,
-    // PS_RDY - an explicit contract (swaps are allowed only under one)
+    // PS_RDY - an explicit contract (swaps are allowed only under one).
+    // The partner is a PD 2.0 device: the lowest common revision is
+    // adopted, stamped into our headers, and the GoodCRC header follows
     auto caps = partnerMessage(
         static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities), 1,
-        usbc::power_role::source, usbc::data_role::dfp);
+        usbc::power_role::source, usbc::data_role::dfp, usbc::pd_revision::rev_2_0);
     putObject(caps, usbc::pdo::makeFixedSource(5000, 3000));
     deliver(caps);
     check(transmittedType(tcpc) ==
           static_cast<std::uint8_t>(usbc::data_message_type::request));
+    check(usbc::pd_header::decode(tcpc.last_transmitted.header).revision ==
+          usbc::pd_revision::rev_2_0);
+    check(tcpc.header_info.revision == usbc::pd_revision::rev_2_0);
     txSuccess();
     deliver(partnerControl(usbc::control_message_type::accept, usbc::power_role::source,
                            usbc::data_role::dfp));
@@ -252,6 +258,9 @@ int pdDrpTests()
     timers.source_pe.expire();
     check(transmittedType(tcpc) ==
           static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities));
+    // the negotiated revision survived the engine handover
+    check(usbc::pd_header::decode(tcpc.last_transmitted.header).revision ==
+          usbc::pd_revision::rev_2_0);
     txSuccess();
 
     // the new sink requests 5 V: the negotiation completes in source

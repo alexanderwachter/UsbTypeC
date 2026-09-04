@@ -931,9 +931,11 @@ public:
     // The Type-C layer reports attach: for a sink, VBUS is present
     void vbusPresent() { sm_.process(pe::event::vbus_present{}); }
 
-    // ... and detach: negotiation state is gone, back to Discovery
+    // ... and detach: negotiation state is gone, back to Discovery;
+    // the next partner negotiates its own revision
     void vbusRemoved()
     {
+        prl_.resetRevision();
         sm_.process(pe::event::vbus_removed{});
         sm_.process(pe::event::started{});
     }
@@ -959,12 +961,17 @@ public:
 
     // The port was the source and asserted Rd mid PR_Swap: announce
     // the supply is off and await the new source's PS_RDY. The event
-    // carries the preserved data role; the entered state seeds the
-    // context with it
-    void startSwapWaitSourceOn(data_role role)
+    // carries the preserved data role (the entered state seeds the
+    // context with it); the negotiated revision holds for the
+    // connection and is handed over from the retiring engine
+    void startSwapWaitSourceOn(data_role role, pd_revision revision)
     {
+        prl_.seedRevision(revision);
         sm_.process(pe::event::swap_wait_source_on{role});
     }
+
+    // The revision the protocol layer negotiated with this partner
+    pd_revision negotiatedRevision() const { return prl_.revision(); }
 
     // The swap completed into Attached.SNK: resume the sink flow (the
     // new source's PS_RDY implies VBUS is live)
@@ -980,6 +987,12 @@ private:
         SinkPolicyEngine& pe;
 
         void onMessage(pd_message const& message) { pe.dispatch(message); }
+        // adopted revision: the TCPC's GoodCRC header must follow
+        void onRevision(pd_revision revision)
+        {
+            pe.tcpc_.setMessageHeaderInfo(
+                {power_role::sink, pe.sm_.template context<pe::pe_context>().data, revision});
+        }
         void onTxDone()
         {
             pe.sm_.process(pe::event::message_sent{});

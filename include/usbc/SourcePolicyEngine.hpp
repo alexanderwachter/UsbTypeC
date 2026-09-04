@@ -1012,8 +1012,13 @@ public:
     // The Type-C source layer reports the attached sink: advertise
     void attached() { sm_.process(pe::event::attached{}); }
 
-    // ... and the detach: everything resets, back to Startup
-    void detached() { sm_.process(pe::event::detached{}); }
+    // ... and the detach: everything resets, back to Startup; the
+    // next partner negotiates its own revision
+    void detached()
+    {
+        prl_.resetRevision();
+        sm_.process(pe::event::detached{});
+    }
 
     // Feed the TCPC's PD alerts (message/transmit/hard reset bits)
     void onAlert(alert_status alerts) { prl_.onAlert(alerts); }
@@ -1036,12 +1041,17 @@ public:
 
     // The port was the sink and asserted Rp mid PR_Swap: drive VBUS to
     // vSafe5V, announce PS_RDY, pause tSwapSourceStart, then advertise.
-    // The event carries the preserved data role; the entered state
-    // seeds the context with it
-    void attachedAfterSwap(data_role role)
+    // The event carries the preserved data role (the entered state
+    // seeds the context with it); the negotiated revision holds for
+    // the connection and is handed over from the retiring engine
+    void attachedAfterSwap(data_role role, pd_revision revision)
     {
+        prl_.seedRevision(revision);
         sm_.process(pe::event::attached_swap{role});
     }
+
+    // The revision the protocol layer negotiated with this partner
+    pd_revision negotiatedRevision() const { return prl_.revision(); }
 
     // The facade's deferred port actions run through this hook once an
     // engine-internal event source (the supply settle callback) is done
@@ -1058,6 +1068,13 @@ private:
         SourcePolicyEngine& pe;
 
         void onMessage(pd_message const& message) { pe.dispatch(message); }
+        // adopted revision: the TCPC's GoodCRC header must follow
+        void onRevision(pd_revision revision)
+        {
+            pe.tcpc_.setMessageHeaderInfo(
+                {power_role::source, pe.sm_.template context<pe::src_context>().data,
+                 revision});
+        }
         void onTxDone()
         {
             pe.sm_.process(pe::event::message_sent{});

@@ -31,8 +31,15 @@
  * the stack's calls; client callbacks on timeout paths (onTxError,
  * onHardResetSent) originate from that serialized timer context.
  *
- * The PD revision is a build-time property: n_retry_count is the
- * PD rev 3.x value (a rev 2.0 build would use 3).
+ * Revision negotiation lives here, at the same choke point as the
+ * MessageID: the layer starts at rev 3.x, adopts the lowest revision
+ * seen in received SOP messages, stamps it into every transmitted
+ * header, and switches nRetryCount (2 for rev 3.x, 3 for rev 2.0)
+ * per message. A client providing onRevision(pd_revision) learns of
+ * adoptions - the policy engines update the TCPC's GoodCRC header
+ * there. The negotiated revision survives a soft reset (reset()),
+ * restarts at rev 3.x on a hard reset, and the policy engine clears
+ * it on detach (resetRevision()).
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -78,16 +85,19 @@ inline constexpr auto t_receive             = std::chrono::milliseconds{1}; // t
 inline constexpr auto t_hard_reset_complete = std::chrono::milliseconds{5}; // tHardResetComplete
 
 // Shared by the transmitting states: the message in flight survives
-// the timeout-driven retransmission transitions
+// the timeout-driven retransmission transitions. The retry limit is
+// per message - it follows the negotiated revision
 struct tx_context {
     pd_message message{};
     std::uint8_t retry_counter = 0;
+    std::uint8_t retry_limit   = n_retry_count;
 };
 
 namespace event {
 
 struct tx_request {
     pd_message message;
+    std::uint8_t retry_limit = n_retry_count;
 };
 struct phy_success {};
 struct phy_discarded {};
@@ -126,6 +136,7 @@ struct wait_for_phy_response {
     {
         context.message       = event.message;
         context.retry_counter = 0;
+        context.retry_limit   = event.retry_limit;
     }
     // Re-entry is the retransmission: same message, same MessageID
     explicit wait_for_phy_response(tx_context& ctx) : context(ctx) { ++context.retry_counter; }
@@ -160,7 +171,7 @@ struct wait_for_hard_reset_complete {
 struct retries_left {
     static bool check(state::wait_for_phy_response const& state)
     {
-        return state.context.retry_counter < n_retry_count;
+        return state.context.retry_counter < state.context.retry_limit;
     }
 };
 
@@ -246,14 +257,16 @@ public:
     }
     void notifyEntry(pd_message const& message) { transmit(message); }
 
-    // Stamps the MessageID; the rest of the header is the caller's.
-    // False when a message or hard reset is already in flight
+    // Stamps the MessageID and the negotiated revision; the rest of
+    // the header is the caller's. False when a message or hard reset
+    // is already in flight
     bool transmit(pd_message message)
     {
         auto header       = pd_header::decode(message.header);
         header.message_id = tx_counter_[index(message.sop)];
+        header.revision   = revision_;
         message.header    = header.encode();
-        return sm_.process(prl::event::tx_request{message});
+        return sm_.process(prl::event::tx_request{message, retryLimit()});
     }
 
     bool transmitHardReset()
@@ -264,12 +277,22 @@ public:
         return accepted;
     }
 
-    // Soft reset scope: the MessageID lifecycle of one SOP* type
+    // Soft reset scope: the MessageID lifecycle of one SOP* type; the
+    // negotiated revision survives a soft reset
     void reset(sop_type sop)
     {
         tx_counter_[index(sop)] = 0;
         rx_id_[index(sop)].reset();
     }
+
+    // The negotiated revision: lowest seen since attach or hard reset
+    pd_revision revision() const { return revision_; }
+
+    // Detach forgets the partner; the DRP facade seeds the retiring
+    // engine's negotiated revision into the relieving one on a power
+    // role swap (the revision holds for the connection)
+    void resetRevision() { setRevision(pd_revision::rev_3_x); }
+    void seedRevision(pd_revision rev) { setRevision(rev); }
 
     void onAlert(alert_status alerts)
     {
@@ -350,13 +373,33 @@ private:
     {
         pd_message message;
         while (tcpc_.receive(message)) {
-            auto const id = pd_header::decode(message.header).message_id;
-            auto& stored  = rx_id_[index(message.sop)];
-            if (stored == id) {
+            auto const header = pd_header::decode(message.header);
+            auto& stored      = rx_id_[index(message.sop)];
+            if (stored == header.message_id) {
                 continue; // retransmission of a message already delivered
             }
-            stored = id;
+            stored = header.message_id;
+            if (message.sop == sop_type::sop && header.revision < revision_) {
+                setRevision(header.revision); // lowest common revision
+            }
             client_.onMessage(message);
+        }
+    }
+
+    std::uint8_t retryLimit() const
+    {
+        return revision_ == pd_revision::rev_3_x ? spec::n_retry_count
+                                                 : spec::n_retry_count_rev2;
+    }
+
+    void setRevision(pd_revision rev)
+    {
+        if (revision_ == rev) {
+            return;
+        }
+        revision_ = rev;
+        if constexpr (requires { client_.onRevision(rev); }) {
+            client_.onRevision(rev); // e.g. refresh the GoodCRC header
         }
     }
 
@@ -364,6 +407,7 @@ private:
     {
         tx_counter_ = {};
         rx_id_      = {};
+        setRevision(pd_revision::rev_3_x); // re-negotiated after a hard reset
     }
 
     TCPC& tcpc_;
@@ -375,6 +419,7 @@ private:
         sm_{timed_, driver_, reporter_};
     std::array<std::uint8_t, sop_count> tx_counter_{};
     std::array<std::optional<std::uint8_t>, sop_count> rx_id_{};
+    pd_revision revision_ = pd_revision::rev_3_x;
 };
 
 } // namespace usbc
