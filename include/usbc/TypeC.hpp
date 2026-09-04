@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <usbc/Spec.hpp>
 #include <usbc/Tcpc.hpp>
 #include <usbc/Vbus.hpp>
 

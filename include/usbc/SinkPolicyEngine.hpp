@@ -174,10 +174,10 @@ static_assert(concepts::sink_policy<PowerPolicy>);
 
 namespace pe {
 
-inline constexpr auto t_sink_wait_cap = std::chrono::milliseconds{465}; // 310 ms - 620 ms
-inline constexpr auto t_ps_transition = std::chrono::milliseconds{500}; // 450 ms - 550 ms
+inline constexpr auto t_sink_wait_cap = std::chrono::milliseconds{465}; // tSinkWaitCap
+inline constexpr auto t_ps_transition = std::chrono::milliseconds{500}; // tPSTransition
 
-inline constexpr milliamp i_snk_stdby = 500; // iSnkStdby at any voltage
+inline constexpr milliamp i_snk_stdby = spec::i_snk_stdby; // at any voltage
 
 struct pe_context {
     contract_request pending{}; // proposed by the last Request
@@ -448,6 +448,14 @@ struct has_explicit_contract {
     }
 };
 
+// The spec timer range of every timed state, checked against the table
+using sink_timer_ranges = mtl::typelist<
+    fsm::timed_by<state::pe_snk_wait_for_capabilities, spec::t_sink_wait_cap>,
+    fsm::timed_by<state::pe_snk_select_capability, spec::t_sender_response>,
+    fsm::timed_by<state::pe_snk_transition_sink, spec::t_ps_transition>,
+    fsm::timed_by<state::pe_snk_chunk_received, spec::t_chunking_not_supported>,
+    fsm::timed_by<state::pe_snk_send_soft_reset, spec::t_sender_response>>;
+
 using sink_table = fsm::transition_table<
     fsm::initial<state::pe_snk_startup>,
     fsm::transition<fsm::from<state::pe_snk_startup>, fsm::on<event::started>,
@@ -518,6 +526,7 @@ using sink_table = fsm::transition_table<
                     fsm::to<state::pe_snk_transition_to_default>>,
     fsm::transition<fsm::from<state::pe_snk_transition_to_default>,
                     fsm::on<event::default_level_reached>, fsm::to<state::pe_snk_startup>>>;
+static_assert(fsm::timeoutsWithinBounds<sink_table, sink_timer_ranges>());
 
 // The member observers behind SinkPower (POWER is SinkPower<DERIVED>);
 // injected together as one fsm::observer_group

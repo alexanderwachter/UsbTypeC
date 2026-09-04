@@ -50,6 +50,7 @@
 
 #include <concepts>
 #include <tuple>
+#include <type_traits>
 
 namespace usbc {
 
@@ -225,6 +226,11 @@ using sink_attach_flow = mtl::typelist<
     fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::cc_changed>>,
     fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::vbus_present>>>;
 
+// The spec timer range of every timed state of the sink flow; the DRP
+// concatenates this map with its own, like the flows themselves
+using sink_timer_ranges = mtl::typelist<
+    fsm::timed_by<state::attach_wait_snk, spec::t_cc_debounce>>;
+
 using sink_table = mtl::rebind_t<
     mtl::linearize_t<mtl::typelist<
         fsm::initial<state::disabled_snk>,
@@ -232,6 +238,7 @@ using sink_table = mtl::rebind_t<
                         fsm::to<state::unattached_snk>>,
         sink_attach_flow<state::unattached_snk, state::attached_snk>>>,
     fsm::transition_table>;
+static_assert(fsm::timeoutsWithinBounds<sink_table, sink_timer_ranges>());
 
 // Applies each state's hw annotation (suppressed while unchanged) and
 // the attached state's plug orientation

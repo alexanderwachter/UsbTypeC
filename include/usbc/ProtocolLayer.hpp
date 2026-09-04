@@ -41,6 +41,7 @@
 #pragma once
 
 #include <usbc/Message.hpp>
+#include <usbc/Spec.hpp>
 #include <usbc/Tcpc.hpp>
 
 #include <mtl/StateMachine.hpp>
@@ -71,10 +72,10 @@ concept prl_client = requires(T client, pd_message const& message) {
 
 namespace prl {
 
-inline constexpr std::uint8_t n_retry_count = 2; // nRetryCount, PD rev 3.x
+inline constexpr std::uint8_t n_retry_count = spec::n_retry_count; // nRetryCount, PD rev 3.x
 
-inline constexpr auto t_receive = std::chrono::milliseconds{1};             // 0.9 ms - 1.1 ms
-inline constexpr auto t_hard_reset_complete = std::chrono::milliseconds{5}; // max 5 ms
+inline constexpr auto t_receive             = std::chrono::milliseconds{1}; // tReceive
+inline constexpr auto t_hard_reset_complete = std::chrono::milliseconds{5}; // tHardResetComplete
 
 // Shared by the transmitting states: the message in flight survives
 // the timeout-driven retransmission transitions
@@ -163,6 +164,11 @@ struct retries_left {
     }
 };
 
+// The spec timer range of every timed state, checked against the table
+using prl_timer_ranges = mtl::typelist<
+    fsm::timed_by<state::wait_for_phy_response, spec::t_receive>,
+    fsm::timed_by<state::wait_for_hard_reset_complete, spec::t_hard_reset_complete>>;
+
 using tx_table = fsm::transition_table<
     fsm::initial<state::wait_for_message_request>,
     fsm::transition<fsm::from<state::wait_for_message_request>, fsm::on<event::tx_request>,
@@ -191,6 +197,7 @@ using tx_table = fsm::transition_table<
                     fsm::to<state::wait_for_message_request>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::reset>,
                     fsm::to<state::wait_for_message_request>>>;
+static_assert(fsm::timeoutsWithinBounds<tx_table, prl_timer_ranges>());
 
 // Hands a state's txMessage() to the TCPC on entry; the accessor is
 // the marker that makes a state a transmitting one. A refused hand-off

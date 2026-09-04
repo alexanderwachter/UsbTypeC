@@ -104,25 +104,18 @@ namespace drp {
 template<concepts::drp_timing TIMING>
 consteval bool timingWithinSpec()
 {
-    using std::chrono::milliseconds;
-    static_assert(milliseconds{50} <= TIMING::t_drp && TIMING::t_drp <= milliseconds{100},
-                  "tDRP outside the spec's 50-100 ms");
-    static_assert(30u <= TIMING::dc_src && TIMING::dc_src <= 70u,
+    static_assert(spec::t_drp.contains(TIMING::t_drp), "tDRP outside the spec's 50-100 ms");
+    static_assert(spec::within(TIMING::dc_src, spec::dc_src_drp_min, spec::dc_src_drp_max),
                   "dcSRC.DRP outside the spec's 30-70 %");
-    static_assert(milliseconds{75} <= TIMING::t_drp_try &&
-                      TIMING::t_drp_try <= milliseconds{150},
+    static_assert(spec::t_drp_try.contains(TIMING::t_drp_try),
                   "tDRPTry outside the spec's 75-150 ms");
-    static_assert(milliseconds{400} <= TIMING::t_drp_try_wait &&
-                      TIMING::t_drp_try_wait <= milliseconds{800},
+    static_assert(spec::t_drp_try_wait.contains(TIMING::t_drp_try_wait),
                   "tDRPTryWait outside the spec's 400-800 ms");
-    static_assert(milliseconds{10} <= TIMING::t_try_cc_debounce &&
-                      TIMING::t_try_cc_debounce <= milliseconds{20},
+    static_assert(spec::t_try_cc_debounce.contains(TIMING::t_try_cc_debounce),
                   "tTryCCDebounce outside the spec's 10-20 ms");
-    static_assert(milliseconds{550} <= TIMING::t_try_timeout &&
-                      TIMING::t_try_timeout <= milliseconds{1100},
+    static_assert(spec::t_try_timeout.contains(TIMING::t_try_timeout),
                   "tTryTimeout outside the spec's 550-1100 ms");
-    static_assert(milliseconds{10} <= TIMING::t_pd_debounce &&
-                      TIMING::t_pd_debounce <= milliseconds{20},
+    static_assert(spec::t_pd_debounce.contains(TIMING::t_pd_debounce),
                   "tPDDebounce outside the spec's 10-20 ms");
     return true;
 }
@@ -310,6 +303,35 @@ struct rp_in_context_with_vbus {
     }
 };
 
+// --- timer-range maps --------------------------------------------------------
+
+// Budget left for Try.SNK's monitoring phase after the blind tDRPTry wait
+inline constexpr fsm::timeout_range t_try_monitor{
+    spec::t_try_timeout.min - spec::t_drp_try.max,
+    spec::t_try_timeout.max - spec::t_drp_try.min};
+
+// Composed per preference like the flows they check; the shared attach
+// flows bring the sink and source maps along
+template<typename TIMING>
+using core_timer_ranges = mtl::linearize_t<mtl::typelist<
+    sink_timer_ranges, source_timer_ranges,
+    fsm::timed_by<unattached_snk<TIMING>, spec::t_drp_pw>,
+    fsm::timed_by<unattached_src<TIMING>, spec::t_drp_pw>>>;
+
+template<typename TIMING>
+using try_src_timer_ranges = mtl::typelist<
+    fsm::timed_by<try_src<TIMING>, spec::t_drp_try>,
+    fsm::timed_by<try_src_debounce<TIMING>, spec::t_try_cc_debounce>,
+    fsm::timed_by<try_wait_snk<TIMING>, spec::t_drp_try_wait>>;
+
+template<typename TIMING>
+using try_snk_timer_ranges = mtl::typelist<
+    fsm::timed_by<try_snk<TIMING>, spec::t_drp_try>,
+    fsm::timed_by<try_snk_monitor<TIMING>, t_try_monitor>,
+    fsm::timed_by<try_snk_debounce<TIMING>, spec::t_pd_debounce>,
+    fsm::timed_by<try_wait_src<TIMING>, spec::t_drp_try_wait>,
+    fsm::timed_by<try_wait_src_debounce<TIMING>, spec::t_try_cc_debounce>>;
+
 // --- transition table composition --------------------------------------------
 
 // Sink-role flow: the sink layer's attach flow anchored at the
@@ -437,6 +459,7 @@ struct table_for {
                                        sink_flow<TIMING, state::attached_snk>,
                                        source_flow<TIMING, state::attached_src>>>,
         fsm::transition_table>;
+    static_assert(fsm::timeoutsWithinBounds<type, core_timer_ranges<TIMING>>());
 };
 
 template<concepts::drp_timing TIMING>
@@ -448,6 +471,9 @@ struct table_for<TIMING, drp_preference::source> {
                                        source_flow<TIMING, state::attached_src>,
                                        try_src_flow<TIMING>>>,
         fsm::transition_table>;
+    static_assert(fsm::timeoutsWithinBounds<
+                  type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
+                                                       try_src_timer_ranges<TIMING>>>>());
 };
 
 template<concepts::drp_timing TIMING>
@@ -459,6 +485,9 @@ struct table_for<TIMING, drp_preference::sink> {
                                        source_flow<TIMING, try_snk<TIMING>>,
                                        try_snk_flow<TIMING>>>,
         fsm::transition_table>;
+    static_assert(fsm::timeoutsWithinBounds<
+                  type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
+                                                       try_snk_timer_ranges<TIMING>>>>());
 };
 
 template<concepts::drp_timing TIMING, drp_preference PREFERENCE>

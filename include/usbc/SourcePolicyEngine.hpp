@@ -116,11 +116,11 @@ static_assert(concepts::source_policy<RequestPolicy>);
 
 namespace pe {
 
-inline constexpr auto t_typec_send_source_cap = std::chrono::milliseconds{150}; // 100 - 200 ms
-inline constexpr auto t_src_transition        = std::chrono::milliseconds{30};  // 25 - 35 ms
-inline constexpr auto t_src_recover           = std::chrono::milliseconds{800}; // 660 - 1000 ms
+inline constexpr auto t_typec_send_source_cap = std::chrono::milliseconds{150}; // tTypeCSendSourceCap
+inline constexpr auto t_src_transition        = std::chrono::milliseconds{30};  // tSrcTransition
+inline constexpr auto t_src_recover           = std::chrono::milliseconds{800}; // tSrcRecover
 
-inline constexpr std::uint8_t n_caps_count = 50; // nCapsCount
+inline constexpr std::uint8_t n_caps_count = spec::n_caps_count;
 
 // Engine-directed command: entering a state carrying it as src_action
 // makes the engine transmit the Source_Capabilities message
@@ -472,6 +472,15 @@ struct still_attached {
     }
 };
 
+// The spec timer range of every timed state, checked against the table
+using source_timer_ranges = mtl::typelist<
+    fsm::timed_by<state::pe_src_send_capabilities, spec::t_sender_response>,
+    fsm::timed_by<state::pe_src_discovery, spec::t_typec_send_source_cap>,
+    fsm::timed_by<state::pe_src_transition_supply_delay, spec::t_src_transition>,
+    fsm::timed_by<state::pe_src_chunk_received, spec::t_chunking_not_supported>,
+    fsm::timed_by<state::pe_src_send_soft_reset, spec::t_sender_response>,
+    fsm::timed_by<state::pe_src_transition_to_default, spec::t_src_recover>>;
+
 using source_table = fsm::transition_table<
     fsm::initial<state::pe_src_startup>,
     fsm::transition<fsm::from<state::pe_src_startup>, fsm::on<event::attached>,
@@ -562,6 +571,7 @@ using source_table = fsm::transition_table<
                     fsm::to<state::pe_src_send_capabilities>, fsm::guard<still_attached>>,
     fsm::transition<fsm::from<state::pe_src_transition_to_default>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_src_startup>>>;
+static_assert(fsm::timeoutsWithinBounds<source_table, source_timer_ranges>());
 
 // The member observers behind SourcePower (POWER is
 // SourcePower<DERIVED>); injected together as one fsm::observer_group

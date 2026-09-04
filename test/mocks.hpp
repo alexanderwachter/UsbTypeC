@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <usbc/Spec.hpp>
 #include <usbc/Tcpc.hpp>
 #include <usbc/Vbus.hpp>
 
@@ -151,9 +152,12 @@ struct mock_vbus {
     bool met() const
     {
         switch (*monitored) {
-        case usbc::vbus_level::safe0v: return voltage_mv <= 800;
-        case usbc::vbus_level::safe5v: return voltage_mv >= 4750 && voltage_mv <= 5500;
-        case usbc::vbus_level::sink_disconnect: return voltage_mv < 3670;
+        case usbc::vbus_level::safe0v: return voltage_mv <= usbc::spec::v_safe_0v_max;
+        case usbc::vbus_level::safe5v:
+            return voltage_mv >= usbc::spec::v_safe_5v_min &&
+                   voltage_mv <= usbc::spec::v_safe_5v_max;
+        case usbc::vbus_level::sink_disconnect:
+            return voltage_mv < usbc::spec::v_sink_disconnect_max;
         case usbc::vbus_level::sink_disconnect_pd: return voltage_mv < 4000;
         }
         return false;

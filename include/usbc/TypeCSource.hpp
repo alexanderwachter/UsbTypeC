@@ -251,6 +251,11 @@ using source_attach_flow = mtl::typelist<
     fsm::internal_transition<fsm::from<state::unattached_wait_src>,
                              fsm::on<event::cc_changed>>>;
 
+// The spec timer range of every timed state of the source flow; the
+// DRP concatenates this map with its own, like the flows themselves
+using source_timer_ranges = mtl::typelist<
+    fsm::timed_by<state::attach_wait_src, spec::t_cc_debounce>>;
+
 using source_table = mtl::rebind_t<
     mtl::linearize_t<mtl::typelist<
         fsm::initial<state::disabled_src>,
@@ -258,6 +263,7 @@ using source_table = mtl::rebind_t<
                         fsm::to<state::unattached_src>>,
         source_attach_flow<state::unattached_src, state::attached_src>>>,
     fsm::transition_table>;
+static_assert(fsm::timeoutsWithinBounds<source_table, source_timer_ranges>());
 
 // Applies each state's src_hw annotation (suppressed while unchanged)
 // with the port's configured Rp advertisement, and the attached

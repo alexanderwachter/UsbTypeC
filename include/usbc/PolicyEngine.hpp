@@ -15,6 +15,7 @@
 
 #include <usbc/Message.hpp>
 #include <usbc/Pdo.hpp>
+#include <usbc/Spec.hpp>
 #include <usbc/Units.hpp>
 
 #include <chrono>
@@ -25,11 +26,11 @@ namespace usbc {
 
 namespace pe {
 
-inline constexpr auto t_sender_response = std::chrono::milliseconds{27}; // 24 ms - 30 ms
-inline constexpr auto t_chunking_not_supported = std::chrono::milliseconds{45}; // 40 ms - 50 ms
+inline constexpr auto t_sender_response        = std::chrono::milliseconds{27}; // tSenderResponse
+inline constexpr auto t_chunking_not_supported = std::chrono::milliseconds{45}; // tChunkingNotSupported
 
-inline constexpr millivolt v_safe_5v        = 5000; // vSafe5V
-inline constexpr milliamp i_default_current = 500;  // implicit vSafe5V contract
+inline constexpr millivolt v_safe_5v        = spec::v_safe_5v_nom;
+inline constexpr milliamp i_default_current = spec::i_usb_default; // implicit vSafe5V contract
 
 // The specification's per-state notation: every state is annotated
 // with its power level and whether PD communication is connected
