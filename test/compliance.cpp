@@ -47,24 +47,28 @@ static_assert(fsm::timeouts_within_bounds_v<
                                              tc::source_recovery_timer_range>>>);
 static_assert(fsm::all_states_reachable_v<tc::source_table>);
 
-template<drp_preference PREFERENCE, typename RANGES>
+template<drp_preference PREFERENCE, typename RANGES, typename DEADLINE_RANGES>
 constexpr bool drpTableChecked()
 {
     using table = tc::drp::table_for_t<default_drp_timing, PREFERENCE>;
     static_assert(fsm::timeouts_within_bounds_v<table, RANGES>);
+    static_assert(fsm::deadlines_within_bounds_v<table, DEADLINE_RANGES>);
     static_assert(fsm::all_states_reachable_v<table>);
     return true;
 }
 static_assert(drpTableChecked<drp_preference::none,
-                              tc::drp::core_timer_ranges<default_drp_timing>>());
+                              tc::drp::core_timer_ranges<default_drp_timing>,
+                              mtl::typelist<>>());
 static_assert(drpTableChecked<
               drp_preference::source,
               mtl::linearize_t<mtl::typelist<tc::drp::core_timer_ranges<default_drp_timing>,
-                                             tc::drp::try_src_timer_ranges<default_drp_timing>>>>());
+                                             tc::drp::try_src_timer_ranges<default_drp_timing>>>,
+              tc::drp::try_src_deadline_ranges<default_drp_timing>>());
 static_assert(drpTableChecked<
               drp_preference::sink,
               mtl::linearize_t<mtl::typelist<tc::drp::core_timer_ranges<default_drp_timing>,
-                                             tc::drp::try_snk_timer_ranges<default_drp_timing>>>>());
+                                             tc::drp::try_snk_timer_ranges<default_drp_timing>>>,
+              tc::drp::try_snk_deadline_ranges<default_drp_timing>>());
 
 static_assert(tc::watch_events_consistent_v<tc::sink_table>);
 static_assert(tc::watch_events_consistent_v<tc::source_table>);

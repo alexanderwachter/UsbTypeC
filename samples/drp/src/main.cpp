@@ -66,10 +66,11 @@ using Drp = usbc::TypeCDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr:
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
 usbc::zephyr::Timer timer;
+usbc::zephyr::Timer deadline_timer; // Try phase walls (unused: no preference)
 AttachLogger logger;
 usbc::zephyr::StateLogger state_logger;
 // Default Rp advertisement while presenting the source role
-Drp drp{tcpc, vbus, timer, usbc::rp_value::usb_default, logger, state_logger};
+Drp drp{tcpc, vbus, timer, deadline_timer, usbc::rp_value::usb_default, logger, state_logger};
 
 } // namespace
 

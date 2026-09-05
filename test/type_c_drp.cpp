@@ -115,6 +115,7 @@ struct fixture {
     mock_vbus vbus;
     mock_drp_client client;
     manual_timer timer;
+    manual_timer deadline; // the Try phases' hard walls
 
     void ccAlert()
     {
@@ -159,7 +160,7 @@ int typeCDrpTests()
                                   usbc::drp_preference::none, mock_drp_client>;
 
     fixture f;
-    drp tc{f.tcpc, f.vbus, f.timer, usbc::rp_value::p_1a5, f.client};
+    drp tc{f.tcpc, f.vbus, f.timer, f.deadline, usbc::rp_value::p_1a5, f.client};
 
     // construction rests in Disabled: nothing registered, nothing driven
     check(f.tcpc.callback == nullptr && !f.vbus.monitored);
@@ -239,7 +240,7 @@ int typeCDrpTrySrcTests()
     // resolves to Attached.SRC when the partner presents Rd
     {
         fixture f;
-        drp tc{f.tcpc, f.vbus, f.timer, f.client};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
         tc.start();
 
         f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
@@ -249,7 +250,7 @@ int typeCDrpTrySrcTests()
         check(!f.tcpc.sinking && !f.tcpc.sourcing);
         check(f.tcpc.pull == usbc::cc_pull::rp);
         check(f.client.attached_snk == 0);
-        check(f.timer.armed);
+        check(!f.timer.armed && f.deadline.armed); // the phase wall runs
 
         // the partner flips to Rd (and stops sourcing VBUS)
         f.vbus.setVoltage(0);
@@ -263,7 +264,7 @@ int typeCDrpTrySrcTests()
     // no Rd within tDRPTry: TryWait.SNK attaches as sink on VBUS
     {
         fixture f;
-        drp tc{f.tcpc, f.vbus, f.timer, f.client};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
         tc.start();
 
         f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
@@ -271,7 +272,8 @@ int typeCDrpTrySrcTests()
         f.vbus.setVoltage(5000);
         f.timer.expire(); // -> Try.SRC
         f.vbus.setVoltage(0);
-        f.timer.expire(); // tDRPTry: no Rd -> TryWait.SNK
+        check(f.deadline.armed);
+        f.deadline.expire(); // tDRPTry deadline: no Rd -> TryWait.SNK
         check(f.tcpc.pull == usbc::cc_pull::rd);
         check(f.timer.armed);
 
@@ -286,7 +288,7 @@ int typeCDrpTrySrcTests()
     // nothing at all in TryWait.SNK: back to toggling
     {
         fixture f;
-        drp tc{f.tcpc, f.vbus, f.timer, f.client};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
         tc.start();
 
         f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
@@ -295,10 +297,80 @@ int typeCDrpTrySrcTests()
         f.timer.expire(); // -> Try.SRC
         f.vbus.setVoltage(0);
         f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
-        f.timer.expire(); // -> TryWait.SNK
-        f.timer.expire(); // tDRPTryWait: nothing -> Unattached.SNK
+        f.deadline.expire(); // tDRPTry deadline -> TryWait.SNK
+        f.timer.expire();    // tDRPTryWait: nothing -> Unattached.SNK
         check(f.tcpc.pull == usbc::cc_pull::rd);
         check(f.client.attached_snk == 0 && f.client.attached_src == 0);
+    }
+
+    // a flapping partner cannot extend tDRPTry: the phase deadline
+    // spans try_src and its debounce without re-arming
+    {
+        fixture f;
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
+        tc.start();
+
+        f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        f.timer.expire(); // -> Try.SRC
+        f.vbus.setVoltage(0);
+        auto const armed_once = f.deadline.starts;
+
+        // Rd appears and vanishes, twice: the debounce is entered and
+        // abandoned, the wall never moves
+        for (int flap = 0; flap < 2; ++flap) {
+            f.tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+            f.ccAlert();
+            f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+            f.ccAlert();
+            f.timer.expire(); // tTryCCDebounce: Rd gone -> back to Try.SRC
+        }
+        check(f.deadline.starts == armed_once);
+
+        f.deadline.expire(); // tDRPTry -> TryWait.SNK
+        check(f.tcpc.pull == usbc::cc_pull::rd);
+        check(f.timer.armed && f.client.attached_src == 0);
+    }
+
+    // the deadline expiring mid-debounce does not abort it: a stable
+    // Rd still attaches
+    {
+        fixture f;
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
+        tc.start();
+        f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        f.timer.expire(); // -> Try.SRC
+        f.vbus.setVoltage(0);
+        f.tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+        f.ccAlert();         // -> the Rd debounce
+        f.deadline.expire(); // recorded, the debounce keeps running
+        f.timer.expire();    // Rd stable for tTryCCDebounce: attach
+        check(f.tcpc.sourcing && f.client.attached_src == 1);
+    }
+
+    // ... while a failure after the expiry leaves the phase instead
+    // of re-arming it
+    {
+        fixture f;
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
+        tc.start();
+        f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        f.timer.expire(); // -> Try.SRC
+        f.vbus.setVoltage(0);
+        f.tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+        f.ccAlert();         // -> the Rd debounce
+        f.deadline.expire(); // tDRPTry is up mid-debounce
+        f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+        f.ccAlert();      // Rd lost, the debounce restarts once more
+        f.timer.expire(); // ... and fails -> TryWait.SNK, not Try.SRC
+        check(f.tcpc.pull == usbc::cc_pull::rd);
+        check(f.timer.armed); // tDRPTryWait running
+        check(f.client.attached_src == 0);
     }
 
     return failures;
@@ -314,7 +386,7 @@ int typeCDrpTrySnkTests()
     // resolves to Attached.SNK when the partner turns source
     {
         fixture f;
-        drp tc{f.tcpc, f.vbus, f.timer, f.client};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
         tc.start();
         f.timer.expire(); // Rd phase -> Rp phase
 
@@ -339,7 +411,7 @@ int typeCDrpTrySnkTests()
     // the partner insists on being a sink: TryWait.SRC attaches as source
     {
         fixture f;
-        drp tc{f.tcpc, f.vbus, f.timer, f.client};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
         tc.start();
         f.timer.expire(); // Rp phase
 
@@ -347,9 +419,9 @@ int typeCDrpTrySnkTests()
         f.ccAlert();
         f.timer.expire(); // -> Try.SNK
         f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
-        f.ccAlert();      // partner presents nothing while we are Rd
-        f.timer.expire(); // tDRPTry -> monitoring
-        f.timer.expire(); // tTryTimeout -> TryWait.SRC
+        f.ccAlert();         // partner presents nothing while we are Rd
+        f.timer.expire();    // tDRPTry -> monitoring
+        f.deadline.expire(); // tTryTimeout deadline -> TryWait.SRC
         check(f.tcpc.pull == usbc::cc_pull::rp);
 
         f.tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
@@ -362,7 +434,7 @@ int typeCDrpTrySnkTests()
     // nothing in TryWait.SRC: back to toggling at Rd
     {
         fixture f;
-        drp tc{f.tcpc, f.vbus, f.timer, f.client};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
         tc.start();
         f.timer.expire(); // Rp phase
 
@@ -371,13 +443,41 @@ int typeCDrpTrySnkTests()
         f.timer.expire(); // -> Try.SNK
         f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
         f.ccAlert();
-        f.timer.expire(); // -> monitoring
-        f.timer.expire(); // -> TryWait.SRC
+        f.timer.expire();    // -> monitoring
+        f.deadline.expire(); // -> TryWait.SRC
         f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
         f.ccAlert();
-        f.timer.expire(); // tDRPTryWait -> Unattached.SNK
+        f.deadline.expire(); // tDRPTryWait deadline -> Unattached.SNK
         check(f.tcpc.pull == usbc::cc_pull::rd);
         check(f.client.attached_snk == 0 && f.client.attached_src == 0);
+    }
+
+    // tTryTimeout expires while an Rp debounce runs: losing the Rp
+    // afterwards leaves for TryWait.SRC directly, re-arming the wall
+    // for the new phase only there
+    {
+        fixture f;
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
+        tc.start();
+        f.timer.expire(); // Rp phase
+
+        f.tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+        f.ccAlert();
+        f.timer.expire(); // -> Try.SNK, the tTryTimeout wall armed
+        f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
+        f.ccAlert();
+        auto const armed_once = f.deadline.starts;
+        f.timer.expire(); // tDRPTry -> monitoring, the wall untouched
+        check(f.deadline.starts == armed_once);
+
+        f.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
+        f.ccAlert();         // -> the Rp debounce
+        f.deadline.expire(); // tTryTimeout is up mid-debounce
+        f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
+        f.ccAlert(); // Rp lost after the wall -> TryWait.SRC
+        check(f.deadline.starts == armed_once + 1); // the tDRPTryWait wall
+        check(f.tcpc.pull == usbc::cc_pull::rp);
+        check(f.client.attached_snk == 0);
     }
 
     return failures;
@@ -392,7 +492,7 @@ int typeCDrpSwapTests()
         using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
                                    usbc::drp_preference::none, mock_drp_client>;
         fixture f;
-        drp tc{f.tcpc, f.vbus, f.timer, f.client};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client};
         tc.start();
         f.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
         f.ccAlert();
@@ -412,7 +512,7 @@ int typeCDrpSwapTests()
                                    mock_swap_policy>;
         fixture f;
         mock_swap_policy policy;
-        drp tc{f.tcpc, f.vbus, f.timer, f.client, policy};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client, policy};
         tc.start();
 
         // not attached: refused without consulting the policy, and

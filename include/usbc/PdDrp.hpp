@@ -61,6 +61,7 @@ namespace usbc {
 template<fsm::concepts::timer TIMER>
 struct pd_drp_timers {
     TIMER tc;
+    TIMER tc_deadline; // the Try phases' hard walls (preference != none)
     TIMER sink_prl;
     TIMER sink_pe;
     TIMER source_prl;
@@ -90,7 +91,8 @@ public:
           vconn_timer_{timers.vconn, *this},
           vconn_(pickVconnPort(observers...), vconn_timer_, watch_),
           router_{tcpc, sink_engine_, source_engine_, *this},
-          drp_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
+          drp_(tcpc, vbus, timers.tc, timers.tc_deadline, advertisement, router_,
+               observers...)
     {
         sink_engine_.setIdleHook([](void* self) { static_cast<PdDrp*>(self)->pump(); }, this);
         source_engine_.setIdleHook([](void* self) { static_cast<PdDrp*>(self)->pump(); },
