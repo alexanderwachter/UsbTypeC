@@ -192,7 +192,9 @@ struct try_wait_snk : state::sink_state {
     static constexpr vbus_level watch = vbus_level::safe5v;
     static constexpr auto timeout     = TIMING.t_drp_try_wait;
 
-    using state::sink_state::sink_state;
+    // a fresh-attach gateway: a stale hard-reset window flag must not
+    // leak into the attach it resolves
+    explicit try_wait_snk(port_context& ctx) : sink_state(ctx) { context.resuming = false; }
 };
 
 // --- Try.SNK / TryWait.SRC (drp_preference::sink) ----------------------------
@@ -352,6 +354,7 @@ inline constexpr fsm::timeout_range t_try_monitor{
 template<drp_timing const& TIMING>
 using core_timer_ranges = mtl::linearize_t<mtl::typelist<
     sink_timer_ranges, source_timer_ranges, error_recovery_timer_range,
+    hard_reset_timer_ranges,
     fsm::timed_by<unattached_snk<TIMING>, spec::t_drp_pw>,
     fsm::timed_by<unattached_src<TIMING>, spec::t_drp_pw>,
     fsm::timed_by<swap_standby_to_src, spec::t_ps_source_off>,
@@ -530,7 +533,8 @@ struct table_for {
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, state::attached_snk>,
                                        source_flow<TIMING, state::attached_src>, swap_flow<TIMING>,
-                                       error_recovery_flow<unattached_snk<TIMING>>>>,
+                                       error_recovery_flow<unattached_snk<TIMING>>,
+                                       hard_reset_flow<unattached_snk<TIMING>>>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<type, core_timer_ranges<TIMING>>);
     static_assert(fsm::all_states_reachable_v<type>);
@@ -544,7 +548,8 @@ struct table_for<TIMING, drp_preference::source> {
                                        sink_flow<TIMING, try_src<TIMING>>,
                                        source_flow<TIMING, state::attached_src>,
                                        try_src_flow<TIMING>, swap_flow<TIMING>,
-                                       error_recovery_flow<unattached_snk<TIMING>>>>,
+                                       error_recovery_flow<unattached_snk<TIMING>>,
+                                       hard_reset_flow<unattached_snk<TIMING>>>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
@@ -560,7 +565,8 @@ struct table_for<TIMING, drp_preference::sink> {
                                        sink_flow<TIMING, state::attached_snk>,
                                        source_flow<TIMING, try_snk<TIMING>>,
                                        try_snk_flow<TIMING>, swap_flow<TIMING>,
-                                       error_recovery_flow<unattached_snk<TIMING>>>>,
+                                       error_recovery_flow<unattached_snk<TIMING>>,
+                                       hard_reset_flow<unattached_snk<TIMING>>>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
@@ -764,6 +770,10 @@ public:
     // tErrorRecovery, then resolution restarts from Unattached.SNK.
     // Call from the stack's serialized context
     bool errorRecovery() { return sm_.process(tc::event::error_recovery{}); }
+
+    // PD-directed hard-reset window: the attach is held while VBUS
+    // legitimately cycles through vSafe0V and back
+    bool hardResetWindow() { return sm_.process(tc::event::hard_reset{}); }
 
 private:
     friend tc::port_frontend<TypeCDrp, TCPC, VBUS>;

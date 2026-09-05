@@ -103,6 +103,11 @@ inline constexpr timeout_range t_no_response{milliseconds{4500}, milliseconds{55
 // bound for the compile-time check
 inline constexpr timeout_range t_error_recovery{milliseconds{25}, milliseconds{500}};
 
+// The connection layer's hard-reset window bound. No spec timer
+// governs it directly: it must outlast NoResponseTimer (the policy
+// engine owns the give-up) yet still terminate a dead port
+inline constexpr timeout_range t_hard_reset_window{t_no_response.max, milliseconds{10000}};
+
 // Counters
 inline constexpr std::uint8_t n_retry_count      = 2;  // nRetryCount, PD rev 3.x
 inline constexpr std::uint8_t n_retry_count_rev2 = 3;  // nRetryCount, PD rev 2.0

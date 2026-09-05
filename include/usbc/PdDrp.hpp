@@ -177,6 +177,7 @@ private:
         begin_to_sink,     // PE_PRS_SRC_SNK_Assert_Rd
         complete_to_snk,   // the new source's PS_RDY arrived
         error_recovery,    // nHardResetCount exhausted
+        hard_reset_window, // hold the attach while VBUS cycles
     };
 
     // Injected into both engines' machines: watches the swap states'
@@ -205,6 +206,10 @@ private:
         void notifyEntry(pe::request_error_recovery)
         {
             port.pending_ = pending_action::error_recovery;
+        }
+        void notifyEntry(pe::hard_reset_window)
+        {
+            port.pending_ = pending_action::hard_reset_window;
         }
 
         PdDrp& port;
@@ -241,6 +246,9 @@ private:
                 header(power_role::sink);
                 if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_snk>) {
                     snk.finishSwap(); // already active mid PR_Swap
+                } else if constexpr (std::is_same_v<OLD_STATE,
+                                                    tc::state::hard_reset_recover_snk>) {
+                    snk.vbusPresent(); // already active: VBUS is back
                 } else {
                     active = active_role::sink;
                     snk.vbusPresent();
@@ -270,10 +278,21 @@ private:
         void onExitState(MACHINE&)
         {
             if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_snk>) {
-                // entering the swap standby keeps the sink engine
-                // live: it still awaits the old source's PS_RDY
-                if constexpr (!std::is_same_v<NEW_STATE, tc::drp::swap_standby_to_src>) {
+                // the swap standby and the hard-reset window keep the
+                // sink engine live: it still awaits the partner
+                if constexpr (!std::is_same_v<NEW_STATE, tc::drp::swap_standby_to_src> &&
+                              !std::is_same_v<NEW_STATE, tc::state::hard_reset_snk>) {
                     snk.vbusRemoved();
+                    active = active_role::none;
+                }
+            } else if constexpr (std::is_same_v<OLD_STATE, tc::state::hard_reset_snk>) {
+                if constexpr (!std::is_same_v<NEW_STATE, tc::state::hard_reset_recover_snk>) {
+                    snk.vbusRemoved(); // window timed out: dead port
+                    active = active_role::none;
+                }
+            } else if constexpr (std::is_same_v<OLD_STATE, tc::state::hard_reset_recover_snk>) {
+                if constexpr (!std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
+                    snk.vbusRemoved(); // window timed out: dead port
                     active = active_role::none;
                 }
             } else if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_src>) {
@@ -354,6 +373,11 @@ private:
             // terminations removed for tErrorRecovery, resolution
             // restarts; the teardown resets the engines
             drp_.errorRecovery();
+            break;
+        case pending_action::hard_reset_window:
+            // the attach is held while VBUS legitimately cycles; the
+            // sink engine stays live to await the capabilities
+            drp_.hardResetWindow();
             break;
         case pending_action::none: break;
         }

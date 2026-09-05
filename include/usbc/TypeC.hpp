@@ -25,6 +25,7 @@ namespace tc {
 
 inline constexpr auto t_cc_debounce   = std::chrono::milliseconds{150}; // tCCDebounce
 inline constexpr auto t_error_recovery = std::chrono::milliseconds{50}; // tErrorRecovery
+inline constexpr auto t_hard_reset_window = std::chrono::milliseconds{6000}; // > tNoResponse
 
 // What one CC line's voltage says about the partner's termination:
 // an Rp seen while presenting Rd, an Rd seen while presenting Rp
@@ -69,6 +70,7 @@ struct swap_complete {};
 struct swap_abort {};
 struct swap_data_role {};
 struct error_recovery {}; // PD-directed: remove both terminations
+struct hard_reset {};     // PD-directed: open the hard-reset window
 
 } // namespace event
 
@@ -83,6 +85,10 @@ struct port_context {
     bool vbus_safe0v  = false;
     plug_orientation orientation = plug_orientation::cc1;
     data_role data               = data_role::ufp;
+    // set while the hard-reset window holds the attach: re-entering
+    // Attached.SNK resumes the connection (plug and data role kept)
+    // instead of resolving a fresh attach
+    bool resuming = false;
 };
 
 // The one place tying a VBUS level to the events its reports become:

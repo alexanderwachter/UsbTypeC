@@ -750,6 +750,10 @@ struct pe_snk_transition_to_default {
         context = pe_context{.data = context.data, .hard_resets = context.hard_resets};
     }
 
+    // the source legitimately cycles VBUS now: the connection layer
+    // must hold the attach instead of reading it as a detach
+    hard_reset_window portReport() const { return {}; }
+
     pe_context& context;
 };
 
@@ -1086,7 +1090,8 @@ public:
         : tcpc_(tcpc),
           capabilities_(capabilities),
           policy_(policy),
-          prl_(tcpc, prl_timer, port_),
+          prl_pumped_{prl_timer, *this},
+          prl_(tcpc, prl_pumped_, port_),
           pumped_{pe_timer, *this},
           timed_(pumped_),
           sm_(timed_, prl_, observers...)
@@ -1430,11 +1435,14 @@ private:
     void (*idle_hook_)(void*) = nullptr;
     void* idle_context_       = nullptr;
     PrlPort port_{*this};
-    ProtocolLayer<TCPC, TIMER, PrlPort> prl_; // also an observer of sm_
+    // both timers pumped: the PRL's HardResetCompleteTimer also drives
+    // transitions whose port requests the facade must execute
+    PumpedTimer prl_pumped_;
+    ProtocolLayer<TCPC, PumpedTimer, PrlPort> prl_; // also an observer of sm_
     PumpedTimer pumped_;
     fsm::timed<PumpedTimer&> timed_;
     fsm::state_machine<pe::sink_table, fsm::timed<PumpedTimer&>,
-                       ProtocolLayer<TCPC, TIMER, PrlPort>, OBSERVERs...>
+                       ProtocolLayer<TCPC, PumpedTimer, PrlPort>, OBSERVERs...>
         sm_;
 };
 

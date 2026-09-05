@@ -135,11 +135,14 @@ struct attach_wait_snk : sink_state {
     static constexpr vbus_level watch = vbus_level::safe5v;
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
+    // every fresh attach passes through here: a stale hard-reset
+    // window flag must not leak into it
     attach_wait_snk(event::cc_changed const& event, port_context& ctx) : sink_state(ctx)
     {
-        context.cc = event.cc;
+        context.cc       = event.cc;
+        context.resuming = false;
     }
-    using sink_state::sink_state;
+    explicit attach_wait_snk(port_context& ctx) : sink_state(ctx) { context.resuming = false; }
 };
 
 // AttachWait.SNK with a stable single Rp, waiting for VBUS
@@ -159,6 +162,19 @@ struct attached_snk : sink_state {
     {
         context.orientation = orientationOf(context.cc);
         context.data        = data_role::ufp; // the sink attaches as UFP
+        context.resuming    = false;
+    }
+    // entered on the VBUS report: a fresh attach (the debounced wait,
+    // the DRP's TryWait.SNK) resolves plug and data role; VBUS
+    // returning after a hard reset resumes the connection unchanged
+    attached_snk(event::vbus_present const&, port_context& ctx)
+        : sink_state(ctx), advertisement_(advertisementOf(ctx.cc))
+    {
+        if (!context.resuming) {
+            context.orientation = orientationOf(context.cc);
+            context.data        = data_role::ufp;
+        }
+        context.resuming = false;
     }
     // entered on a CC event (the DRP's TryWait.SNK attach): the payload
     // must land in the context before the orientation is derived
@@ -185,6 +201,27 @@ struct attached_snk : sink_state {
 
 private:
     rp_value advertisement_;
+};
+
+// The hard-reset window, first phase: the source legitimately drops
+// VBUS to vSafe0V - not a detach. Rd stays presented, the sink path
+// is off. The policy engine's NoResponseTimer owns the give-up; the
+// timeout here only terminates a dead port
+struct hard_reset_snk : sink_state {
+    static constexpr hw_config hw{cc_pull::rd, false};
+    static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto timeout     = t_hard_reset_window;
+
+    explicit hard_reset_snk(port_context& ctx) : sink_state(ctx) { context.resuming = true; }
+};
+
+// ... second phase: VBUS is down, its return resumes Attached.SNK
+struct hard_reset_recover_snk : sink_state {
+    static constexpr hw_config hw{cc_pull::rd, false};
+    static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto timeout     = t_hard_reset_window;
+
+    using sink_state::sink_state;
 };
 
 } // namespace state
@@ -244,6 +281,32 @@ using sink_timer_ranges = mtl::typelist<
 using error_recovery_timer_range = mtl::typelist<
     fsm::timed_by<state::error_recovery, spec::t_error_recovery>>;
 
+using hard_reset_timer_ranges = mtl::typelist<
+    fsm::timed_by<state::hard_reset_snk, spec::t_hard_reset_window>,
+    fsm::timed_by<state::hard_reset_recover_snk, spec::t_hard_reset_window>>;
+
+// The hard-reset window, shared with the DRP: attach held while VBUS
+// legitimately cycles through vSafe0V; a window that never completes
+// falls back to the table's unattached anchor
+template<typename UNATTACHED>
+using hard_reset_flow = mtl::typelist<
+    fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::hard_reset>,
+                    fsm::to<state::hard_reset_snk>>,
+    fsm::transition<fsm::from<state::hard_reset_snk>, fsm::on<event::vbus_removed>,
+                    fsm::to<state::hard_reset_recover_snk>>,
+    fsm::internal_transition<fsm::from<state::hard_reset_snk>, fsm::on<event::vbus_present>>,
+    fsm::internal_transition<fsm::from<state::hard_reset_snk>, fsm::on<event::cc_changed>>,
+    fsm::transition<fsm::from<state::hard_reset_snk>, fsm::on<fsm::timeout>,
+                    fsm::to<UNATTACHED>>,
+    fsm::transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<event::vbus_present>,
+                    fsm::to<state::attached_snk>>,
+    fsm::internal_transition<fsm::from<state::hard_reset_recover_snk>,
+                             fsm::on<event::vbus_removed>>,
+    fsm::internal_transition<fsm::from<state::hard_reset_recover_snk>,
+                             fsm::on<event::cc_changed>>,
+    fsm::transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<fsm::timeout>,
+                    fsm::to<UNATTACHED>>>;
+
 // ErrorRecovery is anchored per table: open terminations, then back
 // to that table's unattached resting state
 template<typename UNATTACHED>
@@ -259,11 +322,13 @@ using sink_table = mtl::rebind_t<
         fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
                         fsm::to<state::unattached_snk>>,
         sink_attach_flow<state::unattached_snk, state::attached_snk>,
-        error_recovery_flow<state::unattached_snk>>>,
+        error_recovery_flow<state::unattached_snk>,
+        hard_reset_flow<state::unattached_snk>>>,
     fsm::transition_table>;
 static_assert(fsm::timeouts_within_bounds_v<
               sink_table,
-              mtl::linearize_t<mtl::typelist<sink_timer_ranges, error_recovery_timer_range>>>);
+              mtl::linearize_t<mtl::typelist<sink_timer_ranges, error_recovery_timer_range,
+                                             hard_reset_timer_ranges>>>);
 static_assert(fsm::all_states_reachable_v<sink_table>);
 
 // Applies each state's hw annotation (suppressed while unchanged) and
@@ -328,6 +393,10 @@ public:
     // tErrorRecovery, then resolution restarts. Call from the stack's
     // serialized context
     bool errorRecovery() { return sm_.process(tc::event::error_recovery{}); }
+
+    // PD-directed hard-reset window: the attach is held while VBUS
+    // legitimately cycles through vSafe0V and back
+    bool hardResetWindow() { return sm_.process(tc::event::hard_reset{}); }
 
 private:
     friend tc::port_frontend<TypeCSink, TCPC, VBUS>;

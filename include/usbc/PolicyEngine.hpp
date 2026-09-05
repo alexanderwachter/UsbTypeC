@@ -110,6 +110,7 @@ struct enter_swap_standby { // agreed PR_Swap: hold the connection
 };
 struct swap_completed {}; // the new source's PS_RDY: the swap is done
 struct request_error_recovery {}; // nHardResetCount exhausted
+struct hard_reset_window {}; // hold the attach while VBUS cycles
 
 namespace event {
 

@@ -240,6 +240,37 @@ int pdDrpTests()
     check(tcpc.header_info.data == usbc::data_role::dfp);
     check(tcpc.sinking); // power roles untouched
 
+    // the partner hard-resets: the connection layer holds the attach
+    // through the legitimate VBUS cycle instead of detaching, and the
+    // swapped data role survives (a hard reset does not change it)
+    tcpc.alerts |= usbc::alert_status::hard_reset_received;
+    tcpc.callback(tcpc.context);
+    check(!tcpc.sinking && !port.powerRole()); // window open, not detached
+    check(tcpc.pull == usbc::cc_pull::rd);
+    vbus.setVoltage(0); // the source removes VBUS - not a detach
+    vbus.setVoltage(5000); // ... and restores it
+    check(tcpc.sinking && port.powerRole() == usbc::power_role::sink);
+    check(port.dataRole() == usbc::data_role::dfp); // preserved
+    check(tcpc.header_info.data == usbc::data_role::dfp);
+    check(timers.sink_pe.armed); // NoResponseTimer awaits the capabilities
+
+    // the source re-advertises: the contract re-establishes (and the
+    // PD 2.0 revision is re-adopted after the hard reset's reset)
+    auto caps_again = partnerMessage(
+        static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities), 1,
+        usbc::power_role::source, usbc::data_role::dfp, usbc::pd_revision::rev_2_0);
+    putObject(caps_again, usbc::pdo::makeFixedSource(5000, 3000));
+    deliver(caps_again);
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::data_message_type::request));
+    check(usbc::pd_header::decode(tcpc.last_transmitted.header).revision ==
+          usbc::pd_revision::rev_2_0);
+    txSuccess();
+    deliver(partnerControl(usbc::control_message_type::accept, usbc::power_role::source,
+                           usbc::data_role::dfp));
+    deliver(partnerControl(usbc::control_message_type::ps_rdy, usbc::power_role::source,
+                           usbc::data_role::dfp));
+
     // DR_Swap, the partner's request: we Accept and flip back
     deliver(partnerControl(usbc::control_message_type::dr_swap, usbc::power_role::source,
                            usbc::data_role::dfp));
