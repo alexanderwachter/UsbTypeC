@@ -1,7 +1,7 @@
 /*
  * Adapter from a Zephyr TCPC device driver
- * (zephyr/drivers/usb_c/usbc_tcpc.h) to the stack's tcpc,
- * vconn_switch, and pd_transport concepts.
+ * (zephyr/drivers/usb_c/usbc_tcpc.h) to the stack's tcpc and
+ * pd_transport concepts.
  *
  * Alerts arrive per-event from the driver's callback context, are
  * accumulated atomically, and the registered alert callback is
@@ -47,6 +47,9 @@ public:
 
     bool sourceVbus(bool enable);
     bool sinkVbus(bool enable);
+
+    // Not part of the TCPC concepts: on boards where the TCPC driver
+    // owns the VCONN switch, the injected vconn_port forwards here
     bool setVconn(bool enable);
 
     bool setMessageHeaderInfo(message_header_info info);
@@ -68,7 +71,6 @@ private:
 };
 
 static_assert(concepts::tcpc<Tcpc>);
-static_assert(concepts::vconn_switch<Tcpc>);
 static_assert(concepts::pd_transport<Tcpc>);
 
 } // namespace usbc::zephyr

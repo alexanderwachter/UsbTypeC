@@ -8,7 +8,7 @@
  * construction.
  *
  * A driver implements the interfaces its port needs via multiple
- * inheritance (e.g. TcpcInterface + VconnInterface +
+ * inheritance (e.g. TcpcInterface +
  * PdTransportInterface for a full PD port). To dispatch virtually
  * through the stack, instantiate it with the interface type itself,
  * e.g. ProtocolLayer<PdTransportInterface, ...>.
@@ -41,14 +41,6 @@ public:
 };
 static_assert(concepts::tcpc<TcpcInterface>);
 
-// concepts::vconn_switch as an abstract interface
-class VconnInterface {
-public:
-    virtual ~VconnInterface() = default;
-
-    virtual bool setVconn(bool enable) = 0;
-};
-static_assert(concepts::vconn_switch<VconnInterface>);
 
 // concepts::pd_transport as an abstract interface
 class PdTransportInterface {

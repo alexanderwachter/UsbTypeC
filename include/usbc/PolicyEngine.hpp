@@ -18,9 +18,12 @@
 #include <usbc/Spec.hpp>
 #include <usbc/Units.hpp>
 
+#include <mtl/StateMachine.hpp>
+
 #include <chrono>
 #include <cstdint>
 #include <string_view>
+#include <type_traits>
 
 namespace usbc {
 
@@ -30,6 +33,10 @@ struct sink_capability {
     millivolt voltage;
     milliamp current;
 };
+
+// The tag the swap arbitration is asked with: allowSwap(vconn_source_role)
+// says whether this port may take over sourcing VCONN
+struct vconn_source_role {};
 
 namespace pe {
 
@@ -112,6 +119,11 @@ struct enter_swap_standby { // agreed PR_Swap: hold the connection
 struct swap_completed {}; // the new source's PS_RDY: the swap is done
 struct request_error_recovery {}; // nHardResetCount exhausted
 struct hard_reset_window {}; // hold the attach while VBUS cycles
+struct request_hard_reset {}; // e.g. a VCONN_Swap hand-off timed out
+struct vconn_swap_agreed {};  // VCONN_Swap accepted: the vconn machine takes over
+struct vconn_partner_on {};   // the new VCONN source's PS_RDY arrived
+struct vconn_ps_rdy_sent {};  // our VCONN PS_RDY is on the wire
+struct announce_vconn_on {};  // vconn machine: transmit our PS_RDY
 
 namespace event {
 
@@ -147,6 +159,19 @@ struct attached_swap { // activation continuing a PR_Swap (new source)
 };
 struct swap_done {};     // advances the transient swap states
 struct bist_carrier {};  // BIST Carrier Mode 2 requested (vSafe5V)
+
+// VCONN_Swap messaging, shared by both engine roles; the role and
+// switch choreography lives in the vconn machine (Vconn.hpp)
+struct send_vconn_swap { // our VCONN_Swap goes out
+    pd_message message;
+};
+struct vconn_swap_accepted { // the partner's VCONN_Swap passed arbitration
+    pd_message accept;
+};
+struct send_vconn_ps_rdy { // the vconn machine turned the switch on
+    pd_message message;
+};
+struct hard_reset_request {}; // port-level escalation (vconn timeout)
 struct unsupported {
     pd_message reply;
 };
@@ -157,6 +182,33 @@ struct hard_reset_complete {};
 struct hard_reset_received {};
 
 } // namespace event
+
+// The optional VCONN feature: states carrying a vconn_feature marker
+// belong to it, and an engine whose injected policy has no
+// allowSwap(vconn_source_role) removes them - and every transition
+// touching them - from its table at compile time
+template<typename STATE>
+struct is_vconn_state : std::bool_constant<requires { STATE::vconn_feature; }> {};
+
+template<typename ENTRY>
+struct touches_vconn : std::false_type {}; // fsm::initial<> and friends
+
+template<typename ENTRY>
+    requires requires {
+        typename ENTRY::from;
+        typename ENTRY::to;
+    }
+struct touches_vconn<ENTRY>
+    : std::bool_constant<is_vconn_state<typename ENTRY::from>::value ||
+                         is_vconn_state<typename ENTRY::to>::value> {};
+
+// ... and its timer-range map counterpart (the map check is
+// bidirectional: entries for filtered states must go too)
+template<typename ENTRY>
+struct times_vconn_state : std::false_type {};
+
+template<typename STATE, auto const& BOUND>
+struct times_vconn_state<fsm::timed_by<STATE, BOUND>> : is_vconn_state<STATE> {};
 
 inline pd_message makeControlMessage(control_message_type type, power_role power, data_role data)
 {

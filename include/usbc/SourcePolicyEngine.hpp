@@ -488,6 +488,121 @@ struct pe_src_dr_swap_change {
     src_context& context;
 };
 
+// PE_VCS_Send_Swap: our VCONN_Swap is out
+struct pe_src_vcs_send_swap {
+    static constexpr bool vconn_feature = true;
+    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends VCONN_Swap";
+
+    pe_src_vcs_send_swap(pe::event::send_vconn_swap const& event, src_context& ctx)
+        : context(ctx), message_(event.message)
+    {
+    }
+    explicit pe_src_vcs_send_swap(src_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return message_; }
+
+    src_context& context;
+
+private:
+    pd_message message_{};
+};
+
+// PE_VCS_Accept_Swap: the partner's VCONN_Swap passed the arbitration
+struct pe_src_vcs_accept {
+    static constexpr bool vconn_feature = true;
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends Accept";
+
+    pe_src_vcs_accept(pe::event::vconn_swap_accepted const& event, src_context& ctx)
+        : context(ctx), message_(event.accept)
+    {
+    }
+    explicit pe_src_vcs_accept(src_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return message_; }
+
+    src_context& context;
+
+private:
+    pd_message message_{};
+};
+
+// The agreed swap's message anchor (glue, not a spec state): the
+// vconn machine choreographs the hand-off; this engine relays the
+// PS_RDY traffic and stays here until its side is done
+struct pe_src_vcs_active {
+    static constexpr bool vconn_feature = true;
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    pe_src_vcs_active(pe::event::accept const&, src_context& ctx) : pe_src_vcs_active(ctx) {}
+    pe_src_vcs_active(pe::event::message_sent const&, src_context& ctx)
+        : pe_src_vcs_active(ctx)
+    {
+    }
+    explicit pe_src_vcs_active(src_context& ctx) : context(ctx) {}
+
+    vconn_swap_agreed portReport() const { return {}; }
+
+    src_context& context;
+};
+
+// PE_VCS_Send_PS_RDY: the vconn machine turned the switch on
+struct pe_src_vcs_send_ps_rdy {
+    static constexpr bool vconn_feature = true;
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends PS_RDY";
+
+    pe_src_vcs_send_ps_rdy(pe::event::send_vconn_ps_rdy const& event, src_context& ctx)
+        : context(ctx), message_(event.message)
+    {
+    }
+    explicit pe_src_vcs_send_ps_rdy(src_context& ctx) : context(ctx) {}
+
+    pd_message const& txMessage() const { return message_; }
+
+    src_context& context;
+
+private:
+    pd_message message_{};
+};
+
+// Transients reporting the hand-off progress to the vconn machine
+struct pe_src_vcs_partner_on {
+    static constexpr bool vconn_feature = true;
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_vcs_partner_on(src_context& ctx) : context(ctx) {}
+
+    vconn_partner_on portReport() const { return {}; }
+
+    src_context& context;
+};
+
+struct pe_src_vcs_ps_rdy_sent {
+    static constexpr bool vconn_feature = true;
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_vcs_ps_rdy_sent(src_context& ctx) : context(ctx) {}
+
+    vconn_ps_rdy_sent portReport() const { return {}; }
+
+    src_context& context;
+};
+
 // PD3 collision avoidance ahead of a source-initiated AMS: SinkTxNG
 // goes on the wire (the Rp annotation), the first message follows
 // after tSinkTx
@@ -876,9 +991,10 @@ using source_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_src_pr_swap_wait, spec::t_pr_swap_wait>,
     fsm::timed_by<state::pe_src_bist_carrier, spec::t_bist_cont_mode>,
     fsm::timed_by<state::pe_src_sink_tx_wait_pr, spec::t_sink_tx>,
-    fsm::timed_by<state::pe_src_sink_tx_wait_dr, spec::t_sink_tx>>;
+    fsm::timed_by<state::pe_src_sink_tx_wait_dr, spec::t_sink_tx>,
+    fsm::timed_by<state::pe_src_vcs_send_swap, spec::t_sender_response>>;
 
-using source_table = fsm::transition_table<
+using source_transitions = mtl::typelist<
     fsm::initial<state::pe_src_startup>,
     fsm::transition<fsm::from<state::pe_src_startup>, fsm::on<event::attached>,
                     fsm::to<state::pe_src_send_capabilities>>,
@@ -985,6 +1101,40 @@ using source_table = fsm::transition_table<
                     fsm::to<state::pe_src_send_soft_reset>>,
     fsm::transition<fsm::from<state::pe_src_dr_swap_change>, fsm::on<pe::event::swap_done>,
                     fsm::to<state::pe_src_ready>>,
+    // VCONN_Swap: the messages anchor here, the vconn machine owns
+    // the role, the switch, and the hand-off deadline
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_vconn_swap>,
+                    fsm::to<state::pe_src_vcs_send_swap>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::accept>,
+                    fsm::to<state::pe_src_vcs_active>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::reject>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::wait>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::protocol_error>,
+                    fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::vconn_swap_accepted>,
+                    fsm::to<state::pe_src_vcs_accept>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_accept>, fsm::on<pe::event::message_sent>,
+                    fsm::to<state::pe_src_vcs_active>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_accept>, fsm::on<pe::event::protocol_error>,
+                    fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_active>, fsm::on<pe::event::ps_rdy>,
+                    fsm::to<state::pe_src_vcs_partner_on>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_active>, fsm::on<pe::event::send_vconn_ps_rdy>,
+                    fsm::to<state::pe_src_vcs_send_ps_rdy>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_active>, fsm::on<pe::event::hard_reset_request>,
+                    fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_ps_rdy>, fsm::on<pe::event::message_sent>,
+                    fsm::to<state::pe_src_vcs_ps_rdy_sent>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_ps_rdy>,
+                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_partner_on>, fsm::on<pe::event::swap_done>,
+                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_ps_rdy_sent>, fsm::on<pe::event::swap_done>,
+                    fsm::to<state::pe_src_ready>>,
     // PR_Swap while sourcing: the agreement leads through tSrcTransition
     // into the supply-off wait, then the termination flip
     fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_pr_swap>,
@@ -1055,8 +1205,23 @@ using source_table = fsm::transition_table<
                     fsm::to<state::pe_src_send_capabilities>, fsm::guard<still_attached>>,
     fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>,
                     fsm::to<state::pe_src_startup>>>;
-static_assert(fsm::timeouts_within_bounds_v<source_table, source_timer_ranges>);
-static_assert(fsm::all_states_reachable_v<source_table>);
+// The engine's table, with the optional VCONN feature filtered out
+// when the injected policy cannot arbitrate it
+template<bool VCONN>
+using source_table_for = mtl::rebind_t<
+    std::conditional_t<VCONN, source_transitions,
+                       mtl::remove_if_t<source_transitions, touches_vconn>>,
+    fsm::transition_table>;
+
+template<bool VCONN>
+using source_timer_ranges_for =
+    std::conditional_t<VCONN, source_timer_ranges,
+                       mtl::remove_if_t<source_timer_ranges, times_vconn_state>>;
+
+// The table checks live in the engine class: only the variant a TU
+// actually instantiates is verified there (checking both here would
+// double the heaviest compile-time work in every including TU); the
+// test suite instantiates both variants
 
 // The member observers behind SourcePower (POWER is
 // SourcePower<DERIVED>); injected together as one fsm::observer_group
@@ -1269,6 +1434,23 @@ public:
         sink_capabilities_ = capabilities;
     }
 
+    // VCONN_Swap, driven by the vconn machine through the facade:
+    // request the swap, transmit our PS_RDY once the switch is on,
+    // and escalate a failed hand-off
+    bool requestVconnSwap()
+    {
+        return sm_.process(
+            pe::event::send_vconn_swap{makeControl(control_message_type::vconn_swap)});
+    }
+
+    bool sendVconnPsRdy()
+    {
+        return sm_.process(
+            pe::event::send_vconn_ps_rdy{makeControl(control_message_type::ps_rdy)});
+    }
+
+    bool hardReset() { return sm_.process(pe::event::hard_reset_request{}); }
+
     // The facade's deferred port actions run through this hook once an
     // engine-internal event source (the supply settle callback) is done
     // processing - the machines are idle then
@@ -1407,7 +1589,12 @@ private:
     // is advanced here (the spec chains them without further input)
     void advanceTransients()
     {
-        if (sm_.template is<pe::state::pe_src_dr_swap_change>()) {
+        bool transient = sm_.template is<pe::state::pe_src_dr_swap_change>();
+        if constexpr (vconn_capable) { // else the states are filtered out
+            transient = transient || sm_.template is<pe::state::pe_src_vcs_partner_on>() ||
+                        sm_.template is<pe::state::pe_src_vcs_ps_rdy_sent>();
+        }
+        if (transient) {
             sm_.process(pe::event::swap_done{});
         }
     }
@@ -1511,12 +1698,18 @@ private:
         } else if (isControl(header, control_message_type::wait)) {
             sm_.process(pe::event::wait{});
         } else if (isControl(header, control_message_type::ps_rdy)) {
-            // the PS_RDY exchange of a PR_Swap runs on the sink engine
+            // a VCONN hand-off completion (the PS_RDY exchange of a
+            // PR_Swap runs on the sink engine)
+            sm_.process(pe::event::ps_rdy{});
+            advanceTransients();
         } else if (isControl(header, control_message_type::dr_swap)) {
             answerSwap<data_role>(pe::event::dr_swap_accepted{
                 makeControl(control_message_type::accept)});
         } else if (isControl(header, control_message_type::pr_swap)) {
             answerSwap<power_role>(pe::event::pr_swap_accepted{
+                makeControl(control_message_type::accept)});
+        } else if (isControl(header, control_message_type::vconn_swap)) {
+            answerSwap<vconn_source_role>(pe::event::vconn_swap_accepted{
                 makeControl(control_message_type::accept)});
         } else if (isControl(header, control_message_type::get_source_cap)) {
             sm_.process(pe::event::get_source_caps{});
@@ -1560,6 +1753,8 @@ private:
     {
         if constexpr (std::is_same_v<ROLE, power_role>) {
             return power_role::sink; // a source swaps to sinking
+        } else if constexpr (std::is_same_v<ROLE, vconn_source_role>) {
+            return {}; // the arbitration decides on the port's vconn role
         } else {
             auto const data = sm_.template context<pe::src_context>().data;
             return data == data_role::ufp ? data_role::dfp : data_role::ufp;
@@ -1629,7 +1824,17 @@ private:
     CapsSender caps_sender_{*this};
     SupplyDriver supply_driver_{*this};
     SinkTxDriver sink_tx_driver_{*this};
-    fsm::state_machine<pe::source_table, fsm::timed<PumpedTimer&>,
+    // The optional VCONN feature follows the injected policy: without
+    // its arbitration hook, the VCS states are filtered from the table
+    static constexpr bool vconn_capable = requires(POLICY p) {
+        { p.allowSwap(vconn_source_role{}) } -> std::convertible_to<bool>;
+    };
+
+    static_assert(fsm::timeouts_within_bounds_v<pe::source_table_for<vconn_capable>,
+                                                pe::source_timer_ranges_for<vconn_capable>>);
+    static_assert(fsm::all_states_reachable_v<pe::source_table_for<vconn_capable>>);
+
+    fsm::state_machine<pe::source_table_for<vconn_capable>, fsm::timed<PumpedTimer&>,
                        ProtocolLayer<TCPC, TIMER, PrlPort>,
                        CapsSender, SupplyDriver, SinkTxDriver, OBSERVERs...>
         sm_;

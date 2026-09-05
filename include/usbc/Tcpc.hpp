@@ -7,7 +7,7 @@
  * a Zephyr TCPC device driver (zephyr/drivers/usb_c/usbc_tcpc.h). The
  * state machines play the TCPM role and drive a user-provided driver
  * satisfying concepts::tcpc plus the capability concepts its port
- * needs (vconn_switch, pd_transport - not every port runs Power
+ * needs (pd_transport - not every port runs Power
  * Delivery or supplies VCONN). VBUS sensing is a separate interface
  * (concepts::vbus in Vbus.hpp): hardware, and Zephyr's driver model,
  * often measure VBUS outside the TCPC. Connection detection (including
@@ -141,12 +141,9 @@ concept tcpc = requires(T t, cc_pull pull, rp_value rp, plug_orientation orienta
     { t.sinkVbus(enable) } -> std::same_as<bool>;
 };
 
-// VCONN powers the cable plug: only ports doing cable communication or
-// >3 A contracts need it
-template<typename T>
-concept vconn_switch = requires(T t, bool enable) {
-    { t.setVconn(enable) } -> std::same_as<bool>;
-};
+// VCONN is not a TCPC capability here: the switch hardware lives
+// wherever the board routes it, connected through the vconn_port
+// object injected into the port (Vconn.hpp)
 
 // PD message transport; a Type-C-only port needs none of it
 template<typename T>

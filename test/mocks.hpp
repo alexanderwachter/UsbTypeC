@@ -24,7 +24,6 @@ struct mock_tcpc {
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
     bool sourcing                 = false;
     bool sinking                  = false;
-    bool vconn                    = false;
     usbc::receive_detect detect   = usbc::receive_detect::none;
     usbc::message_header_info header_info{};
     usbc::pd_message last_transmitted{};
@@ -64,11 +63,6 @@ struct mock_tcpc {
     bool sinkVbus(bool enable)
     {
         sinking = enable;
-        return true;
-    }
-    bool setVconn(bool enable)
-    {
-        vconn = enable;
         return true;
     }
     bool setMessageHeaderInfo(usbc::message_header_info info)

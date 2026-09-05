@@ -128,12 +128,23 @@ struct ContractMonitor : usbc::SourcePower<ContractMonitor> {
     void onContractLost() { LOG_WRN("source contract lost, back to vSafe5V"); }
 };
 
+// The injected vconn_port: connects the VCONN switch - behind the
+// TCPC driver on this board - and allows taking the role. Its
+// presence enables the VCONN machine and the engines' VCONN_Swap
+// states; a port without it compiles the feature out
+struct VconnPolicy : fsm::observing<VconnPolicy> {
+    usbc::zephyr::Tcpc* tcpc = nullptr; // wired in main()
+
+    bool setVconn(bool on) { return tcpc->setVconn(on); }
+    bool allowSwap(usbc::vconn_source_role) { return true; }
+};
+
 // The StateLogger rides along in the connection machine (module
 // usbc_fsm, debug level)
 using Port = usbc::PdDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
                          usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, ContractMonitor,
                          usbc::default_drp_timing, usbc::drp_preference::none,
-                         usbc::zephyr::StateLogger>;
+                         usbc::zephyr::StateLogger, VconnPolicy>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
@@ -145,11 +156,12 @@ usbc::RequestPolicy source_policy;
 Supply supply;
 ContractMonitor contract_monitor;
 usbc::zephyr::StateLogger state_logger;
+VconnPolicy vconn_policy;
 
 // The Rp matches the 5 V capability the port advertises through PD
 Port port{tcpc,        vbus,          timers, sink_capabilities, sink_policy,           power,
           source_caps, source_policy, supply, contract_monitor,  usbc::rp_value::p_1a5,
-          state_logger};
+          state_logger, vconn_policy};
 
 // The joystick triggers the PD swap messaging, submitted to the
 // stack's queue - the serialization the swap calls require. The
@@ -198,6 +210,7 @@ int main()
         LOG_ERR("supply hardware init failed");
         return -1;
     }
+    vconn_policy.tcpc = &tcpc; // this board's switch sits behind the TCPC
     port.start(); // leave Disabled: toggle Rd/Rp, resolve with the partner
 
     setupButton(power_button, power_button_cb, [](const device*, gpio_callback*, uint32_t) {

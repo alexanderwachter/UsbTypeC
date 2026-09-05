@@ -89,6 +89,20 @@ struct mock_source_power : usbc::SourcePower<mock_source_power> {
     void onContractLost() {}
 };
 
+// The injected vconn_port: connects the switch hardware AND allows
+// taking the role (its absence compiles the feature out entirely)
+struct vconn_allow : fsm::observing<vconn_allow> {
+    bool on = false;
+
+    bool setVconn(bool enable)
+    {
+        on = enable;
+        return true;
+    }
+    bool allowSwap(usbc::vconn_source_role) { return true; }
+};
+static_assert(usbc::concepts::vconn_port<vconn_allow>);
+
 // --- partner messages --------------------------------------------------------
 int next_id = 0;
 
@@ -153,7 +167,8 @@ int pdDrpTests()
 {
     using Port = usbc::PdDrp<mock_tcpc, mock_vbus, manual_timer, usbc::PowerPolicy,
                              mock_sink_power, usbc::RequestPolicy, mock_supply,
-                             mock_source_power>;
+                             mock_source_power, usbc::default_drp_timing,
+                             usbc::drp_preference::none, vconn_allow>;
 
     mock_tcpc tcpc;
     mock_vbus vbus;
@@ -163,9 +178,11 @@ int pdDrpTests()
     usbc::RequestPolicy source_policy;
     mock_supply supply;
     mock_source_power source_power;
+    vconn_allow vconn_policy;
 
-    Port port{tcpc,        vbus,          timers, sink_capabilities, sink_policy, sink_power,
-              source_caps, source_policy, supply, source_power,      usbc::rp_value::p_1a5};
+    Port port{tcpc,   vbus,          timers,       sink_capabilities,
+              sink_policy, sink_power,    source_caps,  source_policy,
+              supply,      source_power,  usbc::rp_value::p_1a5, vconn_policy};
 
     auto const ccAlert = [&] {
         tcpc.alerts |= usbc::alert_status::cc_status_changed;
@@ -239,6 +256,31 @@ int pdDrpTests()
     check(port.dataRole() == usbc::data_role::dfp);
     check(tcpc.header_info.data == usbc::data_role::dfp);
     check(tcpc.sinking); // power roles untouched
+
+    // VCONN_Swap, the partner's request: taking is allowed by the
+    // injected policy - Accept, switch on, our PS_RDY announces it
+    check(!port.isVconnSource() && !vconn_policy.on);
+    deliver(partnerControl(usbc::control_message_type::vconn_swap, usbc::power_role::source,
+                           usbc::data_role::dfp));
+    check(transmittedControl(tcpc, usbc::control_message_type::accept));
+    txSuccess();
+    check(vconn_policy.on); // the switch is on before the announcement
+    check(transmittedControl(tcpc, usbc::control_message_type::ps_rdy));
+    txSuccess();
+    check(port.isVconnSource());
+
+    // ... and back on our request: relinquish, await the partner's
+    // PS_RDY under tVCONNSourceTimeout, switch off on its arrival
+    check(port.swapVconnRole());
+    check(transmittedControl(tcpc, usbc::control_message_type::vconn_swap));
+    txSuccess();
+    deliver(partnerControl(usbc::control_message_type::accept, usbc::power_role::source,
+                           usbc::data_role::dfp));
+    check(timers.vconn.armed); // tVCONNSourceTimeout
+    check(vconn_policy.on);    // still sourcing until the hand-off
+    deliver(partnerControl(usbc::control_message_type::ps_rdy, usbc::power_role::source,
+                           usbc::data_role::dfp));
+    check(!vconn_policy.on && !port.isVconnSource());
 
     // BIST Carrier Mode 2 (the contract is vSafe5V): the carrier goes
     // out for tBISTContMode, then normal operation resumes

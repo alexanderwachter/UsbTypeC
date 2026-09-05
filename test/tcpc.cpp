@@ -66,15 +66,7 @@ struct mock_sink_load {
 namespace compile_time {
 
 static_assert(usbc::concepts::tcpc<mock_tcpc>);
-static_assert(usbc::concepts::vconn_switch<mock_tcpc>);
 static_assert(usbc::concepts::pd_transport<mock_tcpc>);
-
-// the capability concepts are independent: a Type-C-only driver
-// without VCONN and PD messaging still is a tcpc
-struct no_vconn : mock_tcpc {
-    bool setVconn(bool) = delete;
-};
-static_assert(usbc::concepts::tcpc<no_vconn> && !usbc::concepts::vconn_switch<no_vconn>);
 
 // the flags operators are opt-in: enums without the trait stay plain
 // (probed through templates - a non-dependent invalid expression in a
@@ -137,7 +129,7 @@ static_assert(!usbc::concepts::source_supply<voltage_only>);
 
 // a driver written against the inheritance facade satisfies the
 // concepts by construction, through the derived and the base type
-struct virtual_driver : usbc::TcpcInterface, usbc::VconnInterface, usbc::PdTransportInterface {
+struct virtual_driver : usbc::TcpcInterface, usbc::PdTransportInterface {
     int transmitted = 0;
 
     void setAlertHandler(usbc::alert_callback, void*) override {}
@@ -147,7 +139,6 @@ struct virtual_driver : usbc::TcpcInterface, usbc::VconnInterface, usbc::PdTrans
     bool setPlugOrientation(usbc::plug_orientation) override { return true; }
     bool sourceVbus(bool) override { return true; }
     bool sinkVbus(bool) override { return true; }
-    bool setVconn(bool) override { return true; }
     bool setMessageHeaderInfo(usbc::message_header_info) override { return true; }
     bool setReceiveDetect(usbc::receive_detect) override { return true; }
     bool transmit(usbc::pd_message const&) override
@@ -163,7 +154,6 @@ struct virtual_driver : usbc::TcpcInterface, usbc::VconnInterface, usbc::PdTrans
     bool receive(usbc::pd_message&) override { return false; }
 };
 static_assert(usbc::concepts::tcpc<virtual_driver>);
-static_assert(usbc::concepts::vconn_switch<virtual_driver>);
 static_assert(usbc::concepts::pd_transport<virtual_driver>);
 
 } // namespace compile_time

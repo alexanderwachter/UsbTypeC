@@ -34,17 +34,22 @@
 #include <usbc/SinkPolicyEngine.hpp>
 #include <usbc/SourcePolicyEngine.hpp>
 #include <usbc/TypeCDrp.hpp>
+#include <usbc/Vconn.hpp>
 
 #include <mtl/StateMachine.hpp>
+#include <mtl/Typelist.hpp>
+#include <mtl/TypelistAlgorithms.hpp>
 
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <type_traits>
 
 namespace usbc {
 
-// The timers the port runs on: the connection layer's, and a protocol
-// plus an engine timer per role. One bundle owned by the caller
+// The timers the port runs on: the connection layer's, a protocol
+// plus an engine timer per role, and the vconn machine's. One bundle
+// owned by the caller
 template<fsm::concepts::timer TIMER>
 struct pd_drp_timers {
     TIMER tc;
@@ -52,6 +57,7 @@ struct pd_drp_timers {
     TIMER sink_pe;
     TIMER source_prl;
     TIMER source_pe;
+    TIMER vconn;
 };
 
 template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
@@ -73,6 +79,8 @@ public:
                        sink_power, watch_),
           source_engine_(tcpc, timers.source_prl, timers.source_pe, source_capabilities,
                          source_policy_, supply, source_power, watch_),
+          vconn_timer_{timers.vconn, *this},
+          vconn_(pickVconnPort(observers...), vconn_timer_, watch_),
           router_{tcpc, sink_engine_, source_engine_, *this},
           drp_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
     {
@@ -132,10 +140,65 @@ public:
                                          : source_engine_.requestDataSwap();
     }
 
+    // Sends a VCONN_Swap; giving the role up needs no capability,
+    // taking it is arbitrated through the injected observers'
+    // allowSwap(vconn_source_role)
+    bool swapVconnRole()
+    {
+        auto const role = drp_.powerRole();
+        if (!role || !allowVconnSwap()) {
+            return false;
+        }
+        return *role == power_role::sink ? sink_engine_.requestVconnSwap()
+                                         : source_engine_.requestVconnSwap();
+    }
+
     std::optional<power_role> powerRole() const { return drp_.powerRole(); }
     std::optional<data_role> dataRole() const { return drp_.dataRole(); }
+    bool isVconnSource() const { return vconn_.isVconnSource(); }
 
 private:
+    // VCONN is optional and opt-in: an injected observer satisfying
+    // concepts::vconn_port (the switch hardware connector plus the
+    // taking arbitration) enables it - without one the vconn machine
+    // is a stub and the engines' VCS states are filtered from their
+    // tables (VCONN only matters for emarked/high-speed cables and
+    // contracts above 3 A)
+    static constexpr bool vconn_enabled =
+        (concepts::vconn_port<std::remove_cvref_t<OBSERVERs>> || ...);
+
+    // The inert hardware stand-in when the feature is compiled out
+    struct no_vconn_port {
+        bool setVconn(bool) { return true; }
+        bool allowSwap(vconn_source_role) { return false; }
+    };
+
+    template<typename T>
+    struct is_vconn_port_type : std::bool_constant<concepts::vconn_port<T>> {};
+
+    // Lazy: the filtered pack is only fronted when the feature exists
+    template<bool ENABLED, typename = void>
+    struct vconn_port_type : std::type_identity<no_vconn_port> {};
+    template<typename DUMMY>
+    struct vconn_port_type<true, DUMMY>
+        : std::type_identity<
+              mtl::front_t<mtl::filter_t<mtl::typelist<std::remove_cvref_t<OBSERVERs>...>,
+                                         is_vconn_port_type>>> {};
+
+    using vconn_port_t = typename vconn_port_type<vconn_enabled>::type;
+
+    // The first vconn-capable observer of the pack, or the stand-in
+    auto& pickVconnPort() { return dummy_vconn_port_; }
+    template<typename FIRST, typename... REST>
+    auto& pickVconnPort(FIRST& first, REST&... rest)
+    {
+        if constexpr (concepts::vconn_port<FIRST>) {
+            return first;
+        } else {
+            return pickVconnPort(rest...);
+        }
+    }
+
     // The user's policies extended with the swap arbitration: the
     // engines consult allowSwap for the partner's PR_Swap/DR_Swap, and
     // the verdict is the connection layer's (every injected observer
@@ -152,6 +215,13 @@ private:
         }
         bool allowSwap(power_role role) { return port.drp_.swapAllowed(role); }
         bool allowSwap(data_role role) { return port.drp_.swapAllowed(role); }
+        // present only when an injected observer opts the port into
+        // VCONN: its absence filters the engines' VCS states out
+        bool allowSwap(vconn_source_role)
+            requires(vconn_enabled)
+        {
+            return port.allowVconnSwap();
+        }
     };
 
     struct source_policy_proxy {
@@ -165,7 +235,20 @@ private:
         }
         bool allowSwap(power_role role) { return port.drp_.swapAllowed(role); }
         bool allowSwap(data_role role) { return port.drp_.swapAllowed(role); }
+        bool allowSwap(vconn_source_role)
+            requires(vconn_enabled)
+        {
+            return port.allowVconnSwap();
+        }
     };
+
+    // Relinquishing VCONN is always fine; becoming the VCONN source is
+    // board-dependent and must match the VIF's claim - the injected
+    // observers' allowSwap(vconn_source_role) decides, refused with none
+    bool allowVconnSwap()
+    {
+        return vconn_.isVconnSource() || drp_.swapAllowed(vconn_source_role{});
+    }
 
     // What a completed engine step asks the Type-C layer to do; flips
     // tear an engine down, so they never run inside the reporting
@@ -178,6 +261,8 @@ private:
         complete_to_snk,   // the new source's PS_RDY arrived
         error_recovery,    // nHardResetCount exhausted
         hard_reset_window, // hold the attach while VBUS cycles
+        vconn_announce,    // the switch is on: transmit our PS_RDY
+        hard_reset,        // a VCONN hand-off timed out
     };
 
     // Injected into both engines' machines: watches the swap states'
@@ -211,6 +296,17 @@ private:
         {
             port.pending_ = pending_action::hard_reset_window;
         }
+        // the VCONN hand-off: the engines' progress feeds the vconn
+        // machine (a different machine - safe synchronously); its own
+        // requests defer like every engine-touching action
+        void notifyEntry(pe::vconn_swap_agreed) { port.vconn_.swapAgreed(); }
+        void notifyEntry(pe::vconn_partner_on) { port.vconn_.partnerPsRdy(); }
+        void notifyEntry(pe::vconn_ps_rdy_sent) { port.vconn_.psRdySent(); }
+        void notifyEntry(pe::announce_vconn_on)
+        {
+            port.pending_ = pending_action::vconn_announce;
+        }
+        void notifyEntry(pe::request_hard_reset) { port.pending_ = pending_action::hard_reset; }
 
         PdDrp& port;
     };
@@ -267,6 +363,10 @@ private:
                 } else {
                     active = active_role::source;
                     src.attached();
+                    // only a fresh source attach starts VCONN, and
+                    // only when the cable presents Ra
+                    port.vconn_.attachedSource(raPresent(
+                        machine.template getIf<NEW_STATE>()->context.cc));
                 }
             } else if constexpr (std::is_same_v<NEW_STATE, tc::drp::swap_standby_to_snk>) {
                 // the old source asserted Rd mid PR_Swap: the sink
@@ -287,20 +387,25 @@ private:
                               !std::is_same_v<NEW_STATE, tc::state::hard_reset_snk>) {
                     snk.vbusRemoved();
                     active = active_role::none;
+                    port.vconn_.detached();
                 }
             } else if constexpr (std::is_same_v<OLD_STATE, tc::state::hard_reset_snk>) {
                 if constexpr (!std::is_same_v<NEW_STATE, tc::state::hard_reset_recover_snk>) {
                     snk.vbusRemoved(); // window timed out: dead port
                     active = active_role::none;
+                    port.vconn_.detached();
                 }
             } else if constexpr (std::is_same_v<OLD_STATE, tc::state::hard_reset_recover_snk>) {
                 if constexpr (!std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
                     snk.vbusRemoved(); // window timed out: dead port
                     active = active_role::none;
+                    port.vconn_.detached();
                 }
             } else if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_src>) {
                 if constexpr (std::is_same_v<NEW_STATE, tc::drp::swap_standby_to_snk>) {
                     swap_revision = src.negotiatedRevision(); // before the reset
+                } else {
+                    port.vconn_.detached(); // a real detach, not a swap
                 }
                 src.detached();
                 active = active_role::none;
@@ -308,11 +413,13 @@ private:
                 if constexpr (!std::is_same_v<NEW_STATE, tc::state::attached_src>) {
                     snk.vbusRemoved(); // the swap failed: engine resets
                     active = active_role::none;
+                    port.vconn_.detached();
                 }
             } else if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_snk>) {
                 if constexpr (!std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
                     snk.vbusRemoved(); // the swap failed: engine resets
                     active = active_role::none;
+                    port.vconn_.detached();
                 }
             }
         }
@@ -329,6 +436,11 @@ private:
         static bool sinkTxOk(cc_status cc)
         {
             return cc.cc1 == cc_state::snk_power_3a0 || cc.cc2 == cc_state::snk_power_3a0;
+        }
+
+        static bool raPresent(cc_status cc)
+        {
+            return cc.cc1 == cc_state::src_ra || cc.cc2 == cc_state::src_ra;
         }
 
         void onPdAlert(alert_status alerts)
@@ -396,9 +508,64 @@ private:
             // sink engine stays live to await the capabilities
             drp_.hardResetWindow();
             break;
+        case pending_action::vconn_announce:
+            // the vconn machine turned the switch on: the active
+            // engine announces it with PS_RDY
+            if (router_.active == router::active_role::sink) {
+                sink_engine_.sendVconnPsRdy();
+            } else if (router_.active == router::active_role::source) {
+                source_engine_.sendVconnPsRdy();
+            }
+            break;
+        case pending_action::hard_reset:
+            // the VCONN hand-off timed out: escalate, VCONN stays here
+            if (router_.active == router::active_role::sink) {
+                sink_engine_.hardReset();
+            } else if (router_.active == router::active_role::source) {
+                source_engine_.hardReset();
+            }
+            vconn_.swapFailureHandled();
+            break;
         case pending_action::none: break;
         }
     }
+
+    // The vconn machine's timer, wrapped: its timeout records a port
+    // request that must run once the machine finished processing
+    struct VconnTimer {
+        TIMER& inner;
+        PdDrp& port;
+        fsm::timer_callback callback = nullptr;
+        void* context                = nullptr;
+
+        void start(std::chrono::milliseconds duration, fsm::timer_callback cb, void* ctx)
+        {
+            callback = cb;
+            context  = ctx;
+            inner.start(
+                duration,
+                [](void* self) {
+                    auto& timer = *static_cast<VconnTimer*>(self);
+                    timer.callback(timer.context);
+                    timer.port.pump();
+                },
+                this);
+        }
+        void stop() { inner.stop(); }
+    };
+
+    // Stand-in when VCONN is compiled out: every call site stays
+    // valid, nothing ever sources
+    struct no_vconn {
+        no_vconn(auto&, VconnTimer&, swap_watch&) {}
+        void attachedSource(bool) {}
+        void detached() {}
+        void swapAgreed() {}
+        void partnerPsRdy() {}
+        void psRdySent() {}
+        void swapFailureHandled() {}
+        bool isVconnSource() const { return false; }
+    };
 
     using Drp = TypeCDrp<TCPC, VBUS, TIMER, TIMING, PREFERENCE, router, OBSERVERs...>;
 
@@ -407,6 +574,11 @@ private:
     swap_watch watch_;
     SinkEngine sink_engine_;
     SourceEngine source_engine_;
+    VconnTimer vconn_timer_;
+    [[no_unique_address]] no_vconn_port dummy_vconn_port_{};
+    std::conditional_t<vconn_enabled, VconnMachine<vconn_port_t, VconnTimer, swap_watch>,
+                       no_vconn>
+        vconn_;
     router router_;
     Drp drp_;
     pending_action pending_ = pending_action::none;
