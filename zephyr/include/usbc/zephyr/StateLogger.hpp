@@ -32,11 +32,15 @@ struct StateLogger {
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
     void onEnterState(MACHINE&)
     {
+        // Compiled out below debug level, call sites and name strings
+        // included - the module's LOG_DBG would drop only the bodies
+#if defined(CONFIG_USB_TYPEC_STACK_LOG_LEVEL) && CONFIG_USB_TYPEC_STACK_LOG_LEVEL >= 4
         if constexpr (std::is_same_v<OLD_STATE, mtl::nil_type>) {
             logInitialState(mtl::short_name_of<NEW_STATE>);
         } else {
             logStateChange(mtl::short_name_of<OLD_STATE>, mtl::short_name_of<NEW_STATE>);
         }
+#endif
     }
 };
 
