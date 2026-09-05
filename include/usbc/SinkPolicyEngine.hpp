@@ -31,11 +31,14 @@
  * Discovery -> Wait_for_Capabilities is driven by the externally
  * reported VBUS.
  *
- * Deviations kept for later: Wait is treated as Reject (no
- * tSinkRequest retry), GotoMin and swaps answer Not_Supported, there
- * is no HardResetCounter - the sink retries indefinitely - and
- * Discovery does not verify VBUS itself: start() implies VBUS present,
- * and after a hard reset the SinkWaitCapTimer absorbs the VBUS gap.
+ * Deviations kept for later: GotoMin answers Not_Supported, and
+ * Discovery does not sense VBUS itself - the port layer owns the
+ * sensing and reports it (a sink's attach implies VBUS; after a hard
+ * reset the connection layer's hard-reset window re-reports the
+ * returning VBUS, and wait_no_response governs the gap). Wait answers
+ * are retried (tSinkRequest/tPRSwapWait/tDRSwapWait), hard resets are
+ * counted (nHardResetCount, then Error Recovery is requested through
+ * portReport), and PR_Swap/DR_Swap run their full exchanges.
  *
  * Integration: the engine drives a pd_transport driver through its own
  * ProtocolLayer - itself an observer of the engine's machine, executing
