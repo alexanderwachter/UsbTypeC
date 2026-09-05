@@ -22,8 +22,16 @@
  * effects (a SinkPower- and a SourcePower-derived class, and the
  * supply). No knowledge of the state machines is required; extra
  * observers (e.g. usbc::zephyr::StateLogger) may still be injected
- * into the connection machine, and may veto swaps via
- * allowSwap(power_role/data_role).
+ * into the connection machine.
+ *
+ * PR_Swap, DR_Swap and VCONN are optional features, enabled by tag:
+ * an injected observer declaring `using enables = pe::..._feature;`
+ * (or an mtl::typelist of tags) switches the feature on and becomes
+ * its arbitration voice - it must satisfy the feature's contract
+ * (allowSwap(power_role/data_role); the VCONN enabler is also the
+ * switch-hardware connector, concepts::vconn_port). Without an
+ * enabler the feature's engine states are filtered from the tables
+ * and the partner's requests are answered Not_Supported/Reject.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -158,14 +166,38 @@ public:
     bool isVconnSource() const { return vconn_.isVconnSource(); }
 
 private:
-    // VCONN is optional and opt-in: an injected observer satisfying
-    // concepts::vconn_port (the switch hardware connector plus the
-    // taking arbitration) enables it - without one the vconn machine
-    // is a stub and the engines' VCS states are filtered from their
-    // tables (VCONN only matters for emarked/high-speed cables and
-    // contracts above 3 A)
-    static constexpr bool vconn_enabled =
-        (concepts::vconn_port<std::remove_cvref_t<OBSERVERs>> || ...);
+    // The optional features, detected by tag over the injected pack
+    template<typename TAG>
+    static constexpr bool feature_enabled =
+        (pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>, TAG> || ...);
+
+    static constexpr bool pr_swap_enabled = feature_enabled<pe::pr_swap_feature>;
+    static constexpr bool dr_swap_enabled = feature_enabled<pe::dr_swap_feature>;
+    // VCONN only matters for emarked/high-speed cables and contracts
+    // above 3 A; without an enabler the vconn machine is a stub
+    static constexpr bool vconn_enabled = feature_enabled<pe::vconn_feature>;
+
+    // An enabling observer is the feature's arbitration voice (and,
+    // for VCONN, the switch-hardware connector) - hold it to the
+    // feature's contract right where the tag is honored
+    static_assert(((!pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+                                            pe::pr_swap_feature> ||
+                    concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, power_role>) &&
+                   ...),
+                  "an observer enabling pr_swap_feature must provide "
+                  "allowSwap(power_role) -> bool");
+    static_assert(((!pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+                                            pe::dr_swap_feature> ||
+                    concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, data_role>) &&
+                   ...),
+                  "an observer enabling dr_swap_feature must provide "
+                  "allowSwap(data_role) -> bool");
+    static_assert(((!pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+                                            pe::vconn_feature> ||
+                    concepts::vconn_port<std::remove_cvref_t<OBSERVERs>>) &&
+                   ...),
+                  "an observer enabling vconn_feature must satisfy "
+                  "concepts::vconn_port (setVconn(bool) + allowSwap(vconn_source_role))");
 
     // The inert hardware stand-in when the feature is compiled out
     struct no_vconn_port {
@@ -174,7 +206,8 @@ private:
     };
 
     template<typename T>
-    struct is_vconn_port_type : std::bool_constant<concepts::vconn_port<T>> {};
+    struct is_vconn_enabler
+        : std::bool_constant<pe::observer_enables_v<T, pe::vconn_feature>> {};
 
     // Lazy: the filtered pack is only fronted when the feature exists
     template<bool ENABLED, typename = void>
@@ -183,16 +216,16 @@ private:
     struct vconn_port_type<true, DUMMY>
         : std::type_identity<
               mtl::front_t<mtl::filter_t<mtl::typelist<std::remove_cvref_t<OBSERVERs>...>,
-                                         is_vconn_port_type>>> {};
+                                         is_vconn_enabler>>> {};
 
     using vconn_port_t = typename vconn_port_type<vconn_enabled>::type;
 
-    // The first vconn-capable observer of the pack, or the stand-in
+    // The first vconn-enabling observer of the pack, or the stand-in
     auto& pickVconnPort() { return dummy_vconn_port_; }
     template<typename FIRST, typename... REST>
     auto& pickVconnPort(FIRST& first, REST&... rest)
     {
-        if constexpr (concepts::vconn_port<FIRST>) {
+        if constexpr (pe::observer_enables_v<std::remove_cvref_t<FIRST>, pe::vconn_feature>) {
             return first;
         } else {
             return pickVconnPort(rest...);
@@ -201,8 +234,10 @@ private:
 
     // The user's policies extended with the swap arbitration: the
     // engines consult allowSwap for the partner's PR_Swap/DR_Swap, and
-    // the verdict is the connection layer's (every injected observer
-    // may veto; the internal router says yes for the port itself)
+    // the verdict is the connection layer's (every enabling observer
+    // may veto). Each hook exists only while its feature is enabled -
+    // its absence is what filters the feature's states from the
+    // engines' tables
     struct sink_policy_proxy {
         SINK_POLICY& inner;
         PdDrp& port;
@@ -213,10 +248,16 @@ private:
         {
             return inner.select(source_capabilities, capabilities);
         }
-        bool allowSwap(power_role role) { return port.drp_.swapAllowed(role); }
-        bool allowSwap(data_role role) { return port.drp_.swapAllowed(role); }
-        // present only when an injected observer opts the port into
-        // VCONN: its absence filters the engines' VCS states out
+        bool allowSwap(power_role role)
+            requires(pr_swap_enabled)
+        {
+            return port.drp_.swapAllowed(role);
+        }
+        bool allowSwap(data_role role)
+            requires(dr_swap_enabled)
+        {
+            return port.drp_.swapAllowed(role);
+        }
         bool allowSwap(vconn_source_role)
             requires(vconn_enabled)
         {
@@ -233,8 +274,16 @@ private:
         {
             return inner.evaluate(rdo, capabilities);
         }
-        bool allowSwap(power_role role) { return port.drp_.swapAllowed(role); }
-        bool allowSwap(data_role role) { return port.drp_.swapAllowed(role); }
+        bool allowSwap(power_role role)
+            requires(pr_swap_enabled)
+        {
+            return port.drp_.swapAllowed(role);
+        }
+        bool allowSwap(data_role role)
+            requires(dr_swap_enabled)
+        {
+            return port.drp_.swapAllowed(role);
+        }
         bool allowSwap(vconn_source_role)
             requires(vconn_enabled)
         {
@@ -453,10 +502,8 @@ private:
             port.pump(); // flips recorded while routing run now
         }
 
-        // The port itself has no veto - the user's injected observers
-        // are asked alongside through the connection layer
-        bool allowSwap(power_role) { return true; }
-        bool allowSwap(data_role) { return true; }
+        // No allowSwap here: the enabling observers are the sole
+        // arbitration voice, asked through the connection layer
         void onDataRole(data_role role)
         {
             data = role;

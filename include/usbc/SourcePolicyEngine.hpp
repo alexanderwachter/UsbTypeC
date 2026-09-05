@@ -416,6 +416,7 @@ struct pe_src_chunk_received {
 // PE_DRS_DFP_UFP/UFP_DFP_Send_Swap: our DR_Swap is out; no answer
 // within tSenderResponse means the partner ignored it - stay Ready
 struct pe_src_send_dr_swap {
+    using feature = dr_swap_feature;
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
@@ -443,6 +444,7 @@ private:
 
 // PE_DRS_*_Accept_Swap: the partner's DR_Swap passed the arbitration
 struct pe_src_accept_dr_swap {
+    using feature = dr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -465,6 +467,7 @@ private:
 // PE_DRS_*_Change_to_*: the agreed swap flips the data role; the
 // report lets the port update the TCPC header and the Type-C context
 struct pe_src_dr_swap_change {
+    using feature = dr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -490,7 +493,7 @@ struct pe_src_dr_swap_change {
 
 // PE_VCS_Send_Swap: our VCONN_Swap is out
 struct pe_src_vcs_send_swap {
-    static constexpr bool vconn_feature = true;
+    using feature = vconn_feature;
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
@@ -513,7 +516,7 @@ private:
 
 // PE_VCS_Accept_Swap: the partner's VCONN_Swap passed the arbitration
 struct pe_src_vcs_accept {
-    static constexpr bool vconn_feature = true;
+    using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -537,7 +540,7 @@ private:
 // vconn machine choreographs the hand-off; this engine relays the
 // PS_RDY traffic and stays here until its side is done
 struct pe_src_vcs_active {
-    static constexpr bool vconn_feature = true;
+    using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -556,7 +559,7 @@ struct pe_src_vcs_active {
 
 // PE_VCS_Send_PS_RDY: the vconn machine turned the switch on
 struct pe_src_vcs_send_ps_rdy {
-    static constexpr bool vconn_feature = true;
+    using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -578,7 +581,7 @@ private:
 
 // Transients reporting the hand-off progress to the vconn machine
 struct pe_src_vcs_partner_on {
-    static constexpr bool vconn_feature = true;
+    using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -591,7 +594,7 @@ struct pe_src_vcs_partner_on {
 };
 
 struct pe_src_vcs_ps_rdy_sent {
-    static constexpr bool vconn_feature = true;
+    using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -607,6 +610,7 @@ struct pe_src_vcs_ps_rdy_sent {
 // goes on the wire (the Rp annotation), the first message follows
 // after tSinkTx
 struct pe_src_sink_tx_wait_pr {
+    using feature = pr_swap_feature;
     static constexpr auto timeout = t_sink_tx; // tSinkTx
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
@@ -618,6 +622,7 @@ struct pe_src_sink_tx_wait_pr {
 };
 
 struct pe_src_sink_tx_wait_dr {
+    using feature = dr_swap_feature;
     static constexpr auto timeout = t_sink_tx; // tSinkTx
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
@@ -630,6 +635,7 @@ struct pe_src_sink_tx_wait_dr {
 
 // PE_PRS_SRC_SNK_Send_Swap: our PR_Swap is out
 struct pe_src_send_pr_swap {
+    using feature = pr_swap_feature;
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
@@ -657,6 +663,7 @@ private:
 
 // PE_PRS_SRC_SNK_Accept_Swap: the partner's PR_Swap passed arbitration
 struct pe_src_accept_pr_swap {
+    using feature = pr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -679,6 +686,7 @@ private:
 // The partner answered Wait: the swap request is retried after the
 // spec's pause (still Ready, spec-wise)
 struct pe_src_dr_swap_wait {
+    using feature = dr_swap_feature;
     static constexpr auto timeout = t_src_dr_swap_wait; // tDRSwapWait
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
@@ -689,6 +697,7 @@ struct pe_src_dr_swap_wait {
 };
 
 struct pe_src_pr_swap_wait {
+    using feature = pr_swap_feature;
     static constexpr auto timeout = t_src_pr_swap_wait; // tPRSwapWait
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
@@ -701,6 +710,7 @@ struct pe_src_pr_swap_wait {
 // PE_PRS_SRC_SNK_Transition_to_off, the spec's tSrcTransition wait
 // between the agreement and removing power
 struct pe_src_swap_transition_to_off {
+    using feature = pr_swap_feature;
     static constexpr auto timeout = t_src_transition; // tSrcTransition
     static constexpr power_level power          = power_level::transition;
     static constexpr pd_status pd               = pd_status::connected;
@@ -721,6 +731,7 @@ struct pe_src_swap_transition_to_off {
 
 // ... the supply is commanded off and its settled report awaited
 struct pe_src_swap_supply_off {
+    using feature = pr_swap_feature;
     static constexpr power_level power           = power_level::transition;
     static constexpr pd_status pd                = pd_status::connected;
     static constexpr std::string_view dot_note   = specNote(power, pd);
@@ -736,6 +747,7 @@ struct pe_src_swap_supply_off {
 // PE_PRS_SRC_SNK_Assert_Rd: VBUS is off - the port flips its
 // termination now; the sink engine then announces our PS_RDY
 struct pe_src_swap_assert_rd {
+    using feature = pr_swap_feature;
     static constexpr power_level power          = power_level::transition;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -750,6 +762,7 @@ struct pe_src_swap_assert_rd {
 // PE_PRS_SNK_SRC_Source_on, this engine's half: the port was the sink
 // and asserted Rp - VBUS is driven to vSafe5V first
 struct pe_src_swap_source_on {
+    using feature = pr_swap_feature;
     static constexpr power_level power           = power_level::transition;
     static constexpr pd_status pd                = pd_status::connected;
     static constexpr std::string_view dot_note   = specNote(power, pd);
@@ -771,6 +784,7 @@ struct pe_src_swap_source_on {
 
 // ... at vSafe5V the PS_RDY completes the partner's wait
 struct pe_src_swap_source_on_ps_rdy {
+    using feature = pr_swap_feature;
     static constexpr power_level power          = power_level::transition;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -790,6 +804,7 @@ struct pe_src_swap_source_on_ps_rdy {
 // SwapSourceStartTimer: the new source pauses before its first
 // Source_Capabilities
 struct pe_src_swap_source_start {
+    using feature = pr_swap_feature;
     static constexpr auto timeout = t_source_start; // SwapSourceStartTimer
     static constexpr power_level power          = power_level::transition;
     static constexpr pd_status pd               = pd_status::connected;
@@ -1205,20 +1220,19 @@ using source_transitions = mtl::typelist<
                     fsm::to<state::pe_src_send_capabilities>, fsm::guard<still_attached>>,
     fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>,
                     fsm::to<state::pe_src_startup>>>;
-// The engine's table, with the optional VCONN feature filtered out
-// when the injected policy cannot arbitrate it. A named struct, not
-// an alias: the short name replaces the fully spelled table type in
-// every mangled symbol - megabytes per object file, measured
-template<bool VCONN>
+// The engine's table with every disabled optional feature filtered
+// out (a feature is enabled when the injected policy carries its
+// arbitration hook). A named struct, not an alias: the short name
+// replaces the fully spelled table type in every mangled symbol -
+// megabytes per object file, measured
+template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
 struct source_table_for
-    : mtl::rebind_t<std::conditional_t<VCONN, source_transitions,
-                                       mtl::remove_if_t<source_transitions, touches_vconn>>,
+    : mtl::rebind_t<table_without_disabled_t<source_transitions, PR_SWAP, DR_SWAP, VCONN>,
                     fsm::transition_table> {};
 
-template<bool VCONN>
+template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
 using source_timer_ranges_for =
-    std::conditional_t<VCONN, source_timer_ranges,
-                       mtl::remove_if_t<source_timer_ranges, times_vconn_state>>;
+    map_without_disabled_t<source_timer_ranges, PR_SWAP, DR_SWAP, VCONN>;
 
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them
@@ -1397,20 +1411,28 @@ public:
     // goes out (collision avoidance)
     bool requestPowerSwap()
     {
-        if (prl_.revision() == pd_revision::rev_3_x) {
-            return sm_.process(pe::event::begin_pr_swap{});
+        if constexpr (!pr_swap_capable) { // the feature is compiled out
+            return false;
+        } else {
+            if (prl_.revision() == pd_revision::rev_3_x) {
+                return sm_.process(pe::event::begin_pr_swap{});
+            }
+            return sm_.process(
+                pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
         }
-        return sm_.process(
-            pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
     }
 
     bool requestDataSwap()
     {
-        if (prl_.revision() == pd_revision::rev_3_x) {
-            return sm_.process(pe::event::begin_dr_swap{});
+        if constexpr (!dr_swap_capable) { // the feature is compiled out
+            return false;
+        } else {
+            if (prl_.revision() == pd_revision::rev_3_x) {
+                return sm_.process(pe::event::begin_dr_swap{});
+            }
+            return sm_.process(
+                pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
         }
-        return sm_.process(
-            pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
     }
 
     // The port was the sink and asserted Rp mid PR_Swap: drive VBUS to
@@ -1589,8 +1611,11 @@ private:
     // is advanced here (the spec chains them without further input)
     void advanceTransients()
     {
-        bool transient = sm_.template is<pe::state::pe_src_dr_swap_change>();
-        if constexpr (vconn_capable) { // else the states are filtered out
+        bool transient = false; // filtered states cannot be probed
+        if constexpr (dr_swap_capable) {
+            transient = sm_.template is<pe::state::pe_src_dr_swap_change>();
+        }
+        if constexpr (vconn_capable) {
             transient = transient || sm_.template is<pe::state::pe_src_vcs_partner_on>() ||
                         sm_.template is<pe::state::pe_src_vcs_ps_rdy_sent>();
         }
@@ -1824,14 +1849,22 @@ private:
     CapsSender caps_sender_{*this};
     SupplyDriver supply_driver_{*this};
     SinkTxDriver sink_tx_driver_{*this};
-    // The optional VCONN feature follows the injected policy: without
-    // its arbitration hook, the VCS states are filtered from the table
+    // The optional features follow the injected policy: without a
+    // feature's arbitration hook, its states are filtered from the
+    // table (the facade's proxies expose the hooks exactly when an
+    // injected observer enables the feature by tag)
+    static constexpr bool pr_swap_capable = requires(POLICY p, power_role role) {
+        { p.allowSwap(role) } -> std::convertible_to<bool>;
+    };
+    static constexpr bool dr_swap_capable = requires(POLICY p, data_role role) {
+        { p.allowSwap(role) } -> std::convertible_to<bool>;
+    };
     static constexpr bool vconn_capable = requires(POLICY p) {
         { p.allowSwap(vconn_source_role{}) } -> std::convertible_to<bool>;
     };
 
-    fsm::state_machine<pe::source_table_for<vconn_capable>, fsm::timed<PumpedTimer&>,
-                       ProtocolLayer<TCPC, TIMER, PrlPort>,
+    fsm::state_machine<pe::source_table_for<pr_swap_capable, dr_swap_capable, vconn_capable>,
+                       fsm::timed<PumpedTimer&>, ProtocolLayer<TCPC, TIMER, PrlPort>,
                        CapsSender, SupplyDriver, SinkTxDriver, OBSERVERs...>
         sm_;
 };

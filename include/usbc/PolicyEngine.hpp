@@ -183,32 +183,99 @@ struct hard_reset_received {};
 
 } // namespace event
 
-// The optional VCONN feature: states carrying a vconn_feature marker
-// belong to it, and an engine whose injected policy has no
-// allowSwap(vconn_source_role) removes them - and every transition
-// touching them - from its table at compile time
-template<typename STATE>
-struct is_vconn_state : std::bool_constant<requires { STATE::vconn_feature; }> {};
+// The optional features, as tags: a state declares the feature it
+// belongs to (`using feature = pe::..._feature;`), and an injected
+// observer declaring the same tag (`using enables = ...;` - one tag,
+// or an mtl::typelist of them) switches the feature on. A disabled
+// feature's states - and every transition touching them - are
+// removed from the tables at compile time; the enabling observer
+// must satisfy the feature's contract (checked where it is detected)
+struct pr_swap_feature {};  // contract: allowSwap(power_role)
+struct dr_swap_feature {};  // contract: allowSwap(data_role)
+struct vconn_feature {};    // contract: concepts::vconn_port
 
-template<typename ENTRY>
-struct touches_vconn : std::false_type {}; // fsm::initial<> and friends
+// Whether ENABLES (a tag, or a typelist of tags) names TAG
+template<typename ENABLES, typename TAG>
+struct enables_lists : std::is_same<ENABLES, TAG> {};
 
-template<typename ENTRY>
-    requires requires {
-        typename ENTRY::from;
-        typename ENTRY::to;
-    }
-struct touches_vconn<ENTRY>
-    : std::bool_constant<is_vconn_state<typename ENTRY::from>::value ||
-                         is_vconn_state<typename ENTRY::to>::value> {};
+template<typename... TAGs, typename TAG>
+struct enables_lists<mtl::typelist<TAGs...>, TAG>
+    : std::bool_constant<(std::is_same_v<TAGs, TAG> || ...)> {};
 
-// ... and its timer-range map counterpart (the map check is
-// bidirectional: entries for filtered states must go too)
-template<typename ENTRY>
-struct times_vconn_state : std::false_type {};
+template<typename OBSERVER, typename TAG>
+struct observer_enables : std::false_type {};
 
-template<typename STATE, auto const& BOUND>
-struct times_vconn_state<fsm::timed_by<STATE, BOUND>> : is_vconn_state<STATE> {};
+template<typename OBSERVER, typename TAG>
+    requires requires { typename OBSERVER::enables; }
+struct observer_enables<OBSERVER, TAG> : enables_lists<typename OBSERVER::enables, TAG> {};
+
+template<typename OBSERVER, typename TAG>
+inline constexpr bool observer_enables_v = observer_enables<OBSERVER, TAG>::value;
+
+// Whether STATE belongs to the tagged feature
+template<typename STATE, typename TAG>
+struct state_in_feature : std::false_type {};
+
+template<typename STATE, typename TAG>
+    requires requires { typename STATE::feature; }
+struct state_in_feature<STATE, TAG> : std::is_same<typename STATE::feature, TAG> {};
+
+// The disabled features as ONE predicate set, so disabling costs a
+// single filter pass over the table (chained per-feature passes and
+// eager conditional_t branches measured multiples of the
+// instantiations). entry_pred drops every transition whose source or
+// target belongs to a disabled feature (fsm::initial<> and friends
+// never match); timer_pred is the timer-range map counterpart (the
+// map check is bidirectional: entries for filtered states must go too)
+template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
+struct in_disabled_feature {
+    template<typename STATE>
+    static constexpr bool matches =
+        (!PR_SWAP && state_in_feature<STATE, pr_swap_feature>::value) ||
+        (!DR_SWAP && state_in_feature<STATE, dr_swap_feature>::value) ||
+        (!VCONN && state_in_feature<STATE, vconn_feature>::value);
+
+    template<typename ENTRY>
+    struct entry_pred : std::false_type {};
+
+    template<typename ENTRY>
+        requires requires {
+            typename ENTRY::from;
+            typename ENTRY::to;
+        }
+    struct entry_pred<ENTRY> : std::bool_constant<matches<typename ENTRY::from> ||
+                                                  matches<typename ENTRY::to>> {};
+
+    template<typename ENTRY>
+    struct timer_pred : std::false_type {};
+
+    template<typename STATE, auto const& BOUND>
+    struct timer_pred<fsm::timed_by<STATE, BOUND>> : std::bool_constant<matches<STATE>> {};
+};
+
+// Lazy by design: the everything-enabled specialization returns the
+// list untouched without ever naming remove_if (a conditional_t
+// alias would evaluate the filter branch either way)
+template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
+struct table_without_disabled
+    : std::type_identity<mtl::remove_if_t<
+          LIST, in_disabled_feature<PR_SWAP, DR_SWAP, VCONN>::template entry_pred>> {};
+template<typename LIST>
+struct table_without_disabled<LIST, true, true, true> : std::type_identity<LIST> {};
+
+template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
+struct map_without_disabled
+    : std::type_identity<mtl::remove_if_t<
+          LIST, in_disabled_feature<PR_SWAP, DR_SWAP, VCONN>::template timer_pred>> {};
+template<typename LIST>
+struct map_without_disabled<LIST, true, true, true> : std::type_identity<LIST> {};
+
+template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
+using table_without_disabled_t =
+    typename table_without_disabled<LIST, PR_SWAP, DR_SWAP, VCONN>::type;
+template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
+using map_without_disabled_t =
+    typename map_without_disabled<LIST, PR_SWAP, DR_SWAP, VCONN>::type;
 
 inline pd_message makeControlMessage(control_message_type type, power_role power, data_role data)
 {

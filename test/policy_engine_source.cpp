@@ -202,6 +202,15 @@ struct recovery_watch : fsm::observing<recovery_watch> {
     void notifyEntry(auto const&) {} // the swap observations, unused here
 };
 
+// The engine's optional swap features follow the injected policy's
+// allowSwap hooks; this test drives a PR_Swap, so extend the stock
+// policy with the arbitration voice (the enabled corner of the
+// detection - the facade's proxy provides these hooks in real use)
+struct swap_capable_policy : usbc::RequestPolicy {
+    bool allowSwap(usbc::power_role) { return true; }
+    bool allowSwap(usbc::data_role) { return true; }
+};
+
 } // namespace
 
 int policyEngineSourceTests()
@@ -212,10 +221,10 @@ int policyEngineSourceTests()
     mock_tcpc tcpc;
     manual_timer prl_timer;
     manual_timer pe_timer;
-    usbc::RequestPolicy policy;
+    swap_capable_policy policy;
     mock_supply supply;
     mock_power power;
-    usbc::SourcePolicyEngine<mock_tcpc, manual_timer, usbc::RequestPolicy, mock_supply,
+    usbc::SourcePolicyEngine<mock_tcpc, manual_timer, swap_capable_policy, mock_supply,
                              mock_power>
         pe{tcpc, prl_timer, pe_timer, source_caps, policy, supply, power};
 

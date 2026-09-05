@@ -72,21 +72,33 @@ static_assert(
     tc::watch_events_consistent_v<tc::drp::table_for_t<default_drp_timing,
                                                        drp_preference::none>>);
 
-// --- policy engines, both variants of the optional VCONN feature -------------
+// --- policy engines: the everything-on and everything-off corners of the
+// --- optional features (PR_Swap, DR_Swap, VCONN), plus each feature alone
+// --- so no single filter breaks reachability -----------------------------
 
-static_assert(
-    fsm::timeouts_within_bounds_v<pe::sink_table_for<true>, pe::sink_timer_ranges_for<true>>);
-static_assert(fsm::timeouts_within_bounds_v<pe::sink_table_for<false>,
-                                            pe::sink_timer_ranges_for<false>>);
-static_assert(fsm::all_states_reachable_v<pe::sink_table_for<true>>);
-static_assert(fsm::all_states_reachable_v<pe::sink_table_for<false>>);
+template<bool PR, bool DR, bool VCONN>
+inline constexpr bool sink_variant_ok =
+    fsm::timeouts_within_bounds_v<pe::sink_table_for<PR, DR, VCONN>,
+                                  pe::sink_timer_ranges_for<PR, DR, VCONN>> &&
+    fsm::all_states_reachable_v<pe::sink_table_for<PR, DR, VCONN>>;
 
-static_assert(fsm::timeouts_within_bounds_v<pe::source_table_for<true>,
-                                            pe::source_timer_ranges_for<true>>);
-static_assert(fsm::timeouts_within_bounds_v<pe::source_table_for<false>,
-                                            pe::source_timer_ranges_for<false>>);
-static_assert(fsm::all_states_reachable_v<pe::source_table_for<true>>);
-static_assert(fsm::all_states_reachable_v<pe::source_table_for<false>>);
+template<bool PR, bool DR, bool VCONN>
+inline constexpr bool source_variant_ok =
+    fsm::timeouts_within_bounds_v<pe::source_table_for<PR, DR, VCONN>,
+                                  pe::source_timer_ranges_for<PR, DR, VCONN>> &&
+    fsm::all_states_reachable_v<pe::source_table_for<PR, DR, VCONN>>;
+
+static_assert(sink_variant_ok<true, true, true>);
+static_assert(sink_variant_ok<false, false, false>);
+static_assert(sink_variant_ok<true, false, false>);
+static_assert(sink_variant_ok<false, true, false>);
+static_assert(sink_variant_ok<false, false, true>);
+
+static_assert(source_variant_ok<true, true, true>);
+static_assert(source_variant_ok<false, false, false>);
+static_assert(source_variant_ok<true, false, false>);
+static_assert(source_variant_ok<false, true, false>);
+static_assert(source_variant_ok<false, false, true>);
 
 // --- vconn machine -----------------------------------------------------------
 

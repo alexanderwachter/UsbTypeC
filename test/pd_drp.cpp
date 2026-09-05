@@ -89,9 +89,12 @@ struct mock_source_power : usbc::SourcePower<mock_source_power> {
     void onContractLost() {}
 };
 
-// The injected vconn_port: connects the switch hardware AND allows
-// taking the role (its absence compiles the feature out entirely)
+// The injected vconn_port: enables the feature by tag, connects the
+// switch hardware AND allows taking the role (without an enabler the
+// feature is compiled out entirely)
 struct vconn_allow : fsm::observing<vconn_allow> {
+    using enables = usbc::pe::vconn_feature;
+
     bool on = false;
 
     bool setVconn(bool enable)
@@ -102,6 +105,15 @@ struct vconn_allow : fsm::observing<vconn_allow> {
     bool allowSwap(usbc::vconn_source_role) { return true; }
 };
 static_assert(usbc::concepts::vconn_port<vconn_allow>);
+
+// Enables both role swaps by tag and arbitrates them (a typelist
+// enabling two features with one observer)
+struct swap_allow : fsm::observing<swap_allow> {
+    using enables = mtl::typelist<usbc::pe::pr_swap_feature, usbc::pe::dr_swap_feature>;
+
+    bool allowSwap(usbc::power_role) { return true; }
+    bool allowSwap(usbc::data_role) { return true; }
+};
 
 // --- partner messages --------------------------------------------------------
 int next_id = 0;
@@ -168,7 +180,7 @@ int pdDrpTests()
     using Port = usbc::PdDrp<mock_tcpc, mock_vbus, manual_timer, usbc::PowerPolicy,
                              mock_sink_power, usbc::RequestPolicy, mock_supply,
                              mock_source_power, usbc::default_drp_timing,
-                             usbc::drp_preference::none, vconn_allow>;
+                             usbc::drp_preference::none, vconn_allow, swap_allow>;
 
     mock_tcpc tcpc;
     mock_vbus vbus;
@@ -179,10 +191,12 @@ int pdDrpTests()
     mock_supply supply;
     mock_source_power source_power;
     vconn_allow vconn_policy;
+    swap_allow swap_policy;
 
     Port port{tcpc,   vbus,          timers,       sink_capabilities,
               sink_policy, sink_power,    source_caps,  source_policy,
-              supply,      source_power,  usbc::rp_value::p_1a5, vconn_policy};
+              supply,      source_power,  usbc::rp_value::p_1a5, vconn_policy,
+              swap_policy};
 
     auto const ccAlert = [&] {
         tcpc.alerts |= usbc::alert_status::cc_status_changed;

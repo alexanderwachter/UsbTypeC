@@ -128,15 +128,28 @@ struct ContractMonitor : usbc::SourcePower<ContractMonitor> {
     void onContractLost() { LOG_WRN("source contract lost, back to vSafe5V"); }
 };
 
-// The injected vconn_port: connects the VCONN switch - behind the
-// TCPC driver on this board - and allows taking the role. Its
-// presence enables the VCONN machine and the engines' VCONN_Swap
-// states; a port without it compiles the feature out
+// The injected vconn_port: enables the feature by tag, connects the
+// VCONN switch - behind the TCPC driver on this board - and allows
+// taking the role. It brings the VCONN machine and the engines'
+// VCONN_Swap states in; a port without an enabler compiles the
+// feature out
 struct VconnPolicy : fsm::observing<VconnPolicy> {
+    using enables = usbc::pe::vconn_feature;
+
     usbc::zephyr::Tcpc* tcpc = nullptr; // wired in main()
 
     bool setVconn(bool on) { return tcpc->setVconn(on); }
     bool allowSwap(usbc::vconn_source_role) { return true; }
+};
+
+// Enables PR_Swap and DR_Swap by tag and arbitrates them - this
+// board always agrees. Dropping this observer compiles both swap
+// features out and the partner's requests are answered Not_Supported
+struct SwapPolicy : fsm::observing<SwapPolicy> {
+    using enables = mtl::typelist<usbc::pe::pr_swap_feature, usbc::pe::dr_swap_feature>;
+
+    bool allowSwap(usbc::power_role) { return true; }
+    bool allowSwap(usbc::data_role) { return true; }
 };
 
 // The StateLogger rides along in the connection machine (module
@@ -144,7 +157,7 @@ struct VconnPolicy : fsm::observing<VconnPolicy> {
 using Port = usbc::PdDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
                          usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, ContractMonitor,
                          usbc::default_drp_timing, usbc::drp_preference::none,
-                         usbc::zephyr::StateLogger, VconnPolicy>;
+                         usbc::zephyr::StateLogger, VconnPolicy, SwapPolicy>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
@@ -157,11 +170,12 @@ Supply supply;
 ContractMonitor contract_monitor;
 usbc::zephyr::StateLogger state_logger;
 VconnPolicy vconn_policy;
+SwapPolicy swap_policy;
 
 // The Rp matches the 5 V capability the port advertises through PD
 Port port{tcpc,        vbus,          timers, sink_capabilities, sink_policy,           power,
           source_caps, source_policy, supply, contract_monitor,  usbc::rp_value::p_1a5,
-          state_logger, vconn_policy};
+          state_logger, vconn_policy, swap_policy};
 
 // The joystick triggers the PD swap messaging, submitted to the
 // stack's queue - the serialization the swap calls require. The
