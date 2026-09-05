@@ -325,11 +325,7 @@ using sink_table = mtl::rebind_t<
         error_recovery_flow<state::unattached_snk>,
         hard_reset_flow<state::unattached_snk>>>,
     fsm::transition_table>;
-static_assert(fsm::timeouts_within_bounds_v<
-              sink_table,
-              mtl::linearize_t<mtl::typelist<sink_timer_ranges, error_recovery_timer_range,
-                                             hard_reset_timer_ranges>>>);
-static_assert(fsm::all_states_reachable_v<sink_table>);
+// timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's hw annotation (suppressed while unchanged) and
 // the attached state's plug orientation

@@ -208,8 +208,7 @@ using tx_table = fsm::transition_table<
                     fsm::to<state::wait_for_message_request>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::reset>,
                     fsm::to<state::wait_for_message_request>>>;
-static_assert(fsm::timeouts_within_bounds_v<tx_table, prl_timer_ranges>);
-static_assert(fsm::all_states_reachable_v<tx_table>);
+// timeout bounds and reachability checked in test/compliance.cpp
 
 // Hands a state's txMessage() to the TCPC on entry; the accessor is
 // the marker that makes a state a transmitting one. A refused hand-off

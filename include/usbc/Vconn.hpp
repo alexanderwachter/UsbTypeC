@@ -142,8 +142,7 @@ using vconn_table = fsm::transition_table<
                     fsm::to<state::pe_vcs_timeout>>,
     fsm::transition<fsm::from<state::pe_vcs_timeout>, fsm::on<event::swap_failed_handled>,
                     fsm::to<state::vconn_source>>>;
-static_assert(fsm::timeouts_within_bounds_v<vconn_table, vconn_timer_ranges>);
-static_assert(fsm::all_states_reachable_v<vconn_table>);
+// timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's switch annotation through the injected
 // vconn_port hardware connector; suppressed while unchanged

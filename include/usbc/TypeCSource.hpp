@@ -268,13 +268,13 @@ using source_table = mtl::rebind_t<
         fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>,
                         fsm::to<state::unattached_src>>>>,
     fsm::transition_table>;
-static_assert(fsm::timeouts_within_bounds_v<
-              source_table,
-              mtl::linearize_t<mtl::typelist<
-                  source_timer_ranges,
-                  mtl::typelist<fsm::timed_by<state::error_recovery_src,
-                                              spec::t_error_recovery>>>>>);
-static_assert(fsm::all_states_reachable_v<source_table>);
+
+// error_recovery_src is not part of source_timer_ranges: the DRP
+// composes that map without carrying this table's private state
+using source_recovery_timer_range =
+    mtl::typelist<fsm::timed_by<state::error_recovery_src, spec::t_error_recovery>>;
+
+// timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's src_hw annotation (suppressed while unchanged)
 // with the port's configured Rp advertisement, and the attached

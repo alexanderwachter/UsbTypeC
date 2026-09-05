@@ -1218,10 +1218,8 @@ using source_timer_ranges_for =
     std::conditional_t<VCONN, source_timer_ranges,
                        mtl::remove_if_t<source_timer_ranges, times_vconn_state>>;
 
-// The table checks live in the engine class: only the variant a TU
-// actually instantiates is verified there (checking both here would
-// double the heaviest compile-time work in every including TU); the
-// test suite instantiates both variants
+// The table checks (timeout bounds, reachability, both variants)
+// live in test/compliance.cpp - one dedicated TU pays for them
 
 // The member observers behind SourcePower (POWER is
 // SourcePower<DERIVED>); injected together as one fsm::observer_group
@@ -1829,10 +1827,6 @@ private:
     static constexpr bool vconn_capable = requires(POLICY p) {
         { p.allowSwap(vconn_source_role{}) } -> std::convertible_to<bool>;
     };
-
-    static_assert(fsm::timeouts_within_bounds_v<pe::source_table_for<vconn_capable>,
-                                                pe::source_timer_ranges_for<vconn_capable>>);
-    static_assert(fsm::all_states_reachable_v<pe::source_table_for<vconn_capable>>);
 
     fsm::state_machine<pe::source_table_for<vconn_capable>, fsm::timed<PumpedTimer&>,
                        ProtocolLayer<TCPC, TIMER, PrlPort>,

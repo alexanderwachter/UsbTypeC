@@ -118,8 +118,8 @@ static_assert(usbc::tc::srcOrientationOf(cc_status{cc_state::src_open, cc_state:
               usbc::plug_orientation::cc2);
 
 // every watching state consumes its level's vbus event family
-static_assert(usbc::tc::watch_events_consistent_v<usbc::tc::sink_table>);
-static_assert(usbc::tc::watch_events_consistent_v<usbc::tc::source_table>);
+// the positive checks moved to test/compliance.cpp with the other
+// table verifications; the negative probe below stays a unit test
 
 // a watching state whose table drops a family event is rejected
 namespace inconsistent {

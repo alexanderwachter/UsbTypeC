@@ -536,8 +536,7 @@ struct table_for {
                                        error_recovery_flow<unattached_snk<TIMING>>,
                                        hard_reset_flow<unattached_snk<TIMING>>>>,
         fsm::transition_table>;
-    static_assert(fsm::timeouts_within_bounds_v<type, core_timer_ranges<TIMING>>);
-    static_assert(fsm::all_states_reachable_v<type>);
+    // timeout bounds and reachability checked in test/compliance.cpp
 };
 
 template<drp_timing const& TIMING>
@@ -551,10 +550,7 @@ struct table_for<TIMING, drp_preference::source> {
                                        error_recovery_flow<unattached_snk<TIMING>>,
                                        hard_reset_flow<unattached_snk<TIMING>>>>,
         fsm::transition_table>;
-    static_assert(fsm::timeouts_within_bounds_v<
-                  type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
-                                                       try_src_timer_ranges<TIMING>>>>);
-    static_assert(fsm::all_states_reachable_v<type>);
+    // timeout bounds and reachability checked in test/compliance.cpp
 };
 
 template<drp_timing const& TIMING>
@@ -568,10 +564,7 @@ struct table_for<TIMING, drp_preference::sink> {
                                        error_recovery_flow<unattached_snk<TIMING>>,
                                        hard_reset_flow<unattached_snk<TIMING>>>>,
         fsm::transition_table>;
-    static_assert(fsm::timeouts_within_bounds_v<
-                  type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
-                                                       try_snk_timer_ranges<TIMING>>>>);
-    static_assert(fsm::all_states_reachable_v<type>);
+    // timeout bounds and reachability checked in test/compliance.cpp
 };
 
 template<drp_timing const& TIMING, drp_preference PREFERENCE>
