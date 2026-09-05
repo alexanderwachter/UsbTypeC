@@ -74,6 +74,15 @@ struct disabled_src {
                                       .discharge = false};
 };
 
+// The spec's ErrorRecovery state, source flavor: both terminations
+// removed for at least tErrorRecovery, then connection resolution
+// restarts. Entered on the PD layer's command
+struct error_recovery_src {
+    static constexpr src_hw_config hw{.pull = cc_pull::open, .source = false,
+                                      .discharge = false};
+    static constexpr auto timeout = t_error_recovery;
+};
+
 // Common context plus the internal-transition handlers keeping it
 // current without disturbing a running debounce
 struct source_state {
@@ -253,9 +262,18 @@ using source_table = mtl::rebind_t<
         fsm::initial<state::disabled_src>,
         fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>,
                         fsm::to<state::unattached_src>>,
-        source_attach_flow<state::unattached_src, state::attached_src>>>,
+        source_attach_flow<state::unattached_src, state::attached_src>,
+        fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>,
+                        fsm::to<state::error_recovery_src>>,
+        fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>,
+                        fsm::to<state::unattached_src>>>>,
     fsm::transition_table>;
-static_assert(fsm::timeouts_within_bounds_v<source_table, source_timer_ranges>);
+static_assert(fsm::timeouts_within_bounds_v<
+              source_table,
+              mtl::linearize_t<mtl::typelist<
+                  source_timer_ranges,
+                  mtl::typelist<fsm::timed_by<state::error_recovery_src,
+                                              spec::t_error_recovery>>>>>);
 static_assert(fsm::all_states_reachable_v<source_table>);
 
 // Applies each state's src_hw annotation (suppressed while unchanged)
@@ -331,6 +349,11 @@ public:
 
     // The go-live moment, provided by the shared frontend
     void start() { this->startPort(); }
+
+    // PD-directed Type-C Error Recovery: both terminations removed for
+    // tErrorRecovery, then resolution restarts. Call from the stack's
+    // serialized context
+    bool errorRecovery() { return sm_.process(tc::event::error_recovery{}); }
 
 private:
     friend tc::port_frontend<TypeCSource, TCPC, VBUS>;

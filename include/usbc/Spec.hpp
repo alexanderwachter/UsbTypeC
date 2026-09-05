@@ -94,10 +94,20 @@ inline constexpr timeout_range t_sink_request{milliseconds{100}, milliseconds{10
 inline constexpr timeout_range t_pr_swap_wait{milliseconds{100}, milliseconds{1000}};
 inline constexpr timeout_range t_dr_swap_wait{milliseconds{100}, milliseconds{1000}};
 
+// tNoResponse: how long a hard-reset issuer waits for the partner's
+// response before the next escalation
+inline constexpr timeout_range t_no_response{milliseconds{4500}, milliseconds{5500}};
+
+// tErrorRecovery: both terminations removed at least this long. The
+// spec gives only the 25 ms minimum; the maximum here is a practical
+// bound for the compile-time check
+inline constexpr timeout_range t_error_recovery{milliseconds{25}, milliseconds{500}};
+
 // Counters
 inline constexpr std::uint8_t n_retry_count      = 2;  // nRetryCount, PD rev 3.x
 inline constexpr std::uint8_t n_retry_count_rev2 = 3;  // nRetryCount, PD rev 2.0
 inline constexpr std::uint8_t n_caps_count       = 50; // nCapsCount
+inline constexpr std::uint8_t n_hard_reset_count = 2;  // nHardResetCount
 
 // Sink standby draw during a transition, at any voltage
 inline constexpr milliamp i_snk_stdby = 500; // iSnkStdby

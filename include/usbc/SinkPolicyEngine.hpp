@@ -171,6 +171,7 @@ namespace pe {
 
 inline constexpr auto t_sink_wait_cap = std::chrono::milliseconds{465}; // tSinkWaitCap
 inline constexpr auto t_ps_transition = std::chrono::milliseconds{500}; // tPSTransition
+inline constexpr auto t_no_response   = std::chrono::milliseconds{5000}; // tNoResponse
 inline constexpr auto t_sink_request  = std::chrono::milliseconds{150}; // tSinkRequest
 inline constexpr auto t_pr_swap_wait  = std::chrono::milliseconds{150}; // tPRSwapWait
 inline constexpr auto t_dr_swap_wait  = std::chrono::milliseconds{150}; // tDRSwapWait
@@ -183,7 +184,8 @@ struct pe_context {
     pd_message reply{};          // pending Not_Supported answer
     pd_message request_message{}; // the last Request, for the Wait retry
     bool explicit_contract = false;
-    data_role data = data_role::ufp; // flipped by an agreed DR_Swap
+    data_role data = data_role::ufp;  // flipped by an agreed DR_Swap
+    std::uint8_t hard_resets = 0;     // HardResetCounter
 };
 
 // The observation the sink's standby transition reports
@@ -225,7 +227,17 @@ struct pe_snk_startup {
     static constexpr std::string_view dot_action =
         "resets the protocol layer, restores default power";
 
-    explicit pe_snk_startup(pe_context& ctx) : context(ctx) { context = {}; }
+    // detach forgets everything; a reset within the connection keeps
+    // the data role (a hard reset does not change it) and the
+    // HardResetCounter
+    pe_snk_startup(event::vbus_removed const&, pe_context& ctx) : context(ctx)
+    {
+        context = {};
+    }
+    explicit pe_snk_startup(pe_context& ctx) : context(ctx)
+    {
+        context = pe_context{.data = context.data, .hard_resets = context.hard_resets};
+    }
     pe_context& context;
 };
 
@@ -249,6 +261,34 @@ struct pe_snk_wait_for_capabilities {
     pe_context& context;
 };
 
+// PE_SNK_Wait_for_Capabilities after a hard reset: the governing
+// deadline is NoResponseTimer - its expiry hard-resets again while
+// HardResetCounter allows, then gives up into Type-C Error Recovery
+struct pe_snk_wait_no_response {
+    static constexpr auto timeout = t_no_response; // NoResponseTimer
+    static constexpr power_level power          = power_level::default_power;
+    static constexpr pd_status pd               = pd_status::connected_or_not_connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_snk_wait_no_response(pe_context& ctx) : context(ctx) {}
+    pe_context& context;
+};
+
+// nHardResetCount exhausted with no response: the port-level
+// integration commands Type-C Error Recovery, whose teardown resets
+// this engine
+struct pe_snk_error_recovery {
+    static constexpr power_level power          = power_level::default_power;
+    static constexpr pd_status pd               = pd_status::not_connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_snk_error_recovery(pe_context& ctx) : context(ctx) {}
+
+    request_error_recovery portReport() const { return {}; }
+
+    pe_context& context;
+};
+
 // The engine evaluates through the injected policy and advances with
 // capabilities_evaluated
 struct pe_snk_evaluate_capability {
@@ -256,7 +296,10 @@ struct pe_snk_evaluate_capability {
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    explicit pe_snk_evaluate_capability(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_evaluate_capability(pe_context& ctx) : context(ctx)
+    {
+        context.hard_resets = 0; // spec: reset on Source_Capabilities
+    }
     pe_context& context;
 };
 
@@ -478,7 +521,7 @@ struct pe_snk_dr_swap_change {
         context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
     }
 
-    data_role_changed swapReport() const { return {context.data}; }
+    data_role_changed portReport() const { return {context.data}; }
 
     pe_context& context;
 };
@@ -574,7 +617,7 @@ struct pe_snk_swap_transition_to_off {
     explicit pe_snk_swap_transition_to_off(pe_context& ctx) : context(ctx) {}
 
     standby_limit report() const { return {v_safe_5v}; }
-    enter_swap_standby swapReport() const { return {power_role::source}; }
+    enter_swap_standby portReport() const { return {power_role::source}; }
 
     pe_context& context;
 };
@@ -588,7 +631,7 @@ struct pe_snk_swap_assert_rp {
 
     explicit pe_snk_swap_assert_rp(pe_context& ctx) : context(ctx) {}
 
-    assert_new_role swapReport() const { return {power_role::source}; }
+    assert_new_role portReport() const { return {power_role::source}; }
 
     pe_context& context;
 };
@@ -629,7 +672,7 @@ struct pe_snk_swap_source_on_seen {
 
     explicit pe_snk_swap_source_on_seen(pe_context& ctx) : context(ctx) {}
 
-    swap_completed swapReport() const { return {}; }
+    swap_completed portReport() const { return {}; }
 
     pe_context& context;
 };
@@ -685,7 +728,10 @@ struct pe_snk_hard_reset {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = prl::hard_reset_action::note;
 
-    explicit pe_snk_hard_reset(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_hard_reset(pe_context& ctx) : context(ctx)
+    {
+        ++context.hard_resets; // HardResetCounter
+    }
     pe_context& context;
 };
 
@@ -698,7 +744,11 @@ struct pe_snk_transition_to_default {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = restore_default_action::note;
 
-    explicit pe_snk_transition_to_default(pe_context& ctx) : context(ctx) { context = {}; }
+    explicit pe_snk_transition_to_default(pe_context& ctx) : context(ctx)
+    {
+        // the connection persists: keep the data role and the counter
+        context = pe_context{.data = context.data, .hard_resets = context.hard_resets};
+    }
 
     pe_context& context;
 };
@@ -709,6 +759,22 @@ struct has_explicit_contract {
     static bool check(state::pe_snk_select_capability const& state)
     {
         return state.context.explicit_contract;
+    }
+};
+
+// Which capability wait applies: SinkWaitCapTimer before the first
+// hard reset, NoResponseTimer afterwards
+struct no_hard_reset_yet {
+    static bool check(state::pe_snk_discovery const& state)
+    {
+        return state.context.hard_resets == 0;
+    }
+};
+
+struct hard_resets_left {
+    static bool check(state::pe_snk_wait_no_response const& state)
+    {
+        return state.context.hard_resets <= spec::n_hard_reset_count;
     }
 };
 
@@ -723,7 +789,8 @@ using sink_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_snk_send_pr_swap, spec::t_sender_response>,
     fsm::timed_by<state::pe_snk_request_wait, spec::t_sink_request>,
     fsm::timed_by<state::pe_snk_dr_swap_wait, spec::t_dr_swap_wait>,
-    fsm::timed_by<state::pe_snk_pr_swap_wait, spec::t_pr_swap_wait>>;
+    fsm::timed_by<state::pe_snk_pr_swap_wait, spec::t_pr_swap_wait>,
+    fsm::timed_by<state::pe_snk_wait_no_response, spec::t_no_response>>;
 
 using sink_table = fsm::transition_table<
     fsm::initial<state::pe_snk_startup>,
@@ -732,12 +799,24 @@ using sink_table = fsm::transition_table<
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::vbus_removed>,
                     fsm::to<state::pe_snk_startup>>,
     fsm::transition<fsm::from<state::pe_snk_discovery>, fsm::on<event::vbus_present>,
-                    fsm::to<state::pe_snk_wait_for_capabilities>>,
+                    fsm::to<state::pe_snk_wait_for_capabilities>,
+                    fsm::guard<no_hard_reset_yet>>,
+    fsm::transition<fsm::from<state::pe_snk_discovery>, fsm::on<event::vbus_present>,
+                    fsm::to<state::pe_snk_wait_no_response>>,
     fsm::transition<fsm::from<state::pe_snk_wait_for_capabilities>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_snk_hard_reset>>,
     fsm::transition<fsm::from<state::pe_snk_wait_for_capabilities>,
                     fsm::on<event::source_capabilities>,
                     fsm::to<state::pe_snk_evaluate_capability>>,
+    // after a hard reset: another one while the counter allows, Error
+    // Recovery when it is spent
+    fsm::transition<fsm::from<state::pe_snk_wait_no_response>,
+                    fsm::on<event::source_capabilities>,
+                    fsm::to<state::pe_snk_evaluate_capability>>,
+    fsm::transition<fsm::from<state::pe_snk_wait_no_response>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_hard_reset>, fsm::guard<hard_resets_left>>,
+    fsm::transition<fsm::from<state::pe_snk_wait_no_response>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_error_recovery>>,
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::source_capabilities>,
                     fsm::to<state::pe_snk_evaluate_capability>>,
     fsm::transition<fsm::from<state::pe_snk_evaluate_capability>,
@@ -1008,7 +1087,8 @@ public:
           capabilities_(capabilities),
           policy_(policy),
           prl_(tcpc, prl_timer, port_),
-          timed_(pe_timer),
+          pumped_{pe_timer, *this},
+          timed_(pumped_),
           sm_(timed_, prl_, observers...)
     {
         tcpc_.setMessageHeaderInfo(
@@ -1069,6 +1149,15 @@ public:
         source_capabilities_ = capabilities;
     }
 
+    // The facade's deferred port actions run through this hook once a
+    // timeout-driven transition finished processing - the machine is
+    // idle then (message-driven actions pump after alert routing)
+    void setIdleHook(void (*hook)(void*), void* hook_context)
+    {
+        idle_hook_    = hook;
+        idle_context_ = hook_context;
+    }
+
     // The swap completed into Attached.SNK: resume the sink flow (the
     // new source's PS_RDY implies VBUS is live)
     void finishSwap()
@@ -1078,6 +1167,33 @@ public:
     }
 
 private:
+    // The engine's timer, wrapped: a timeout-driven transition may ask
+    // the port for an action that tears this engine down - the idle
+    // hook runs it once the machine finished processing
+    struct PumpedTimer {
+        TIMER& inner;
+        SinkPolicyEngine& pe;
+        fsm::timer_callback callback = nullptr;
+        void* context                = nullptr;
+
+        void start(std::chrono::milliseconds duration, fsm::timer_callback cb, void* ctx)
+        {
+            callback = cb;
+            context  = ctx;
+            inner.start(
+                duration,
+                [](void* self) {
+                    auto& timer = *static_cast<PumpedTimer*>(self);
+                    timer.callback(timer.context);
+                    if (timer.pe.idle_hook_ != nullptr) {
+                        timer.pe.idle_hook_(timer.pe.idle_context_);
+                    }
+                },
+                this);
+        }
+        void stop() { inner.stop(); }
+    };
+
     // The protocol layer's client, forwarding into the engine
     struct PrlPort {
         SinkPolicyEngine& pe;
@@ -1311,11 +1427,14 @@ private:
     std::span<sink_capability const> capabilities_;
     std::span<std::uint32_t const> source_capabilities_{}; // empty: not a DRP
     POLICY& policy_;
+    void (*idle_hook_)(void*) = nullptr;
+    void* idle_context_       = nullptr;
     PrlPort port_{*this};
     ProtocolLayer<TCPC, TIMER, PrlPort> prl_; // also an observer of sm_
-    fsm::timed<TIMER&> timed_;
-    fsm::state_machine<pe::sink_table, fsm::timed<TIMER&>, ProtocolLayer<TCPC, TIMER, PrlPort>,
-                       OBSERVERs...>
+    PumpedTimer pumped_;
+    fsm::timed<PumpedTimer&> timed_;
+    fsm::state_machine<pe::sink_table, fsm::timed<PumpedTimer&>,
+                       ProtocolLayer<TCPC, TIMER, PrlPort>, OBSERVERs...>
         sm_;
 };
 

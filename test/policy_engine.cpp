@@ -237,6 +237,18 @@ std::uint8_t transmittedType(mock_tcpc const& tcpc)
     return usbc::pd_header::decode(tcpc.last_transmitted.header).message_type;
 }
 
+// Observes the engine's port requests (the facade's role in a DRP)
+struct recovery_watch : fsm::observing<recovery_watch> {
+    int requests = 0;
+
+    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.portReport()))
+    {
+        return state.portReport();
+    }
+    void notifyEntry(usbc::pe::request_error_recovery) { ++requests; }
+    void notifyEntry(auto const&) {} // the swap observations, unused here
+};
+
 usbc::pd_message makeExtended(bool chunked)
 {
     usbc::pd_message message{
@@ -428,6 +440,35 @@ int policyEngineTests()
     check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
     check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id == 0);
     txSuccess();
+
+    // HardResetCounter: a source that never answers gets hard-reset
+    // nHardResetCount+1 times, then the engine requests Type-C Error
+    // Recovery instead of resetting forever
+    {
+        mock_tcpc silent_tcpc;
+        manual_timer silent_prl_timer;
+        manual_timer silent_pe_timer;
+        mock_power silent_power;
+        recovery_watch watch;
+        usbc::SinkPolicyEngine<mock_tcpc, manual_timer, usbc::PowerPolicy, mock_power,
+                               recovery_watch>
+            silent{silent_tcpc, silent_prl_timer, silent_pe_timer, sink_caps, policy,
+                   silent_power, watch};
+        auto confirm = [&] { silent.onAlert(usbc::alert_status::transmit_success); };
+
+        silent.vbusPresent();
+        for (int reset = 0; reset <= usbc::spec::n_hard_reset_count; ++reset) {
+            silent_pe_timer.expire(); // SinkWaitCap, then NoResponseTimer
+            check(silent_tcpc.last_signal == usbc::transmit_signal::hard_reset);
+            silent_tcpc.last_signal.reset();
+            confirm(); // the PHY confirms the hard reset
+            silent.vbusPresent();
+            check(watch.requests == 0);
+        }
+        silent_pe_timer.expire(); // the counter is spent
+        check(!silent_tcpc.last_signal.has_value()); // no further hard reset
+        check(watch.requests == 1);                  // Error Recovery requested
+    }
 
     return failures;
 }

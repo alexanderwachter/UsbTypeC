@@ -23,7 +23,8 @@ namespace usbc {
 
 namespace tc {
 
-inline constexpr auto t_cc_debounce = std::chrono::milliseconds{150}; // tCCDebounce
+inline constexpr auto t_cc_debounce   = std::chrono::milliseconds{150}; // tCCDebounce
+inline constexpr auto t_error_recovery = std::chrono::milliseconds{50}; // tErrorRecovery
 
 // What one CC line's voltage says about the partner's termination:
 // an Rp seen while presenting Rd, an Rd seen while presenting Rp
@@ -67,6 +68,7 @@ struct swap_to_sink {};
 struct swap_complete {};
 struct swap_abort {};
 struct swap_data_role {};
+struct error_recovery {}; // PD-directed: remove both terminations
 
 } // namespace event
 

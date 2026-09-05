@@ -97,6 +97,15 @@ struct disabled_snk {
     static constexpr hw_config hw{cc_pull::open, false};
 };
 
+// The spec's ErrorRecovery state: both terminations removed for at
+// least tErrorRecovery, then connection resolution restarts from the
+// table's unattached anchor. Entered on the PD layer's command (e.g.
+// nHardResetCount exhausted)
+struct error_recovery {
+    static constexpr hw_config hw{cc_pull::open, false};
+    static constexpr auto timeout = t_error_recovery;
+};
+
 // Common context plus the internal-transition handlers keeping it
 // current without disturbing a running debounce
 struct sink_state {
@@ -230,14 +239,31 @@ using sink_attach_flow = mtl::typelist<
 using sink_timer_ranges = mtl::typelist<
     fsm::timed_by<state::attach_wait_snk, spec::t_cc_debounce>>;
 
+// Separate entry: the DRP shares the state, standalone source tables
+// do not - the bidirectional map check rejects entries for absent states
+using error_recovery_timer_range = mtl::typelist<
+    fsm::timed_by<state::error_recovery, spec::t_error_recovery>>;
+
+// ErrorRecovery is anchored per table: open terminations, then back
+// to that table's unattached resting state
+template<typename UNATTACHED>
+using error_recovery_flow = mtl::typelist<
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>,
+                    fsm::to<state::error_recovery>>,
+    fsm::transition<fsm::from<state::error_recovery>, fsm::on<fsm::timeout>,
+                    fsm::to<UNATTACHED>>>;
+
 using sink_table = mtl::rebind_t<
     mtl::linearize_t<mtl::typelist<
         fsm::initial<state::disabled_snk>,
         fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
                         fsm::to<state::unattached_snk>>,
-        sink_attach_flow<state::unattached_snk, state::attached_snk>>>,
+        sink_attach_flow<state::unattached_snk, state::attached_snk>,
+        error_recovery_flow<state::unattached_snk>>>,
     fsm::transition_table>;
-static_assert(fsm::timeouts_within_bounds_v<sink_table, sink_timer_ranges>);
+static_assert(fsm::timeouts_within_bounds_v<
+              sink_table,
+              mtl::linearize_t<mtl::typelist<sink_timer_ranges, error_recovery_timer_range>>>);
 static_assert(fsm::all_states_reachable_v<sink_table>);
 
 // Applies each state's hw annotation (suppressed while unchanged) and
@@ -297,6 +323,11 @@ public:
 
     // The go-live moment, provided by the shared frontend
     void start() { this->startPort(); }
+
+    // PD-directed Type-C Error Recovery: both terminations removed for
+    // tErrorRecovery, then resolution restarts. Call from the stack's
+    // serialized context
+    bool errorRecovery() { return sm_.process(tc::event::error_recovery{}); }
 
 private:
     friend tc::port_frontend<TypeCSink, TCPC, VBUS>;

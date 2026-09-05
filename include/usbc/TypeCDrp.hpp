@@ -351,7 +351,7 @@ inline constexpr fsm::timeout_range t_try_monitor{
 // flows bring the sink and source maps along
 template<drp_timing const& TIMING>
 using core_timer_ranges = mtl::linearize_t<mtl::typelist<
-    sink_timer_ranges, source_timer_ranges,
+    sink_timer_ranges, source_timer_ranges, error_recovery_timer_range,
     fsm::timed_by<unattached_snk<TIMING>, spec::t_drp_pw>,
     fsm::timed_by<unattached_src<TIMING>, spec::t_drp_pw>,
     fsm::timed_by<swap_standby_to_src, spec::t_ps_source_off>,
@@ -529,7 +529,8 @@ struct table_for {
     using type = mtl::rebind_t<
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, state::attached_snk>,
-                                       source_flow<TIMING, state::attached_src>, swap_flow<TIMING>>>,
+                                       source_flow<TIMING, state::attached_src>, swap_flow<TIMING>,
+                                       error_recovery_flow<unattached_snk<TIMING>>>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<type, core_timer_ranges<TIMING>>);
     static_assert(fsm::all_states_reachable_v<type>);
@@ -542,7 +543,8 @@ struct table_for<TIMING, drp_preference::source> {
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, try_src<TIMING>>,
                                        source_flow<TIMING, state::attached_src>,
-                                       try_src_flow<TIMING>, swap_flow<TIMING>>>,
+                                       try_src_flow<TIMING>, swap_flow<TIMING>,
+                                       error_recovery_flow<unattached_snk<TIMING>>>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
@@ -557,7 +559,8 @@ struct table_for<TIMING, drp_preference::sink> {
         mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
                                        sink_flow<TIMING, state::attached_snk>,
                                        source_flow<TIMING, try_snk<TIMING>>,
-                                       try_snk_flow<TIMING>, swap_flow<TIMING>>>,
+                                       try_snk_flow<TIMING>, swap_flow<TIMING>,
+                                       error_recovery_flow<unattached_snk<TIMING>>>>,
         fsm::transition_table>;
     static_assert(fsm::timeouts_within_bounds_v<
                   type, mtl::linearize_t<mtl::typelist<core_timer_ranges<TIMING>,
@@ -756,6 +759,11 @@ public:
 
     // The go-live moment, provided by the shared frontend
     void start() { this->startPort(); }
+
+    // PD-directed Type-C Error Recovery: both terminations removed for
+    // tErrorRecovery, then resolution restarts from Unattached.SNK.
+    // Call from the stack's serialized context
+    bool errorRecovery() { return sm_.process(tc::event::error_recovery{}); }
 
 private:
     friend tc::port_frontend<TypeCDrp, TCPC, VBUS>;

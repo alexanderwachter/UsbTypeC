@@ -468,7 +468,7 @@ struct pe_src_dr_swap_change {
         context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
     }
 
-    data_role_changed swapReport() const { return {context.data}; }
+    data_role_changed portReport() const { return {context.data}; }
 
     src_context& context;
 };
@@ -587,7 +587,7 @@ struct pe_src_swap_assert_rd {
 
     explicit pe_src_swap_assert_rd(src_context& ctx) : context(ctx) {}
 
-    assert_new_role swapReport() const { return {power_role::sink}; }
+    assert_new_role portReport() const { return {power_role::sink}; }
 
     src_context& context;
 };

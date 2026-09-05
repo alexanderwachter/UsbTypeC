@@ -96,9 +96,9 @@ struct active_contract {
     milliamp current  = i_default_current;
 };
 
-// Swap observations: an engine state reporting one of these through
-// swapReport() tells the port-level integration (the PdDrp facade)
-// what the negotiated swap needs from the Type-C layer
+// Port observations: an engine state reporting one of these through
+// portReport() tells the port-level integration (the PdDrp facade)
+// what it needs from the Type-C layer
 struct data_role_changed { // an agreed DR_Swap: both sides flipped
     data_role role;
 };
@@ -109,6 +109,7 @@ struct enter_swap_standby { // agreed PR_Swap: hold the connection
     power_role role;        // layer's swap standby toward this role
 };
 struct swap_completed {}; // the new source's PS_RDY: the swap is done
+struct request_error_recovery {}; // nHardResetCount exhausted
 
 namespace event {
 

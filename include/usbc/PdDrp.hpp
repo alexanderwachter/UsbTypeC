@@ -76,6 +76,7 @@ public:
           router_{tcpc, sink_engine_, source_engine_, *this},
           drp_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
     {
+        sink_engine_.setIdleHook([](void* self) { static_cast<PdDrp*>(self)->pump(); }, this);
         source_engine_.setIdleHook([](void* self) { static_cast<PdDrp*>(self)->pump(); },
                                    this);
         // a DRP answers Get_Source_Cap/Get_Sink_Cap in either role
@@ -175,17 +176,18 @@ private:
         complete_to_src,   // PE_PRS_SNK_SRC_Assert_Rp
         begin_to_sink,     // PE_PRS_SRC_SNK_Assert_Rd
         complete_to_snk,   // the new source's PS_RDY arrived
+        error_recovery,    // nHardResetCount exhausted
     };
 
     // Injected into both engines' machines: watches the swap states'
-    // swapReport() observations
+    // portReport() observations
     struct swap_watch : fsm::observing<swap_watch> {
         explicit swap_watch(PdDrp& port_ref) : port(port_ref) {}
 
         static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.swapReport()))
+            -> decltype((state.portReport()))
         {
-            return state.swapReport();
+            return state.portReport();
         }
         // an agreed DR_Swap only touches the header and the Type-C
         // context - safe to apply synchronously
@@ -200,6 +202,10 @@ private:
                                                             : pending_action::begin_to_sink;
         }
         void notifyEntry(pe::swap_completed) { port.pending_ = pending_action::complete_to_snk; }
+        void notifyEntry(pe::request_error_recovery)
+        {
+            port.pending_ = pending_action::error_recovery;
+        }
 
         PdDrp& port;
     };
@@ -343,6 +349,11 @@ private:
             break;
         case pending_action::complete_to_snk:
             drp_.completeSwap();
+            break;
+        case pending_action::error_recovery:
+            // terminations removed for tErrorRecovery, resolution
+            // restarts; the teardown resets the engines
+            drp_.errorRecovery();
             break;
         case pending_action::none: break;
         }
