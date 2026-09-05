@@ -1,8 +1,10 @@
 /*
- * USB PD sink sample: attach detection plus power negotiation. The
- * Type-C layer handles attach/detach and forwards the PD alert bits to
- * the policy engine, which negotiates a contract selected by
- * PowerPolicy from the sink capabilities below. Everything runs on the
+ * USB PD sink sample: the complete port behind usbc::PdSink. The
+ * facade wires the Type-C layer to the policy engine - attach,
+ * detach, the PD alerts, the hard-reset window (the source's VBUS
+ * cycle is not a detach), and the Error Recovery escalation. The
+ * user code below provides the domain pieces only: capabilities, the
+ * selection policy, and the power effects. Everything runs on the
  * stack's own work queue (CONFIG_USB_TYPEC_STACK_THREAD_PRIORITY).
  *
  * Copyright (c) 2026 Alexander Wachter
@@ -10,8 +12,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <usbc/SinkPolicyEngine.hpp>
-#include <usbc/TypeCSink.hpp>
+#include <usbc/PdSink.hpp>
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
@@ -47,15 +48,8 @@ struct Power : usbc::SinkPower<Power> {
     void onContractLost() { LOG_WRN("contract lost, back to vSafe5V"); }
 };
 
-using Engine = usbc::SinkPolicyEngine<usbc::zephyr::Tcpc, usbc::zephyr::Timer, usbc::PowerPolicy,
-                                      Power>;
-
-// Observer injected into the sink's machine: watches the attached
-// state and feeds the engine, taking the PD alert bits the connection
-// layer does not consume
-struct PortClient : fsm::observing<PortClient> {
-    Engine& engine;
-
+// Extra observer in the connection machine: log the attach results
+struct AttachLogger : fsm::observing<AttachLogger> {
     static constexpr auto observe_nonstatic(auto const& state)
         -> decltype((state.attachedInfo()))
     {
@@ -64,30 +58,21 @@ struct PortClient : fsm::observing<PortClient> {
     void notifyEntry(usbc::tc::attach_info info)
     {
         LOG_INF("attached: CC%d", info.orientation == usbc::plug_orientation::cc1 ? 1 : 2);
-        engine.vbusPresent(); // a sink's attach implies VBUS
     }
-    void notifyExit(usbc::tc::attach_info)
-    {
-        engine.vbusRemoved();
-        LOG_INF("detached");
-    }
-    void onPdAlert(usbc::alert_status alerts) { engine.onAlert(alerts); }
+    void notifyExit(usbc::tc::attach_info) { LOG_INF("detached"); }
 };
 
-using Sink = usbc::TypeCSink<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                             PortClient>;
+using Port = usbc::PdSink<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
+                          usbc::PowerPolicy, Power, AttachLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
-usbc::zephyr::Timer tc_timer;
-usbc::zephyr::Timer prl_timer;
-usbc::zephyr::Timer pe_timer;
+usbc::pd_sink_timers<usbc::zephyr::Timer> timers;
 
 usbc::PowerPolicy policy{5000, 27000}; // at least 5 W, aim for 27 W
 Power power;
-Engine engine{tcpc, prl_timer, pe_timer, sink_capabilities, policy, power};
-PortClient port_client{.engine = engine};
-Sink sink{tcpc, vbus, tc_timer, port_client};
+AttachLogger attach_logger;
+Port port{tcpc, vbus, timers, sink_capabilities, policy, power, attach_logger};
 
 } // namespace
 
@@ -95,7 +80,7 @@ int main()
 {
     // start() is the go-live moment: the port leaves Disabled, applies
     // its terminations, and attach events flow from this line on
-    sink.start();
+    port.start();
 
     LOG_INF("USB PD sink port running");
     return 0;

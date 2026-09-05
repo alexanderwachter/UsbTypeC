@@ -15,6 +15,7 @@ add_executable(${PROJECT_NAME}
     ${CMAKE_CURRENT_LIST_DIR}/type_c.cpp
     ${CMAKE_CURRENT_LIST_DIR}/type_c_drp.cpp
     ${CMAKE_CURRENT_LIST_DIR}/pd_drp.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/pd_single_role.cpp
     ${CMAKE_CURRENT_LIST_DIR}/policy_engine.cpp
     ${CMAKE_CURRENT_LIST_DIR}/policy_engine_source.cpp
     ${CMAKE_CURRENT_LIST_DIR}/main.cpp

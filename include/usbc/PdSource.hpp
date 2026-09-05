@@ -1,0 +1,167 @@
+/*
+ * USB PD source port: the complete single-role port behind one class.
+ * Composes the Type-C source connection layer with the source policy
+ * engine: the attach starts the advertisement, the PD alert bits
+ * reach the engine, and an exhausted HardResetCounter escalates to
+ * Type-C Error Recovery. A hard reset's VBUS cycle is the engine's
+ * own doing (Transition_to_default drives the supply through vSafe0V
+ * and back) and needs no connection-layer window - source detach
+ * detection is CC-based. Engine-tearing actions are deferred and run
+ * from pump() once the reporting machine is idle, exactly like the
+ * DRP facade.
+ *
+ * The user provides the domain pieces only: the drivers (TCPC, VBUS),
+ * the timers, the capabilities, the request policy, and the power
+ * effects (the supply and a SourcePower-derived monitor). Extra
+ * observers may be injected into the connection machine. The optional
+ * features (PR_Swap/DR_Swap/VCONN) stay compiled out - a source-only
+ * port answers the partner's swap requests with Not_Supported.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * Copyright (c) 2026 Alexander Wachter
+ */
+
+#pragma once
+
+#include <usbc/SourcePolicyEngine.hpp>
+#include <usbc/TypeCSource.hpp>
+
+#include <mtl/StateMachine.hpp>
+
+#include <cstdint>
+#include <span>
+
+namespace usbc {
+
+// The timers the port runs on: the connection layer's, the protocol
+// layer's, and the engine's. One bundle owned by the caller
+template<fsm::concepts::timer TIMER>
+struct pd_source_timers {
+    TIMER tc;
+    TIMER prl;
+    TIMER pe;
+};
+
+template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
+         concepts::source_policy POLICY, concepts::source_supply SUPPLY, typename POWER,
+         typename... OBSERVERs>
+class PdSource {
+    // The single-role facade wires none of the tag-enabled features:
+    // an enabling observer here would be silently ignored
+    static_assert(((!pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+                                            pe::pr_swap_feature> &&
+                    !pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+                                            pe::dr_swap_feature> &&
+                    !pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+                                            pe::vconn_feature>) &&
+                   ...),
+                  "PdSource does not wire the optional features (swaps, VCONN); "
+                  "a port offering them is a PdDrp");
+
+public:
+    PdSource(TCPC& tcpc, VBUS& vbus, pd_source_timers<TIMER>& timers,
+             std::span<std::uint32_t const> capabilities, POLICY& policy, SUPPLY& supply,
+             POWER& power, rp_value advertisement, OBSERVERs&... observers)
+        : watch_{*this},
+          engine_(tcpc, timers.prl, timers.pe, capabilities, policy, supply, power, watch_),
+          router_{*this},
+          source_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
+    {
+        engine_.setIdleHook([](void* self) { static_cast<PdSource*>(self)->pump(); }, this);
+    }
+    // Default-Rp convenience: a trailing pack cannot follow a defaulted
+    // advertisement
+    PdSource(TCPC& tcpc, VBUS& vbus, pd_source_timers<TIMER>& timers,
+             std::span<std::uint32_t const> capabilities, POLICY& policy, SUPPLY& supply,
+             POWER& power, OBSERVERs&... observers)
+        : PdSource(tcpc, vbus, timers, capabilities, policy, supply, power,
+                   rp_value::usb_default, observers...)
+    {
+    }
+
+    // Go live: present Rp and advertise when a sink attaches
+    void start() { source_.start(); }
+
+private:
+    // Error Recovery tears the engine down, so it never runs inside
+    // the reporting machine's process() - pump() executes it once the
+    // call chain unwound
+    enum class pending_action : std::uint8_t {
+        none,
+        error_recovery, // nHardResetCount exhausted
+    };
+
+    // Injected into the engine's machine: watches the states'
+    // portReport() observations (the swap and VCONN observations
+    // cannot occur - their states are compiled out)
+    struct port_watch : fsm::observing<port_watch> {
+        explicit port_watch(PdSource& port_ref) : port(port_ref) {}
+
+        static constexpr auto observe_nonstatic(auto const& state)
+            -> decltype((state.portReport()))
+        {
+            return state.portReport();
+        }
+        void notifyEntry(pe::request_error_recovery)
+        {
+            port.pending_ = pending_action::error_recovery;
+        }
+
+        PdSource& port;
+    };
+
+    using SourceEngine = SourcePolicyEngine<TCPC, TIMER, POLICY, SUPPLY, POWER, port_watch>;
+
+    // The port's internal wiring in the connection machine: activates
+    // the engine on attach, resets it on detach, and routes the PD
+    // alerts
+    struct router {
+        PdSource& port;
+
+        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+        void onEnterState(MACHINE&)
+        {
+            if constexpr (std::is_same_v<NEW_STATE, tc::state::attached_src>) {
+                port.engine_.attached();
+            }
+        }
+
+        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
+        void onExitState(MACHINE&)
+        {
+            if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_src>) {
+                port.engine_.detached();
+            }
+        }
+
+        void onPdAlert(alert_status alerts)
+        {
+            port.engine_.onAlert(alerts);
+            port.pump(); // actions recorded while routing run now
+        }
+    };
+
+    // Executes the recorded Type-C action; called only when the
+    // engine's machine is idle (after alert routing, and from the
+    // engine's timer and supply hooks)
+    void pump()
+    {
+        auto const action = pending_;
+        pending_          = pending_action::none;
+        if (action == pending_action::error_recovery) {
+            // terminations removed for tErrorRecovery, resolution
+            // restarts; the teardown resets the engine
+            source_.errorRecovery();
+        }
+    }
+
+    using Source = TypeCSource<TCPC, VBUS, TIMER, router, OBSERVERs...>;
+
+    port_watch watch_;
+    SourceEngine engine_;
+    router router_;
+    Source source_;
+    pending_action pending_ = pending_action::none;
+};
+
+} // namespace usbc

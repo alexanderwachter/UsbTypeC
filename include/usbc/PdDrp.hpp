@@ -484,10 +484,7 @@ private:
             }
         }
 
-        static bool sinkTxOk(cc_status cc)
-        {
-            return cc.cc1 == cc_state::snk_power_3a0 || cc.cc2 == cc_state::snk_power_3a0;
-        }
+        static bool sinkTxOk(cc_status cc) { return tc::sinkTxOk(cc); }
 
         static bool raPresent(cc_status cc)
         {

@@ -40,6 +40,13 @@ constexpr bool isRd(cc_state state)
     return state == cc_state::src_rd;
 }
 
+// PD3 collision avoidance, seen from the sink: the source's Rp reads
+// as SinkTxOk (3.0 A advertisement) or SinkTxNG
+constexpr bool sinkTxOk(cc_status status)
+{
+    return status.cc1 == cc_state::snk_power_3a0 || status.cc2 == cc_state::snk_power_3a0;
+}
+
 namespace event {
 
 struct cc_changed {

@@ -1,9 +1,11 @@
 /*
- * USB PD source sample: attach detection plus power advertisement and
- * negotiation. The Type-C source layer applies VBUS and forwards the
- * PD alert bits to the policy engine, which advertises the fixed
- * source PDOs below and evaluates Requests through RequestPolicy.
- * Everything runs on the stack's own work queue
+ * USB PD source sample: the complete port behind usbc::PdSource. The
+ * facade wires the Type-C layer to the policy engine - attach,
+ * detach, the PD alerts, and the Error Recovery escalation; a hard
+ * reset's VBUS cycle is the engine's own supply choreography. The
+ * user code below provides the domain pieces only: capabilities, the
+ * request policy, the supply, and the contract monitor. Everything
+ * runs on the stack's own work queue
  * (CONFIG_USB_TYPEC_STACK_THREAD_PRIORITY).
  *
  * The board has no programmable supply: the Supply below logs the
@@ -16,8 +18,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <usbc/SourcePolicyEngine.hpp>
-#include <usbc/TypeCSource.hpp>
+#include <usbc/PdSource.hpp>
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
@@ -81,15 +82,8 @@ struct ContractMonitor : usbc::SourcePower<ContractMonitor> {
     void onContractLost() { LOG_WRN("contract lost, back to vSafe5V"); }
 };
 
-using Engine = usbc::SourcePolicyEngine<usbc::zephyr::Tcpc, usbc::zephyr::Timer,
-                                        usbc::RequestPolicy, Supply, ContractMonitor>;
-
-// Observer injected into the source's machine: watches the attached
-// state and feeds the engine, taking the PD alert bits the connection
-// layer does not consume
-struct PortClient : fsm::observing<PortClient> {
-    Engine& engine;
-
+// Extra observer in the connection machine: log the attach results
+struct AttachLogger : fsm::observing<AttachLogger> {
     static constexpr auto observe_nonstatic(auto const& state)
         -> decltype((state.attachedInfo()))
     {
@@ -98,41 +92,32 @@ struct PortClient : fsm::observing<PortClient> {
     void notifyEntry(usbc::plug_orientation orientation)
     {
         LOG_INF("sink attached: CC%d", orientation == usbc::plug_orientation::cc1 ? 1 : 2);
-        engine.attached();
     }
-    void notifyExit(usbc::plug_orientation)
-    {
-        engine.detached();
-        LOG_INF("sink detached");
-    }
-    void onPdAlert(usbc::alert_status alerts) { engine.onAlert(alerts); }
+    void notifyExit(usbc::plug_orientation) { LOG_INF("sink detached"); }
 };
 
-using Source = usbc::TypeCSource<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                                 PortClient>;
+using Port = usbc::PdSource<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
+                            usbc::RequestPolicy, Supply, ContractMonitor, AttachLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
-usbc::zephyr::Timer tc_timer;
-usbc::zephyr::Timer prl_timer;
-usbc::zephyr::Timer pe_timer;
+usbc::pd_source_timers<usbc::zephyr::Timer> timers;
 
 usbc::RequestPolicy policy;
 Supply supply;
 ContractMonitor contract_monitor;
-Engine engine{tcpc, prl_timer, pe_timer, source_caps, policy, supply, contract_monitor};
-PortClient port_client{.engine = engine};
+AttachLogger attach_logger;
 // The Rp matches the 5 V capability the port advertises through PD
-Source source{tcpc, vbus, tc_timer, usbc::rp_value::p_1a5, port_client};
+Port port{tcpc, vbus,   timers,           source_caps,  policy,
+          supply, contract_monitor, usbc::rp_value::p_1a5, attach_logger};
 
 } // namespace
 
 int main()
 {
-
     // start() is the go-live moment: the port leaves Disabled,
     // presents Rp, and reacts to sinks from this line on
-    source.start();
+    port.start();
 
     LOG_INF("USB PD source port running");
     return 0;
