@@ -23,12 +23,15 @@
  * Send_Capabilities/Transition entry (it includes the transmission
  * instead of starting at the GoodCRC), PE_SRC_Hard_Reset_Received is
  * folded into the any_state edge to Transition_to_default, Wait and
- * GotoMin are not sent, Get_Sink_Cap answers Not_Supported (source
- * only), the hard-reset VBUS off/on cycle is left to the supply
- * restore, lost regulation (at_target = false) is not yet handled, and
- * there is no NoResponseTimer/HardResetCounter. The supply-transition
+ * GotoMin are not sent, lost regulation (at_target = false) is not yet
+ * handled, and the no-response escalation is counter-driven (each
+ * SenderResponse timeout under a PD contract hard-resets; after
+ * nHardResetCount the engine requests Error Recovery) rather than
+ * paced by a literal NoResponseTimer. The supply-transition
  * choreography of PE_SRC_Transition_Supply is spelled out as _delay,
- * _settle and _ps_rdy sub-states so the diagram shows it.
+ * _settle and _ps_rdy sub-states so the diagram shows it; the
+ * hard-reset recovery likewise (_transition_to_default, _recover,
+ * _restore_default).
  *
  * Integration: mirror image of the sink engine. The ProtocolLayer is
  * an observer of the machine (prl_action commands, txMessage()
@@ -140,6 +143,7 @@ struct send_capabilities_action {
 
 struct src_context {
     std::uint8_t caps_counter = 0; // CapsCounter
+    std::uint8_t hard_resets  = 0; // HardResetCounter
     bool attached              = false;
     bool pd_connected          = false; // a Source_Capabilities got its GoodCRC
     bool explicit_contract     = false;
@@ -243,7 +247,10 @@ struct pe_src_negotiate_capability {
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    explicit pe_src_negotiate_capability(src_context& ctx) : context(ctx) {}
+    explicit pe_src_negotiate_capability(src_context& ctx) : context(ctx)
+    {
+        context.hard_resets = 0; // spec: the sink responded
+    }
     src_context& context;
 };
 
@@ -743,21 +750,25 @@ struct pe_src_hard_reset {
     static constexpr std::string_view dot_note   = specNote(power, pd);
     static constexpr std::string_view dot_action = prl::hard_reset_action::note;
 
-    explicit pe_src_hard_reset(src_context& ctx) : context(ctx) {}
+    explicit pe_src_hard_reset(src_context& ctx) : context(ctx)
+    {
+        ++context.hard_resets; // HardResetCounter
+    }
     src_context& context;
 };
 
-// PE_SRC_Transition_to_default: supply back to vSafe5V, tSrcRecover,
-// then advertise again (or rest in Startup after a detach)
+// PE_SRC_Transition_to_default, spec-shaped: VBUS is removed first
+// (supply to vSafe0V, settled awaited), tSrcRecover passes in
+// pe_src_recover, then pe_src_restore_default re-applies vSafe5V and
+// advertises once the supply settled (or rests in Startup after a
+// detach)
 struct pe_src_transition_to_default {
-    static constexpr auto timeout = t_src_recover; // tSrcRecover
     static constexpr prl::reset_action prl_action{};
-    static constexpr restore_default_action power_action{};
     static constexpr power_level power           = power_level::transition;
     static constexpr pd_status pd                = pd_status::not_connected;
     static constexpr std::string_view dot_note   = specNote(power, pd);
     static constexpr std::string_view dot_action =
-        "resets the protocol layer, restores default power";
+        "resets the protocol layer, removes VBUS";
 
     explicit pe_src_transition_to_default(src_context& ctx) : context(ctx)
     {
@@ -766,6 +777,47 @@ struct pe_src_transition_to_default {
         context.explicit_contract = false;
         context.target            = {};
     }
+
+    supply_target supplyTarget() const { return {0, 0}; }
+
+    src_context& context;
+};
+
+// tSrcRecover at vSafe0V before the defaults return
+struct pe_src_recover {
+    static constexpr auto timeout = t_src_recover; // tSrcRecover
+    static constexpr power_level power          = power_level::transition;
+    static constexpr pd_status pd               = pd_status::not_connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_recover(src_context& ctx) : context(ctx) {}
+    src_context& context;
+};
+
+// vSafe5V defaults restored (the restore action also reports the
+// contract lost); the settled supply resumes the advertisement
+struct pe_src_restore_default {
+    static constexpr restore_default_action power_action{};
+    static constexpr power_level power           = power_level::transition;
+    static constexpr pd_status pd                = pd_status::not_connected;
+    static constexpr std::string_view dot_note   = specNote(power, pd);
+    static constexpr std::string_view dot_action = restore_default_action::note;
+
+    explicit pe_src_restore_default(src_context& ctx) : context(ctx) {}
+    src_context& context;
+};
+
+// nHardResetCount exhausted with a PD-capable sink that stopped
+// responding: the port-level integration commands Type-C Error
+// Recovery, whose teardown resets this engine
+struct pe_src_error_recovery {
+    static constexpr power_level power          = power_level::default_power;
+    static constexpr pd_status pd               = pd_status::not_connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_error_recovery(src_context& ctx) : context(ctx) {}
+
+    request_error_recovery portReport() const { return {}; }
 
     src_context& context;
 };
@@ -794,9 +846,17 @@ struct src_explicit_contract {
 };
 
 struct still_attached {
-    static bool check(state::pe_src_transition_to_default const& state)
+    static bool check(state::pe_src_restore_default const& state)
     {
         return state.context.attached;
+    }
+};
+
+struct src_hard_resets_left {
+    static bool check(state::pe_src_send_capabilities const& state)
+    {
+        return state.context.pd_connected &&
+               state.context.hard_resets <= spec::n_hard_reset_count;
     }
 };
 
@@ -807,7 +867,7 @@ using source_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_src_transition_supply_delay, spec::t_src_transition>,
     fsm::timed_by<state::pe_src_chunk_received, spec::t_chunking_not_supported>,
     fsm::timed_by<state::pe_src_send_soft_reset, spec::t_sender_response>,
-    fsm::timed_by<state::pe_src_transition_to_default, spec::t_src_recover>,
+    fsm::timed_by<state::pe_src_recover, spec::t_src_recover>,
     fsm::timed_by<state::pe_src_send_dr_swap, spec::t_sender_response>,
     fsm::timed_by<state::pe_src_send_pr_swap, spec::t_sender_response>,
     fsm::timed_by<state::pe_src_swap_transition_to_off, spec::t_src_transition>,
@@ -830,7 +890,9 @@ using source_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<event::request>,
                     fsm::to<state::pe_src_negotiate_capability>>,
     fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_hard_reset>, fsm::guard<pd_was_connected>>,
+                    fsm::to<state::pe_src_hard_reset>, fsm::guard<src_hard_resets_left>>,
+    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_error_recovery>, fsm::guard<pd_was_connected>>,
     fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_src_discovery>>,
     fsm::transition<fsm::from<state::pe_src_send_capabilities>,
@@ -982,11 +1044,16 @@ using source_table = fsm::transition_table<
                     fsm::to<state::pe_src_transition_to_default>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<pe::event::hard_reset_received>,
                     fsm::to<state::pe_src_transition_to_default>>,
-    // after tSrcRecover: advertise again, or rest in Startup when the
-    // sink is gone
-    fsm::transition<fsm::from<state::pe_src_transition_to_default>, fsm::on<fsm::timeout>,
+    // the hard-reset VBUS cycle: off and settled, tSrcRecover, the
+    // defaults back and settled - then advertise again, or rest in
+    // Startup when the sink is gone
+    fsm::transition<fsm::from<state::pe_src_transition_to_default>,
+                    fsm::on<event::supply_settled>, fsm::to<state::pe_src_recover>>,
+    fsm::transition<fsm::from<state::pe_src_recover>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_restore_default>>,
+    fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>,
                     fsm::to<state::pe_src_send_capabilities>, fsm::guard<still_attached>>,
-    fsm::transition<fsm::from<state::pe_src_transition_to_default>, fsm::on<fsm::timeout>,
+    fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>,
                     fsm::to<state::pe_src_startup>>>;
 static_assert(fsm::timeouts_within_bounds_v<source_table, source_timer_ranges>);
 static_assert(fsm::all_states_reachable_v<source_table>);
@@ -1122,7 +1189,8 @@ public:
           policy_(policy),
           supply_(supply),
           prl_(tcpc, prl_timer, port_),
-          timed_(pe_timer),
+          pumped_{pe_timer, *this},
+          timed_(pumped_),
           sm_(timed_, prl_, caps_sender_, supply_driver_, sink_tx_driver_, observers...)
     {
         tcpc_.setMessageHeaderInfo(
@@ -1212,6 +1280,33 @@ public:
 
 private:
     // The protocol layer's client, forwarding into the engine
+    // The engine's timer, wrapped: a timeout-driven transition may ask
+    // the port for an action (Error Recovery) that tears this engine
+    // down - the idle hook runs it once the machine finished processing
+    struct PumpedTimer {
+        TIMER& inner;
+        SourcePolicyEngine& pe;
+        fsm::timer_callback callback = nullptr;
+        void* context                = nullptr;
+
+        void start(std::chrono::milliseconds duration, fsm::timer_callback cb, void* ctx)
+        {
+            callback = cb;
+            context  = ctx;
+            inner.start(
+                duration,
+                [](void* self) {
+                    auto& timer = *static_cast<PumpedTimer*>(self);
+                    timer.callback(timer.context);
+                    if (timer.pe.idle_hook_ != nullptr) {
+                        timer.pe.idle_hook_(timer.pe.idle_context_);
+                    }
+                },
+                this);
+        }
+        void stop() { inner.stop(); }
+    };
+
     struct PrlPort {
         SourcePolicyEngine& pe;
 
@@ -1529,11 +1624,13 @@ private:
     bool bist_test_data_      = false;
     PrlPort port_{*this};
     ProtocolLayer<TCPC, TIMER, PrlPort> prl_; // also an observer of sm_
-    fsm::timed<TIMER&> timed_;
+    PumpedTimer pumped_;
+    fsm::timed<PumpedTimer&> timed_;
     CapsSender caps_sender_{*this};
     SupplyDriver supply_driver_{*this};
     SinkTxDriver sink_tx_driver_{*this};
-    fsm::state_machine<pe::source_table, fsm::timed<TIMER&>, ProtocolLayer<TCPC, TIMER, PrlPort>,
+    fsm::state_machine<pe::source_table, fsm::timed<PumpedTimer&>,
+                       ProtocolLayer<TCPC, TIMER, PrlPort>,
                        CapsSender, SupplyDriver, SinkTxDriver, OBSERVERs...>
         sm_;
 };

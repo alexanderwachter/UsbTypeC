@@ -190,6 +190,18 @@ std::uint8_t transmittedType(mock_tcpc const& tcpc)
     return usbc::pd_header::decode(tcpc.last_transmitted.header).message_type;
 }
 
+// Observes the engine's port requests (the facade's role in a DRP)
+struct recovery_watch : fsm::observing<recovery_watch> {
+    int requests = 0;
+
+    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.portReport()))
+    {
+        return state.portReport();
+    }
+    void notifyEntry(usbc::pe::request_error_recovery) { ++requests; }
+    void notifyEntry(auto const&) {} // the swap observations, unused here
+};
+
 } // namespace
 
 int policyEngineSourceTests()
@@ -297,16 +309,20 @@ int policyEngineSourceTests()
           static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities));
     txSuccess();
 
-    // no Request in tSenderResponse with a PD sink: hard reset, default
-    // restored, tSrcRecover, then advertise again
+    // no Request in tSenderResponse with a PD sink: hard reset, VBUS
+    // removed first, tSrcRecover at vSafe0V, defaults restored, then
+    // advertise again
     pe_timer.expire();
     check(tcpc.last_signal == usbc::transmit_signal::hard_reset);
     txSuccess(); // PHY confirms the hard reset
-    check(power.lost == 1);
+    check(supply.voltage == 0); // VBUS removed before the recovery
+    supply.settle();            // at vSafe0V
+    check(pe_timer.armed);      // tSrcRecover
+    pe_timer.expire();
     check(supply.voltage == usbc::pe::v_safe_5v &&
           supply.current == usbc::pe::i_default_current);
-    check(pe_timer.armed);
-    pe_timer.expire();
+    check(power.lost == 1); // reported with the restored defaults
+    supply.settle();        // at vSafe5V: the advertisement resumes
     check(transmittedType(tcpc) ==
           static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities));
     txSuccess();
@@ -338,6 +354,40 @@ int policyEngineSourceTests()
     // nCapsCount + 1 advertisements, each with the PRL's three attempts
     check(tcpc.transmit_count - attempts_before == (usbc::pe::n_caps_count + 1) * 3);
     pe.detached(); // back to Startup for the next sink
+
+    // HardResetCounter: a PD-capable sink that never requests gets
+    // hard-reset nHardResetCount+1 times, then the engine requests
+    // Type-C Error Recovery instead of resetting forever
+    {
+        mock_tcpc silent_tcpc;
+        manual_timer silent_prl_timer;
+        manual_timer silent_pe_timer;
+        mock_supply silent_supply;
+        mock_power silent_power;
+        recovery_watch watch;
+        usbc::SourcePolicyEngine<mock_tcpc, manual_timer, usbc::RequestPolicy, mock_supply,
+                                 mock_power, recovery_watch>
+            silent{silent_tcpc, silent_prl_timer, silent_pe_timer, source_caps,
+                   policy,      silent_supply,    silent_power,    watch};
+        auto confirm = [&] { silent.onAlert(usbc::alert_status::transmit_success); };
+
+        silent.attached();
+        confirm(); // GoodCRC on the capabilities: a PD sink is present
+        for (int reset = 0; reset <= usbc::spec::n_hard_reset_count; ++reset) {
+            silent_pe_timer.expire(); // SenderResponseTimer, no Request
+            check(silent_tcpc.last_signal == usbc::transmit_signal::hard_reset);
+            silent_tcpc.last_signal.reset();
+            confirm();                // the PHY confirms the hard reset
+            silent_supply.settle();   // VBUS removed
+            silent_pe_timer.expire(); // tSrcRecover
+            silent_supply.settle();   // defaults back: the caps go out
+            confirm();                // GoodCRC again
+            check(watch.requests == 0);
+        }
+        silent_pe_timer.expire(); // the counter is spent
+        check(!silent_tcpc.last_signal.has_value()); // no further hard reset
+        check(watch.requests == 1);                  // Error Recovery requested
+    }
 
     return failures;
 }
