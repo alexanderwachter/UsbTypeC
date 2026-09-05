@@ -118,9 +118,12 @@ struct hard_reset_sent {
 // the states' dot_action diagram labels
 struct reset_action {
     static constexpr std::string_view note = "resets the protocol layer";
+    // re-resetting an already reset layer changes nothing: the shared
+    // wildcard path may re-notify where per-edge dispatch suppressed
+    static constexpr bool idempotent       = true;
     constexpr bool operator==(reset_action const&) const = default;
 };
-struct hard_reset_action {
+struct hard_reset_action { // NOT idempotent: a notification transmits
     static constexpr std::string_view note = "requests a hard reset";
     constexpr bool operator==(hard_reset_action const&) const = default;
 };
@@ -231,11 +234,17 @@ struct phy_driver : fsm::observing<phy_driver<TCPC>> {
 
 } // namespace prl
 
-template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER, concepts::prl_client CLIENT>
-class ProtocolLayer : public fsm::observing<ProtocolLayer<TCPC, TIMER, CLIENT>> {
+// The client is type-erased behind plain function pointers (the
+// setIdleHook idiom - no RTTI, no virtuals): the layer is fully
+// role-independent, and templating it on the client duplicated the
+// whole PRL - tx machine, receive drain, counters - once per policy
+// engine (measured ~2 kB flash in a DRP image)
+template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER>
+class ProtocolLayer : public fsm::observing<ProtocolLayer<TCPC, TIMER>> {
 public:
+    template<concepts::prl_client CLIENT>
     ProtocolLayer(TCPC& tcpc, TIMER& timer, CLIENT& client)
-        : tcpc_(tcpc), client_(client), timed_(timer)
+        : tcpc_(tcpc), client_(&client), hooks_(&hooks_for<CLIENT>), timed_(timer)
     {
     }
 
@@ -300,13 +309,13 @@ public:
         if (any(alerts & alert_status::hard_reset_received)) {
             sm_.process(prl::event::reset{});
             resetAll();
-            client_.onHardReset();
+            hooks_->hard_reset(client_);
         }
         if (any(alerts & alert_status::transmit_success)) {
             if (auto const* pending = sm_.template getIf<prl::state::wait_for_phy_response>()) {
                 increment(pending->context.message.sop);
                 sm_.process(prl::event::phy_success{});
-                client_.onTxDone();
+                hooks_->tx_done(client_);
             } else {
                 sm_.process(prl::event::phy_success{}); // hard reset confirmation
             }
@@ -315,7 +324,7 @@ public:
             if (auto const* pending = sm_.template getIf<prl::state::wait_for_phy_response>()) {
                 increment(pending->context.message.sop);
                 sm_.process(prl::event::phy_discarded{});
-                client_.onTxDiscarded();
+                hooks_->tx_discarded(client_);
             }
         }
         if (any(alerts & alert_status::transmit_failed)) {
@@ -327,6 +336,42 @@ public:
     }
 
 private:
+    // The erased client surface; revision is nullptr for a client
+    // without the optional onRevision hook
+    struct client_hooks {
+        void (*message)(void*, pd_message const&);
+        void (*tx_done)(void*);
+        void (*tx_discarded)(void*);
+        void (*tx_error)(void*);
+        void (*hard_reset)(void*);
+        void (*hard_reset_sent)(void*);
+        void (*revision)(void*, pd_revision);
+    };
+
+    template<typename CLIENT>
+    static constexpr auto revisionHook()
+    {
+        if constexpr (requires(CLIENT client, pd_revision rev) { client.onRevision(rev); }) {
+            return +[](void* client, pd_revision rev) {
+                static_cast<CLIENT*>(client)->onRevision(rev);
+            };
+        } else {
+            return static_cast<void (*)(void*, pd_revision)>(nullptr);
+        }
+    }
+
+    template<typename CLIENT>
+    static constexpr client_hooks hooks_for = {
+        [](void* client, pd_message const& message) {
+            static_cast<CLIENT*>(client)->onMessage(message);
+        },
+        [](void* client) { static_cast<CLIENT*>(client)->onTxDone(); },
+        [](void* client) { static_cast<CLIENT*>(client)->onTxDiscarded(); },
+        [](void* client) { static_cast<CLIENT*>(client)->onTxError(); },
+        [](void* client) { static_cast<CLIENT*>(client)->onHardReset(); },
+        [](void* client) { static_cast<CLIENT*>(client)->onHardResetSent(); },
+        revisionHook<CLIENT>(),
+    };
     // Reports the outcomes the state machine reaches on its own -
     // possibly from the serialized timer context. Each observation
     // delivers its own type, so the notify hooks cannot collide
@@ -348,7 +393,7 @@ private:
         {
             return STATE::report_hard_reset_sent;
         }
-        void notifyExit(prl::hard_reset_sent) { prl.client_.onHardResetSent(); }
+        void notifyExit(prl::hard_reset_sent) { prl.hooks_->hard_reset_sent(prl.client_); }
 
         ProtocolLayer& prl;
     };
@@ -367,7 +412,7 @@ private:
     void giveUp(sop_type sop)
     {
         increment(sop);
-        client_.onTxError();
+        hooks_->tx_error(client_);
     }
 
     void drainReceived()
@@ -383,7 +428,7 @@ private:
             if (message.sop == sop_type::sop && header.revision < revision_) {
                 setRevision(header.revision); // lowest common revision
             }
-            client_.onMessage(message);
+            hooks_->message(client_, message);
         }
     }
 
@@ -399,8 +444,8 @@ private:
             return;
         }
         revision_ = rev;
-        if constexpr (requires { client_.onRevision(rev); }) {
-            client_.onRevision(rev); // e.g. refresh the GoodCRC header
+        if (hooks_->revision != nullptr) {
+            hooks_->revision(client_, rev); // e.g. refresh the GoodCRC header
         }
     }
 
@@ -412,7 +457,8 @@ private:
     }
 
     TCPC& tcpc_;
-    CLIENT& client_;
+    void* client_;
+    client_hooks const* hooks_;
     fsm::timed<TIMER&> timed_;
     prl::phy_driver<TCPC> driver_{tcpc_};
     client_reporter reporter_{*this};

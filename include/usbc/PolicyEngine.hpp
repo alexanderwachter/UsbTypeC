@@ -97,6 +97,10 @@ constexpr std::string_view specNote(power_level power, pd_status pd)
 // exactly what entering the state does
 struct restore_default_action {
     static constexpr std::string_view note = "restores default power";
+    // restoring already restored defaults changes nothing (the power
+    // observers guard on an active contract): the shared wildcard path
+    // may re-notify where per-edge dispatch suppressed
+    static constexpr bool idempotent       = true;
     constexpr bool operator==(restore_default_action const&) const = default;
 };
 struct active_contract {
@@ -276,6 +280,38 @@ using table_without_disabled_t =
 template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
 using map_without_disabled_t =
     typename map_without_disabled<LIST, PR_SWAP, DR_SWAP, VCONN>::type;
+
+// The engines' timer wrapper: a timeout-driven transition may ask the
+// port for an action (a role flip, Error Recovery) that tears the
+// engine down - the after hook, installed once by the owning engine,
+// runs it when the machine finished processing. Shared by both
+// engines so the protocol layer and fsm::timed instantiate on one
+// timer type instead of one nested class per engine
+template<typename TIMER>
+struct pumped_timer {
+    TIMER& inner;
+    void (*after)(void*)         = nullptr;
+    void* after_context          = nullptr;
+    fsm::timer_callback callback = nullptr;
+    void* context                = nullptr;
+
+    void start(std::chrono::milliseconds duration, fsm::timer_callback cb, void* ctx)
+    {
+        callback = cb;
+        context  = ctx;
+        inner.start(
+            duration,
+            [](void* self) {
+                auto& timer = *static_cast<pumped_timer*>(self);
+                timer.callback(timer.context);
+                if (timer.after != nullptr) {
+                    timer.after(timer.after_context);
+                }
+            },
+            this);
+    }
+    void stop() { inner.stop(); }
+};
 
 inline pd_message makeControlMessage(control_message_type type, power_role power, data_role data)
 {

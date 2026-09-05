@@ -1227,17 +1227,17 @@ template<typename POWER>
 struct contract_apply : fsm::observing<contract_apply<POWER>> {
     explicit contract_apply(POWER& power_ref) : power(power_ref) {}
 
+    // Only Explicit Contract states are observed: every other power
+    // level is a non-event here, and leaving them unannotated keeps
+    // the engines' wildcard transitions shareable (no suppression to
+    // depend on outside the explicit level)
     template<typename STATE>
     static constexpr auto observe_static() -> decltype(STATE::power)
+        requires(STATE::power == power_level::explicit_contract)
     {
         return STATE::power;
     }
-    void notifyEntry(power_level level)
-    {
-        if (level == power_level::explicit_contract) {
-            power.applyContract();
-        }
-    }
+    void notifyEntry(power_level) { power.applyContract(); }
 
     POWER& power;
 };
@@ -1330,9 +1330,9 @@ public:
         : tcpc_(tcpc),
           capabilities_(capabilities),
           policy_(policy),
-          prl_pumped_{prl_timer, *this},
+          prl_pumped_{prl_timer, &SinkPolicyEngine::afterTimerCallback, this},
           prl_(tcpc, prl_pumped_, port_),
-          pumped_{pe_timer, *this},
+          pumped_{pe_timer, &SinkPolicyEngine::afterTimerCallback, this},
           timed_(pumped_),
           sm_(timed_, prl_, observers...)
     {
@@ -1468,33 +1468,17 @@ public:
     }
 
 private:
-    // The engine's timer, wrapped: a timeout-driven transition may ask
-    // the port for an action that tears this engine down - the idle
-    // hook runs it once the machine finished processing
-    struct PumpedTimer {
-        TIMER& inner;
-        SinkPolicyEngine& pe;
-        fsm::timer_callback callback = nullptr;
-        void* context                = nullptr;
-
-        void start(std::chrono::milliseconds duration, fsm::timer_callback cb, void* ctx)
-        {
-            callback = cb;
-            context  = ctx;
-            inner.start(
-                duration,
-                [](void* self) {
-                    auto& timer = *static_cast<PumpedTimer*>(self);
-                    timer.callback(timer.context);
-                    timer.pe.afterTimeout();
-                    if (timer.pe.idle_hook_ != nullptr) {
-                        timer.pe.idle_hook_(timer.pe.idle_context_);
-                    }
-                },
-                this);
+    // Runs behind every pumped-timer callback: a retry gated on
+    // SinkTxOk fires, then the facade's deferred actions execute -
+    // the machine finished processing by now
+    static void afterTimerCallback(void* self)
+    {
+        auto& pe = *static_cast<SinkPolicyEngine*>(self);
+        pe.afterTimeout();
+        if (pe.idle_hook_ != nullptr) {
+            pe.idle_hook_(pe.idle_context_);
         }
-        void stop() { inner.stop(); }
-    };
+    }
 
     // The protocol layer's client, forwarding into the engine
     struct PrlPort {
@@ -1868,13 +1852,13 @@ private:
     PrlPort port_{*this};
     // both timers pumped: the PRL's HardResetCompleteTimer also drives
     // transitions whose port requests the facade must execute
-    PumpedTimer prl_pumped_;
-    ProtocolLayer<TCPC, PumpedTimer, PrlPort> prl_; // also an observer of sm_
-    PumpedTimer pumped_;
-    fsm::timed<PumpedTimer&> timed_;
+    pe::pumped_timer<TIMER> prl_pumped_;
+    ProtocolLayer<TCPC, pe::pumped_timer<TIMER>> prl_; // also an observer of sm_
+    pe::pumped_timer<TIMER> pumped_;
+    fsm::timed<pe::pumped_timer<TIMER>&> timed_;
     fsm::state_machine<pe::sink_table_for<pr_swap_capable, dr_swap_capable, vconn_capable>,
-                       fsm::timed<PumpedTimer&>, ProtocolLayer<TCPC, PumpedTimer, PrlPort>,
-                       OBSERVERs...>
+                       fsm::timed<pe::pumped_timer<TIMER>&>,
+                       ProtocolLayer<TCPC, pe::pumped_timer<TIMER>>, OBSERVERs...>
         sm_;
 };
 

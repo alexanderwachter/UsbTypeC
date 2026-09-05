@@ -152,6 +152,10 @@ template<typename VCONN_PORT>
 struct vconn_driver : fsm::observing<vconn_driver<VCONN_PORT>> {
     explicit vconn_driver(VCONN_PORT& port_ref) : port(port_ref) {}
 
+    // the runtime change check below makes re-notification free, so
+    // the machine's shared wildcard path may deliver it
+    static constexpr bool renotify_safe = true;
+
     template<typename STATE>
     static constexpr auto observe_static() -> decltype(STATE::vconn)
     {
