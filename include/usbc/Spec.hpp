@@ -98,6 +98,9 @@ inline constexpr timeout_range t_dr_swap_wait{milliseconds{100}, milliseconds{10
 // response before the next escalation
 inline constexpr timeout_range t_no_response{milliseconds{4500}, milliseconds{5500}};
 
+// tBISTContMode: how long the BIST carrier is transmitted
+inline constexpr timeout_range t_bist_cont_mode{milliseconds{30}, milliseconds{60}};
+
 // tErrorRecovery: both terminations removed at least this long. The
 // spec gives only the 25 ms minimum; the maximum here is a practical
 // bound for the compile-time check

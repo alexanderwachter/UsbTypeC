@@ -648,6 +648,20 @@ struct pe_src_swap_source_start {
     src_context& context;
 };
 
+// PE_SRC_BIST_Carrier_Mode: the tester's carrier runs for
+// tBISTContMode (the engine commanded the TCPC on entry), then normal
+// operation resumes
+struct pe_src_bist_carrier {
+    static constexpr auto timeout = t_bist_cont_mode; // BISTContModeTimer
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr std::string_view dot_action = "transmits the BIST carrier";
+
+    explicit pe_src_bist_carrier(src_context& ctx) : context(ctx) {}
+    src_context& context;
+};
+
 // Accepts a received Soft_Reset; the protocol layer resets before the
 // Accept goes out (guaranteed hook order), then re-advertises
 struct pe_src_soft_reset {
@@ -766,7 +780,8 @@ using source_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_src_swap_transition_to_off, spec::t_src_transition>,
     fsm::timed_by<state::pe_src_swap_source_start, spec::t_swap_source_start>,
     fsm::timed_by<state::pe_src_dr_swap_wait, spec::t_dr_swap_wait>,
-    fsm::timed_by<state::pe_src_pr_swap_wait, spec::t_pr_swap_wait>>;
+    fsm::timed_by<state::pe_src_pr_swap_wait, spec::t_pr_swap_wait>,
+    fsm::timed_by<state::pe_src_bist_carrier, spec::t_bist_cont_mode>>;
 
 using source_table = fsm::transition_table<
     fsm::initial<state::pe_src_startup>,
@@ -837,6 +852,10 @@ using source_table = fsm::transition_table<
                     fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_ready>>,
     fsm::transition<fsm::from<state::pe_src_send_not_supported>,
                     fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::bist_carrier>,
+                    fsm::to<state::pe_src_bist_carrier>>,
+    fsm::transition<fsm::from<state::pe_src_bist_carrier>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_ready>>,
     fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::chunked_message>,
                     fsm::to<state::pe_src_chunk_received>>,
     fsm::transition<fsm::from<state::pe_src_chunk_received>, fsm::on<fsm::timeout>,
@@ -1087,6 +1106,7 @@ public:
     void detached()
     {
         prl_.resetRevision();
+        setBistTestData(false); // the test mode ends with the partner
         sm_.process(pe::event::detached{});
     }
 
@@ -1159,8 +1179,16 @@ private:
         }
         void onTxDiscarded() {} // the preempting message drives the engine
         void onTxError() { pe.sm_.process(pe::event::protocol_error{}); }
-        void onHardReset() { pe.sm_.process(pe::event::hard_reset_received{}); }
-        void onHardResetSent() { pe.sm_.process(pe::event::hard_reset_complete{}); }
+        void onHardReset()
+        {
+            pe.setBistTestData(false); // a hard reset ends the test mode
+            pe.sm_.process(pe::event::hard_reset_received{});
+        }
+        void onHardResetSent()
+        {
+            pe.setBistTestData(false);
+            pe.sm_.process(pe::event::hard_reset_complete{});
+        }
     };
 
     // Transmits the Source_Capabilities on the states commanding it
@@ -1282,6 +1310,9 @@ private:
 
     void dispatch(pd_message const& message)
     {
+        if (bist_test_data_) {
+            return; // BIST test data mode: deaf until hard reset/detach
+        }
         auto const header = pd_header::decode(message.header);
         if (header.extended) {
             auto const extended = extended_header::decode(
@@ -1298,6 +1329,10 @@ private:
         }
         if (isData(header, data_message_type::request)) {
             negotiate(message);
+        } else if (isData(header, data_message_type::bist)) {
+            if (header.num_data_objects >= 1) {
+                enterBist(getObject(message, 0));
+            }
         } else if (isControl(header, control_message_type::accept)) {
             sm_.process(pe::event::accept{});
             advanceTransients();
@@ -1361,6 +1396,39 @@ private:
         }
     }
 
+    // BIST entry, honored only under an explicit vSafe5V contract
+    // (spec): Carrier Mode 2 transmits the test carrier for
+    // tBISTContMode; Test Data silences the engine until a hard reset
+    // or detach while the TCPC keeps answering GoodCRC
+    void enterBist(std::uint32_t bdo)
+    {
+        auto const& context = sm_.template context<pe::src_context>();
+        if (!context.explicit_contract || context.target.voltage != pe::v_safe_5v) {
+            return;
+        }
+        switch (bist::modeOf(bdo)) {
+        case bist::mode::carrier_mode_2:
+            if (sm_.process(pe::event::bist_carrier{})) {
+                tcpc_.transmit(transmit_signal::bist_carrier_mode_2);
+            }
+            break;
+        case bist::mode::test_data:
+            if (sm_.template is<pe::state::pe_src_ready>()) {
+                setBistTestData(true);
+            }
+            break;
+        default: break; // other modes are not supported
+        }
+    }
+
+    void setBistTestData(bool enable)
+    {
+        bist_test_data_ = enable;
+        if constexpr (requires { tcpc_.setBistTestData(enable); }) {
+            tcpc_.setBistTestData(enable); // hardware may discard for us
+        }
+    }
+
     // PE_SRC_Negotiate_Capability: the policy's verdict advances the
     // machine with request_ok or request_bad
     void negotiate(pd_message const& message)
@@ -1383,6 +1451,7 @@ private:
     SUPPLY& supply_;
     void (*idle_hook_)(void*) = nullptr;
     void* idle_context_       = nullptr;
+    bool bist_test_data_      = false;
     PrlPort port_{*this};
     ProtocolLayer<TCPC, TIMER, PrlPort> prl_; // also an observer of sm_
     fsm::timed<TIMER&> timed_;

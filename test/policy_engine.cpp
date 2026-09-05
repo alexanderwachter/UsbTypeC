@@ -327,6 +327,16 @@ int policyEngineTests()
     check(transmittedObject(tcpc, 1) == usbc::pdo::makeFixedSink(9000, 3000));
     txSuccess();
 
+    // BIST is honored only under a vSafe5V contract - ignored at 9 V
+    usbc::pd_message bist_at_9v{
+        .sop    = usbc::sop_type::sop,
+        .header = makeHeader(static_cast<std::uint8_t>(usbc::data_message_type::bist), 1)};
+    bist_at_9v.payload[3]    = 5u << 4; // Carrier Mode 2 BDO, bits 31..28
+    bist_at_9v.payload_size  = 4;
+    deliver(bist_at_9v);
+    check(!tcpc.last_signal.has_value()); // no carrier commanded
+    check(!pe_timer.armed);
+
     // new capabilities renegotiate towards 5 V; the Reject returns to
     // ready and must keep the active 9 V contract - the rejected
     // proposal never reaches the load

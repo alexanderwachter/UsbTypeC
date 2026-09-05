@@ -240,6 +240,28 @@ int pdDrpTests()
     check(tcpc.header_info.data == usbc::data_role::dfp);
     check(tcpc.sinking); // power roles untouched
 
+    // BIST Carrier Mode 2 (the contract is vSafe5V): the carrier goes
+    // out for tBISTContMode, then normal operation resumes
+    auto bist_carrier = partnerMessage(
+        static_cast<std::uint8_t>(usbc::data_message_type::bist), 1,
+        usbc::power_role::source, usbc::data_role::dfp);
+    putObject(bist_carrier, 5u << 28); // Carrier Mode 2 BDO
+    deliver(bist_carrier);
+    check(tcpc.last_signal == usbc::transmit_signal::bist_carrier_mode_2);
+    check(timers.sink_pe.armed); // BISTContModeTimer
+    timers.sink_pe.expire();     // back to Ready
+
+    // BIST Test Data: the engine goes deaf to messages (the TCPC keeps
+    // answering GoodCRC) until a hard reset ends the test mode
+    auto bist_test = partnerMessage(static_cast<std::uint8_t>(usbc::data_message_type::bist),
+                                    1, usbc::power_role::source, usbc::data_role::dfp);
+    putObject(bist_test, 8u << 28); // Test Data BDO
+    deliver(bist_test);
+    auto const tx_before_bist = tcpc.transmit_count;
+    deliver(partnerControl(usbc::control_message_type::get_sink_cap,
+                           usbc::power_role::source, usbc::data_role::dfp));
+    check(tcpc.transmit_count == tx_before_bist); // silenced
+
     // the partner hard-resets: the connection layer holds the attach
     // through the legitimate VBUS cycle instead of detaching, and the
     // swapped data role survives (a hard reset does not change it)

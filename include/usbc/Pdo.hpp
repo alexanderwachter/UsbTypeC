@@ -49,6 +49,21 @@ enum class data_message_type : std::uint8_t {
     vendor_defined      = 0x0f,
 };
 
+// BIST data object: the requested test mode in bits 31..28
+namespace bist {
+
+enum class mode : std::uint8_t {
+    carrier_mode_2 = 5, // continuous BMC carrier for tBISTContMode
+    test_data      = 8, // sink test frames until a hard reset/detach
+};
+
+constexpr mode modeOf(std::uint32_t bdo)
+{
+    return static_cast<mode>((bdo >> 28u) & 0xfu);
+}
+
+} // namespace bist
+
 namespace pdo {
 
 enum class kind : std::uint8_t {

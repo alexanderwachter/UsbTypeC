@@ -35,6 +35,7 @@ namespace pe {
 
 inline constexpr auto t_sender_response        = std::chrono::milliseconds{27}; // tSenderResponse
 inline constexpr auto t_chunking_not_supported = std::chrono::milliseconds{45}; // tChunkingNotSupported
+inline constexpr auto t_bist_cont_mode         = std::chrono::milliseconds{45}; // tBISTContMode
 
 inline constexpr millivolt v_safe_5v        = spec::v_safe_5v_nom;
 inline constexpr milliamp i_default_current = spec::i_usb_default; // implicit vSafe5V contract
@@ -145,6 +146,7 @@ struct attached_swap { // activation continuing a PR_Swap (new source)
     data_role role;
 };
 struct swap_done {};     // advances the transient swap states
+struct bist_carrier {};  // BIST Carrier Mode 2 requested (vSafe5V)
 struct unsupported {
     pd_message reply;
 };
