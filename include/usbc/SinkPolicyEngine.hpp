@@ -1160,12 +1160,14 @@ using sink_transitions = mtl::typelist<
                     fsm::on<event::default_level_reached>, fsm::to<state::pe_snk_startup>>>;
 
 // The engine's table, with the optional VCONN feature filtered out
-// when the injected policy cannot arbitrate it
+// when the injected policy cannot arbitrate it. A named struct, not
+// an alias: the short name replaces the fully spelled table type in
+// every mangled symbol - megabytes per object file, measured
 template<bool VCONN>
-using sink_table_for = mtl::rebind_t<
-    std::conditional_t<VCONN, sink_transitions,
-                       mtl::remove_if_t<sink_transitions, touches_vconn>>,
-    fsm::transition_table>;
+struct sink_table_for
+    : mtl::rebind_t<std::conditional_t<VCONN, sink_transitions,
+                                       mtl::remove_if_t<sink_transitions, touches_vconn>>,
+                    fsm::transition_table> {};
 
 template<bool VCONN>
 using sink_timer_ranges_for =

@@ -257,17 +257,20 @@ using source_attach_flow = mtl::typelist<
 using source_timer_ranges = mtl::typelist<
     fsm::timed_by<state::attach_wait_src, spec::t_cc_debounce>>;
 
-using source_table = mtl::rebind_t<
-    mtl::linearize_t<mtl::typelist<
-        fsm::initial<state::disabled_src>,
-        fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>,
-                        fsm::to<state::unattached_src>>,
-        source_attach_flow<state::unattached_src, state::attached_src>,
-        fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>,
-                        fsm::to<state::error_recovery_src>>,
-        fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>,
-                        fsm::to<state::unattached_src>>>>,
-    fsm::transition_table>;
+// A named struct, not an alias: the short name replaces the fully
+// spelled table type in every mangled symbol
+struct source_table
+    : mtl::rebind_t<
+          mtl::linearize_t<mtl::typelist<
+              fsm::initial<state::disabled_src>,
+              fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>,
+                              fsm::to<state::unattached_src>>,
+              source_attach_flow<state::unattached_src, state::attached_src>,
+              fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>,
+                              fsm::to<state::error_recovery_src>>,
+              fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>,
+                              fsm::to<state::unattached_src>>>>,
+          fsm::transition_table> {};
 
 // error_recovery_src is not part of source_timer_ranges: the DRP
 // composes that map without carrying this table's private state

@@ -316,15 +316,18 @@ using error_recovery_flow = mtl::typelist<
     fsm::transition<fsm::from<state::error_recovery>, fsm::on<fsm::timeout>,
                     fsm::to<UNATTACHED>>>;
 
-using sink_table = mtl::rebind_t<
-    mtl::linearize_t<mtl::typelist<
-        fsm::initial<state::disabled_snk>,
-        fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
-                        fsm::to<state::unattached_snk>>,
-        sink_attach_flow<state::unattached_snk, state::attached_snk>,
-        error_recovery_flow<state::unattached_snk>,
-        hard_reset_flow<state::unattached_snk>>>,
-    fsm::transition_table>;
+// A named struct, not an alias: the short name replaces the fully
+// spelled table type in every mangled symbol
+struct sink_table
+    : mtl::rebind_t<
+          mtl::linearize_t<mtl::typelist<
+              fsm::initial<state::disabled_snk>,
+              fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
+                              fsm::to<state::unattached_snk>>,
+              sink_attach_flow<state::unattached_snk, state::attached_snk>,
+              error_recovery_flow<state::unattached_snk>,
+              hard_reset_flow<state::unattached_snk>>>,
+          fsm::transition_table> {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's hw annotation (suppressed while unchanged) and

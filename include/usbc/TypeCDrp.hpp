@@ -526,49 +526,50 @@ using entry_flow = mtl::typelist<
     fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
                     fsm::to<unattached_snk<TIMING>>>>;
 
+// Named structs, not aliases: the short name replaces the fully
+// spelled table type in every mangled symbol. Timeout bounds and
+// reachability are checked in test/compliance.cpp
 template<drp_timing const& TIMING, drp_preference PREFERENCE>
-struct table_for {
+struct table_for
+    : mtl::rebind_t<
+          mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
+                                         sink_flow<TIMING, state::attached_snk>,
+                                         source_flow<TIMING, state::attached_src>,
+                                         swap_flow<TIMING>,
+                                         error_recovery_flow<unattached_snk<TIMING>>,
+                                         hard_reset_flow<unattached_snk<TIMING>>>>,
+          fsm::transition_table> {
     static_assert(timingWithinSpec<TIMING>());
-    using type = mtl::rebind_t<
-        mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
-                                       sink_flow<TIMING, state::attached_snk>,
-                                       source_flow<TIMING, state::attached_src>, swap_flow<TIMING>,
-                                       error_recovery_flow<unattached_snk<TIMING>>,
-                                       hard_reset_flow<unattached_snk<TIMING>>>>,
-        fsm::transition_table>;
-    // timeout bounds and reachability checked in test/compliance.cpp
 };
 
 template<drp_timing const& TIMING>
-struct table_for<TIMING, drp_preference::source> {
+struct table_for<TIMING, drp_preference::source>
+    : mtl::rebind_t<
+          mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
+                                         sink_flow<TIMING, try_src<TIMING>>,
+                                         source_flow<TIMING, state::attached_src>,
+                                         try_src_flow<TIMING>, swap_flow<TIMING>,
+                                         error_recovery_flow<unattached_snk<TIMING>>,
+                                         hard_reset_flow<unattached_snk<TIMING>>>>,
+          fsm::transition_table> {
     static_assert(timingWithinSpec<TIMING>());
-    using type = mtl::rebind_t<
-        mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
-                                       sink_flow<TIMING, try_src<TIMING>>,
-                                       source_flow<TIMING, state::attached_src>,
-                                       try_src_flow<TIMING>, swap_flow<TIMING>,
-                                       error_recovery_flow<unattached_snk<TIMING>>,
-                                       hard_reset_flow<unattached_snk<TIMING>>>>,
-        fsm::transition_table>;
-    // timeout bounds and reachability checked in test/compliance.cpp
 };
 
 template<drp_timing const& TIMING>
-struct table_for<TIMING, drp_preference::sink> {
+struct table_for<TIMING, drp_preference::sink>
+    : mtl::rebind_t<
+          mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
+                                         sink_flow<TIMING, state::attached_snk>,
+                                         source_flow<TIMING, try_snk<TIMING>>,
+                                         try_snk_flow<TIMING>, swap_flow<TIMING>,
+                                         error_recovery_flow<unattached_snk<TIMING>>,
+                                         hard_reset_flow<unattached_snk<TIMING>>>>,
+          fsm::transition_table> {
     static_assert(timingWithinSpec<TIMING>());
-    using type = mtl::rebind_t<
-        mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
-                                       sink_flow<TIMING, state::attached_snk>,
-                                       source_flow<TIMING, try_snk<TIMING>>,
-                                       try_snk_flow<TIMING>, swap_flow<TIMING>,
-                                       error_recovery_flow<unattached_snk<TIMING>>,
-                                       hard_reset_flow<unattached_snk<TIMING>>>>,
-        fsm::transition_table>;
-    // timeout bounds and reachability checked in test/compliance.cpp
 };
 
 template<drp_timing const& TIMING, drp_preference PREFERENCE>
-using table_for_t = typename table_for<TIMING, PREFERENCE>::type;
+using table_for_t = table_for<TIMING, PREFERENCE>;
 
 } // namespace drp
 

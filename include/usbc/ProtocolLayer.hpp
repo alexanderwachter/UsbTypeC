@@ -180,7 +180,9 @@ using prl_timer_ranges = mtl::typelist<
     fsm::timed_by<state::wait_for_phy_response, spec::t_receive>,
     fsm::timed_by<state::wait_for_hard_reset_complete, spec::t_hard_reset_complete>>;
 
-using tx_table = fsm::transition_table<
+// A named struct, not an alias: the short name replaces the fully
+// spelled table type in every mangled symbol
+struct tx_table : fsm::transition_table<
     fsm::initial<state::wait_for_message_request>,
     fsm::transition<fsm::from<state::wait_for_message_request>, fsm::on<event::tx_request>,
                     fsm::to<state::wait_for_phy_response>>,
@@ -207,7 +209,7 @@ using tx_table = fsm::transition_table<
     fsm::transition<fsm::from<state::wait_for_hard_reset_complete>, fsm::on<fsm::timeout>,
                     fsm::to<state::wait_for_message_request>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::reset>,
-                    fsm::to<state::wait_for_message_request>>>;
+                    fsm::to<state::wait_for_message_request>>> {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Hands a state's txMessage() to the TCPC on entry; the accessor is

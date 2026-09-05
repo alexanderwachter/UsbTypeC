@@ -1206,12 +1206,14 @@ using source_transitions = mtl::typelist<
     fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>,
                     fsm::to<state::pe_src_startup>>>;
 // The engine's table, with the optional VCONN feature filtered out
-// when the injected policy cannot arbitrate it
+// when the injected policy cannot arbitrate it. A named struct, not
+// an alias: the short name replaces the fully spelled table type in
+// every mangled symbol - megabytes per object file, measured
 template<bool VCONN>
-using source_table_for = mtl::rebind_t<
-    std::conditional_t<VCONN, source_transitions,
-                       mtl::remove_if_t<source_transitions, touches_vconn>>,
-    fsm::transition_table>;
+struct source_table_for
+    : mtl::rebind_t<std::conditional_t<VCONN, source_transitions,
+                                       mtl::remove_if_t<source_transitions, touches_vconn>>,
+                    fsm::transition_table> {};
 
 template<bool VCONN>
 using source_timer_ranges_for =

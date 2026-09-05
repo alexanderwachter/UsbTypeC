@@ -122,7 +122,9 @@ struct ra_present {
 using vconn_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_vcs_wait_for_vconn, spec::t_vconn_source_timeout>>;
 
-using vconn_table = fsm::transition_table<
+// A named struct, not an alias: the short name replaces the fully
+// spelled table type in every mangled symbol
+struct vconn_table : fsm::transition_table<
     fsm::initial<state::vconn_off>,
     fsm::transition<fsm::from<state::vconn_off>, fsm::on<event::attached_source>,
                     fsm::to<state::vconn_source>, fsm::guard<ra_present>>,
@@ -141,7 +143,7 @@ using vconn_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_vcs_wait_for_vconn>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_vcs_timeout>>,
     fsm::transition<fsm::from<state::pe_vcs_timeout>, fsm::on<event::swap_failed_handled>,
-                    fsm::to<state::vconn_source>>>;
+                    fsm::to<state::vconn_source>>> {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's switch annotation through the injected

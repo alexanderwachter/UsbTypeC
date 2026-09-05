@@ -21,6 +21,11 @@ add_executable(${PROJECT_NAME}
 )
 
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
+
+# -O1 compiles the template-heavy TUs measurably faster than -O0: the
+# backend otherwise churns through tens of thousands of tiny
+# uninlined instantiations (pd_drp.cpp: 33 s -> 20 s)
+target_compile_options(${PROJECT_NAME} PRIVATE $<$<CONFIG:>:-O1>)
 target_link_libraries(${PROJECT_NAME}
     usbc
 )
