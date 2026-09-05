@@ -26,6 +26,10 @@ target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_23)
 # backend otherwise churns through tens of thousands of tiny
 # uninlined instantiations (pd_drp.cpp: 33 s -> 20 s)
 target_compile_options(${PROJECT_NAME} PRIVATE $<$<CONFIG:>:-O1>)
+
+# The stack never uses RTTI (embedded target; polymorphism is
+# compile-time); -fno-rtti makes a violation fail loudly
+target_compile_options(${PROJECT_NAME} PRIVATE -fno-rtti)
 target_link_libraries(${PROJECT_NAME}
     usbc
 )
