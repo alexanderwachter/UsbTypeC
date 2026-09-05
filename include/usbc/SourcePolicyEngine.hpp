@@ -123,6 +123,11 @@ inline constexpr auto t_src_recover           = std::chrono::milliseconds{800}; 
 inline constexpr auto t_source_start          = std::chrono::milliseconds{30};  // tSwapSourceStart
 inline constexpr auto t_src_pr_swap_wait      = std::chrono::milliseconds{150}; // tPRSwapWait
 inline constexpr auto t_src_dr_swap_wait      = std::chrono::milliseconds{150}; // tDRSwapWait
+inline constexpr auto t_sink_tx               = std::chrono::milliseconds{18};  // tSinkTx
+
+// PD3 collision avoidance, signalled through the source's Rp: states
+// carrying the annotation drive it (SinkTxOk = 3.0 A, SinkTxNG = 1.5 A)
+enum class sink_tx : std::uint8_t { ok, ng };
 
 inline constexpr std::uint8_t n_caps_count = spec::n_caps_count;
 
@@ -159,6 +164,8 @@ struct get_source_caps {};
 struct give_sink_caps { // a DRP asked for its sink-role caps
     pd_message message;
 };
+struct begin_pr_swap {}; // PD3: SinkTxNG + tSinkTx precede the request
+struct begin_dr_swap {};
 struct supply_settled {};
 
 } // namespace event
@@ -305,6 +312,7 @@ struct pe_src_transition_supply_ps_rdy {
 struct pe_src_ready {
     static constexpr power_level power          = power_level::explicit_contract;
     static constexpr pd_status pd               = pd_status::connected;
+    static constexpr sink_tx tx                 = sink_tx::ok; // the sink may initiate
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_ready(src_context& ctx) : context(ctx)
@@ -470,6 +478,31 @@ struct pe_src_dr_swap_change {
 
     data_role_changed portReport() const { return {context.data}; }
 
+    src_context& context;
+};
+
+// PD3 collision avoidance ahead of a source-initiated AMS: SinkTxNG
+// goes on the wire (the Rp annotation), the first message follows
+// after tSinkTx
+struct pe_src_sink_tx_wait_pr {
+    static constexpr auto timeout = t_sink_tx; // tSinkTx
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr sink_tx tx                 = sink_tx::ng;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_sink_tx_wait_pr(src_context& ctx) : context(ctx) {}
+    src_context& context;
+};
+
+struct pe_src_sink_tx_wait_dr {
+    static constexpr auto timeout = t_sink_tx; // tSinkTx
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr sink_tx tx                 = sink_tx::ng;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_src_sink_tx_wait_dr(src_context& ctx) : context(ctx) {}
     src_context& context;
 };
 
@@ -781,7 +814,9 @@ using source_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_src_swap_source_start, spec::t_swap_source_start>,
     fsm::timed_by<state::pe_src_dr_swap_wait, spec::t_dr_swap_wait>,
     fsm::timed_by<state::pe_src_pr_swap_wait, spec::t_pr_swap_wait>,
-    fsm::timed_by<state::pe_src_bist_carrier, spec::t_bist_cont_mode>>;
+    fsm::timed_by<state::pe_src_bist_carrier, spec::t_bist_cont_mode>,
+    fsm::timed_by<state::pe_src_sink_tx_wait_pr, spec::t_sink_tx>,
+    fsm::timed_by<state::pe_src_sink_tx_wait_dr, spec::t_sink_tx>>;
 
 using source_table = fsm::transition_table<
     fsm::initial<state::pe_src_startup>,
@@ -864,6 +899,10 @@ using source_table = fsm::transition_table<
     // the agreement, an ignored request falls back to Ready
     fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_dr_swap>,
                     fsm::to<state::pe_src_send_dr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::begin_dr_swap>,
+                    fsm::to<state::pe_src_sink_tx_wait_dr>>,
+    fsm::transition<fsm::from<state::pe_src_sink_tx_wait_dr>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_src_send_dr_swap>>,
     fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::accept>,
                     fsm::to<state::pe_src_dr_swap_change>>,
     fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::reject>,
@@ -887,6 +926,10 @@ using source_table = fsm::transition_table<
     // PR_Swap while sourcing: the agreement leads through tSrcTransition
     // into the supply-off wait, then the termination flip
     fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_pr_swap>,
+                    fsm::to<state::pe_src_send_pr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::begin_pr_swap>,
+                    fsm::to<state::pe_src_sink_tx_wait_pr>>,
+    fsm::transition<fsm::from<state::pe_src_sink_tx_wait_pr>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_src_send_pr_swap>>,
     fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::accept>,
                     fsm::to<state::pe_src_swap_transition_to_off>>,
@@ -1080,7 +1123,7 @@ public:
           supply_(supply),
           prl_(tcpc, prl_timer, port_),
           timed_(pe_timer),
-          sm_(timed_, prl_, caps_sender_, supply_driver_, observers...)
+          sm_(timed_, prl_, caps_sender_, supply_driver_, sink_tx_driver_, observers...)
     {
         tcpc_.setMessageHeaderInfo(
             {power_role::source, data_role::dfp, pd_revision::rev_3_x});
@@ -1116,15 +1159,23 @@ public:
     // --- DRP integration: PD-negotiated role swaps ---------------------------
 
     // Sends the PR_Swap / DR_Swap; false while not Ready under an
-    // explicit contract (the spec allows swaps only there)
+    // explicit contract (the spec allows swaps only there). Under PD3
+    // the source signals SinkTxNG and waits tSinkTx before the request
+    // goes out (collision avoidance)
     bool requestPowerSwap()
     {
+        if (prl_.revision() == pd_revision::rev_3_x) {
+            return sm_.process(pe::event::begin_pr_swap{});
+        }
         return sm_.process(
             pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
     }
 
     bool requestDataSwap()
     {
+        if (prl_.revision() == pd_revision::rev_3_x) {
+            return sm_.process(pe::event::begin_dr_swap{});
+        }
         return sm_.process(
             pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
     }
@@ -1201,6 +1252,30 @@ private:
             return STATE::src_action;
         }
         void notifyEntry(pe::send_capabilities_action) { pe.transmitSourceCaps(); }
+
+        SourcePolicyEngine& pe;
+    };
+
+    // Drives the PD3 collision-avoidance Rp on the states annotating
+    // it; only meaningful under an explicit contract with a PD3
+    // partner - elsewhere the configured advertisement stands
+    struct SinkTxDriver : fsm::observing<SinkTxDriver> {
+        explicit SinkTxDriver(SourcePolicyEngine& pe_ref) : pe(pe_ref) {}
+
+        template<typename STATE>
+        static constexpr auto observe_static() -> decltype(STATE::tx)
+        {
+            return STATE::tx;
+        }
+        void notifyEntry(pe::sink_tx tx)
+        {
+            if (pe.prl_.revision() != pd_revision::rev_3_x ||
+                !pe.sm_.template context<pe::src_context>().explicit_contract) {
+                return;
+            }
+            pe.tcpc_.setCc(cc_pull::rp,
+                           tx == pe::sink_tx::ok ? rp_value::p_3a0 : rp_value::p_1a5);
+        }
 
         SourcePolicyEngine& pe;
     };
@@ -1457,8 +1532,9 @@ private:
     fsm::timed<TIMER&> timed_;
     CapsSender caps_sender_{*this};
     SupplyDriver supply_driver_{*this};
+    SinkTxDriver sink_tx_driver_{*this};
     fsm::state_machine<pe::source_table, fsm::timed<TIMER&>, ProtocolLayer<TCPC, TIMER, PrlPort>,
-                       CapsSender, SupplyDriver, OBSERVERs...>
+                       CapsSender, SupplyDriver, SinkTxDriver, OBSERVERs...>
         sm_;
 };
 

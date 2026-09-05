@@ -247,6 +247,20 @@ int policyEngineSourceTests()
     check(power.contracts == 1 && power.voltage == 9000 && power.current == 3000);
     check(!pe_timer.armed);
 
+    // PD3 collision avoidance: Ready under the contract advertises
+    // SinkTxOk; a source-initiated swap signals SinkTxNG and holds
+    // tSinkTx before the request goes out
+    check(tcpc.rp == usbc::rp_value::p_3a0); // SinkTxOk
+    check(pe.requestPowerSwap());
+    check(tcpc.rp == usbc::rp_value::p_1a5); // SinkTxNG
+    check(pe_timer.armed);                   // tSinkTx
+    pe_timer.expire();
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::control_message_type::pr_swap));
+    txSuccess();
+    deliver(makeControl(usbc::control_message_type::reject));
+    check(tcpc.rp == usbc::rp_value::p_3a0); // back to SinkTxOk in Ready
+
     // Get_Source_Cap re-advertises, then a new Request renegotiates
     deliver(makeControl(usbc::control_message_type::get_source_cap));
     check(transmittedType(tcpc) ==

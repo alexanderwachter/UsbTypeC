@@ -219,6 +219,9 @@ private:
             if (any(*alerts & alert_status::cc_status_changed)) {
                 if (auto const cc = self.tcpc_.readCcStatus()) {
                     self.sm_.process(event::cc_changed{*cc});
+                    std::apply([&](auto&... observer)
+                               { (forwardCcStatus(observer, *cc), ...); },
+                               self.observers_);
                 }
             }
             auto const residual = *alerts & ~alert_status::cc_status_changed;
@@ -233,6 +236,16 @@ private:
     {
         if constexpr (requires { observer.onPdAlert(alerts); }) {
             observer.onPdAlert(alerts);
+        }
+    }
+
+    // The fresh CC status after the machine processed it - the PD
+    // layer reads the source's Rp as SinkTxOk/SinkTxNG (PD3 collision
+    // avoidance)
+    static void forwardCcStatus(auto& observer, cc_status cc)
+    {
+        if constexpr (requires { observer.onCcStatus(cc); }) {
+            observer.onCcStatus(cc);
         }
     }
 

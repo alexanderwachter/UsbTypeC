@@ -101,6 +101,10 @@ inline constexpr timeout_range t_no_response{milliseconds{4500}, milliseconds{55
 // tBISTContMode: how long the BIST carrier is transmitted
 inline constexpr timeout_range t_bist_cont_mode{milliseconds{30}, milliseconds{60}};
 
+// tSinkTx: the source's pause between signalling SinkTxNG and the
+// first message of the AMS it initiates (PD3 collision avoidance)
+inline constexpr timeout_range t_sink_tx{milliseconds{16}, milliseconds{20}};
+
 // tErrorRecovery: both terminations removed at least this long. The
 // spec gives only the 25 ms minimum; the maximum here is a practical
 // bound for the compile-time check

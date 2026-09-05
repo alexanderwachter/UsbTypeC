@@ -244,6 +244,9 @@ private:
             if constexpr (std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
                 data = machine.template getIf<NEW_STATE>()->dataRole();
                 header(power_role::sink);
+                // seed the PD3 collision-avoidance view of the
+                // source's Rp; CC alerts keep it current from here
+                snk.sinkTxChanged(sinkTxOk(machine.template getIf<NEW_STATE>()->context.cc));
                 if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_snk>) {
                     snk.finishSwap(); // already active mid PR_Swap
                 } else if constexpr (std::is_same_v<OLD_STATE,
@@ -312,6 +315,20 @@ private:
                     active = active_role::none;
                 }
             }
+        }
+
+        // PD3 collision avoidance: the sink reads the source's Rp as
+        // SinkTxOk (3.0 A) / SinkTxNG on every CC report
+        void onCcStatus(cc_status cc)
+        {
+            if (active == active_role::sink) {
+                snk.sinkTxChanged(sinkTxOk(cc));
+            }
+        }
+
+        static bool sinkTxOk(cc_status cc)
+        {
+            return cc.cc1 == cc_state::snk_power_3a0 || cc.cc2 == cc_state::snk_power_3a0;
         }
 
         void onPdAlert(alert_status alerts)

@@ -337,6 +337,18 @@ int policyEngineTests()
     check(!tcpc.last_signal.has_value()); // no carrier commanded
     check(!pe_timer.armed);
 
+    // PD3 collision avoidance: a swap request under SinkTxNG parks
+    // and fires when the source's Rp flips to SinkTxOk
+    pe.sinkTxChanged(false); // SinkTxNG seen
+    auto const tx_before_park = tcpc.transmit_count;
+    check(pe.requestDataSwap());                    // accepted, parked
+    check(tcpc.transmit_count == tx_before_park);   // nothing sent yet
+    pe.sinkTxChanged(true);                         // SinkTxOk
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::control_message_type::dr_swap));
+    txSuccess();
+    deliver(makeControl(usbc::control_message_type::reject)); // back to Ready
+
     // new capabilities renegotiate towards 5 V; the Reject returns to
     // ready and must keep the active 9 V contract - the rejected
     // proposal never reaches the load

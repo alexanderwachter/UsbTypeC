@@ -209,6 +209,7 @@ struct send_sink_caps {
 struct send_source_caps { // a DRP asked for its source-role caps
     pd_message message;
 };
+struct request_retry {}; // SinkRequestTimer expired, SinkTxOk seen
 struct default_level_reached {};
 
 } // namespace event
@@ -318,6 +319,10 @@ struct pe_snk_select_capability {
         context.request_message = event.message; // kept for the Wait retry
     }
     // re-entry from the SinkRequestTimer: the same Request again
+    pe_snk_select_capability(event::request_retry const&, pe_context& ctx)
+        : pe_snk_select_capability(ctx)
+    {
+    }
     explicit pe_snk_select_capability(pe_context& ctx)
         : context(ctx), message_(ctx.request_message)
     {
@@ -610,6 +615,36 @@ struct pe_snk_pr_swap_wait {
     pe_context& context;
 };
 
+// The retry is due but PD3 collision avoidance gates it: the engine
+// re-initiates once the source's Rp says SinkTxOk (no timeout - the
+// source owns the schedule)
+struct pe_snk_request_gate {
+    static constexpr power_level power          = power_level::contract_or_default;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_snk_request_gate(pe_context& ctx) : context(ctx) {}
+    pe_context& context;
+};
+
+struct pe_snk_dr_swap_gate {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_snk_dr_swap_gate(pe_context& ctx) : context(ctx) {}
+    pe_context& context;
+};
+
+struct pe_snk_pr_swap_gate {
+    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr pd_status pd               = pd_status::connected;
+    static constexpr std::string_view dot_note  = specNote(power, pd);
+
+    explicit pe_snk_pr_swap_gate(pe_context& ctx) : context(ctx) {}
+    pe_context& context;
+};
+
 // PE_PRS_SNK_SRC_Transition_to_off: draw drops to standby while the
 // old source turns off; the port holds the connection layer's swap
 // standby, whose tPSSourceOff timeout restarts connection resolution
@@ -852,7 +887,11 @@ using sink_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::wait>,
                     fsm::to<state::pe_snk_request_wait>>,
     fsm::transition<fsm::from<state::pe_snk_request_wait>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_request_gate>>,
+    fsm::transition<fsm::from<state::pe_snk_request_gate>, fsm::on<event::request_retry>,
                     fsm::to<state::pe_snk_select_capability>>,
+    fsm::transition<fsm::from<state::pe_snk_request_gate>, fsm::on<event::source_capabilities>,
+                    fsm::to<state::pe_snk_evaluate_capability>>,
     fsm::transition<fsm::from<state::pe_snk_request_wait>, fsm::on<event::source_capabilities>,
                     fsm::to<state::pe_snk_evaluate_capability>>,
     fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<fsm::timeout>,
@@ -900,6 +939,8 @@ using sink_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<event::wait>,
                     fsm::to<state::pe_snk_dr_swap_wait>>,
     fsm::transition<fsm::from<state::pe_snk_dr_swap_wait>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_dr_swap_gate>>,
+    fsm::transition<fsm::from<state::pe_snk_dr_swap_gate>, fsm::on<event::send_dr_swap>,
                     fsm::to<state::pe_snk_send_dr_swap>>,
     fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_snk_ready>>,
@@ -924,6 +965,8 @@ using sink_table = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<event::wait>,
                     fsm::to<state::pe_snk_pr_swap_wait>>,
     fsm::transition<fsm::from<state::pe_snk_pr_swap_wait>, fsm::on<fsm::timeout>,
+                    fsm::to<state::pe_snk_pr_swap_gate>>,
+    fsm::transition<fsm::from<state::pe_snk_pr_swap_gate>, fsm::on<event::send_pr_swap>,
                     fsm::to<state::pe_snk_send_pr_swap>>,
     fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_snk_ready>>,
@@ -1130,6 +1173,7 @@ public:
     {
         prl_.resetRevision();
         setBistTestData(false); // the test mode ends with the partner
+        pending_ams_ = pending_ams::none;
         sm_.process(pe::event::vbus_removed{});
         sm_.process(pe::event::started{});
     }
@@ -1140,17 +1184,46 @@ public:
     // --- DRP integration: PD-negotiated role swaps ---------------------------
 
     // Sends the PR_Swap / DR_Swap; false while not Ready under an
-    // explicit contract (the spec allows swaps only there)
+    // explicit contract (the spec allows swaps only there). Under PD3
+    // collision avoidance a request during SinkTxNG parks and fires
+    // when the source's Rp says SinkTxOk
     bool requestPowerSwap()
     {
+        if (!sm_.template is<pe::state::pe_snk_ready>()) {
+            return false;
+        }
+        if (!sinkTxAllows()) {
+            pending_ams_ = pending_ams::pr_swap;
+            return true;
+        }
         return sm_.process(
             pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
     }
 
     bool requestDataSwap()
     {
+        if (!sm_.template is<pe::state::pe_snk_ready>()) {
+            return false;
+        }
+        if (!sinkTxAllows()) {
+            pending_ams_ = pending_ams::dr_swap;
+            return true;
+        }
         return sm_.process(
             pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
+    }
+
+    // PD3 collision avoidance: the source's Rp signals whether the
+    // sink may initiate an AMS (SinkTxOk = 3.0 A, SinkTxNG = 1.5 A).
+    // The port layer feeds every CC report; parked and gated requests
+    // fire on the flip to Ok
+    void sinkTxChanged(bool ok)
+    {
+        sink_tx_ok_ = ok;
+        if (ok) {
+            fireGated();
+            firePending();
+        }
     }
 
     // The port was the source and asserted Rd mid PR_Swap: announce
@@ -1210,6 +1283,7 @@ private:
                 [](void* self) {
                     auto& timer = *static_cast<PumpedTimer*>(self);
                     timer.callback(timer.context);
+                    timer.pe.afterTimeout();
                     if (timer.pe.idle_hook_ != nullptr) {
                         timer.pe.idle_hook_(timer.pe.idle_context_);
                     }
@@ -1258,6 +1332,55 @@ private:
     {
         sm_.process(pe::event::default_level_reached{});
         sm_.process(pe::event::started{});
+    }
+
+    // Collision avoidance applies under PD3 with an explicit contract;
+    // otherwise the sink initiates freely
+    bool sinkTxAllows() const
+    {
+        if (prl_.revision() != pd_revision::rev_3_x) {
+            return true;
+        }
+        return !sm_.template context<pe::pe_context>().explicit_contract || sink_tx_ok_;
+    }
+
+    // A retry that timed out under SinkTxNG waits in its gate state
+    void fireGated()
+    {
+        if (sm_.template is<pe::state::pe_snk_request_gate>()) {
+            sm_.process(pe::event::request_retry{});
+        } else if (sm_.template is<pe::state::pe_snk_dr_swap_gate>()) {
+            sm_.process(pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
+        } else if (sm_.template is<pe::state::pe_snk_pr_swap_gate>()) {
+            sm_.process(pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
+        }
+    }
+
+    void firePending()
+    {
+        auto const pending = pending_ams_;
+        pending_ams_       = pending_ams::none;
+        if (!sm_.template is<pe::state::pe_snk_ready>()) {
+            return;
+        }
+        switch (pending) {
+        case pending_ams::pr_swap:
+            sm_.process(pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
+            break;
+        case pending_ams::dr_swap:
+            sm_.process(pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
+            break;
+        case pending_ams::none: break;
+        }
+    }
+
+    // Invoked by the pumped timer after a timeout-driven transition: a
+    // retry landing in its gate under SinkTxOk fires right away
+    void afterTimeout()
+    {
+        if (sinkTxAllows()) {
+            fireGated();
+        }
     }
 
     // A transient state left standing after its trigger was processed
@@ -1494,9 +1617,13 @@ private:
     std::span<sink_capability const> capabilities_;
     std::span<std::uint32_t const> source_capabilities_{}; // empty: not a DRP
     POLICY& policy_;
+    enum class pending_ams : std::uint8_t { none, pr_swap, dr_swap };
+
     void (*idle_hook_)(void*) = nullptr;
     void* idle_context_       = nullptr;
     bool bist_test_data_      = false;
+    bool sink_tx_ok_          = true; // last Rp seen (SinkTxOk/NG)
+    pending_ams pending_ams_  = pending_ams::none;
     PrlPort port_{*this};
     // both timers pumped: the PRL's HardResetCompleteTimer also drives
     // transitions whose port requests the facade must execute
