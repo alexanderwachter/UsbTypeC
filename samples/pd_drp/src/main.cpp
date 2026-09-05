@@ -154,10 +154,23 @@ struct SwapPolicy : fsm::observing<SwapPolicy> {
 
 // The StateLogger rides along in the connection machine (module
 // usbc_fsm, debug level)
+// PD_DRP_MINIMAL drops the optional features (VCONN, PR_Swap,
+// DR_Swap) by not injecting their enabling observers - the engines'
+// swap and VCS states are then filtered from the tables. The
+// feature-parity size comparison against Zephyr's drp sample (whose
+// stack has none of these) builds with
+// EXTRA_CPPFLAGS=-DPD_DRP_MINIMAL
+#ifdef PD_DRP_MINIMAL
+using Port = usbc::PdDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
+                         usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, ContractMonitor,
+                         usbc::default_drp_timing, usbc::drp_preference::none,
+                         usbc::zephyr::StateLogger>;
+#else
 using Port = usbc::PdDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
                          usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, ContractMonitor,
                          usbc::default_drp_timing, usbc::drp_preference::none,
                          usbc::zephyr::StateLogger, VconnPolicy, SwapPolicy>;
+#endif
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
@@ -169,13 +182,21 @@ usbc::RequestPolicy source_policy;
 Supply supply;
 ContractMonitor contract_monitor;
 usbc::zephyr::StateLogger state_logger;
+#ifndef PD_DRP_MINIMAL
 VconnPolicy vconn_policy;
 SwapPolicy swap_policy;
+#endif
 
 // The Rp matches the 5 V capability the port advertises through PD
+#ifdef PD_DRP_MINIMAL
+Port port{tcpc,        vbus,          timers, sink_capabilities, sink_policy,           power,
+          source_caps, source_policy, supply, contract_monitor,  usbc::rp_value::p_1a5,
+          state_logger};
+#else
 Port port{tcpc,        vbus,          timers, sink_capabilities, sink_policy,           power,
           source_caps, source_policy, supply, contract_monitor,  usbc::rp_value::p_1a5,
           state_logger, vconn_policy, swap_policy};
+#endif
 
 // The joystick triggers the PD swap messaging, submitted to the
 // stack's queue - the serialization the swap calls require. The
@@ -224,7 +245,9 @@ int main()
         LOG_ERR("supply hardware init failed");
         return -1;
     }
+#ifndef PD_DRP_MINIMAL
     vconn_policy.tcpc = &tcpc; // this board's switch sits behind the TCPC
+#endif
     port.start(); // leave Disabled: toggle Rd/Rp, resolve with the partner
 
     setupButton(power_button, power_button_cb, [](const device*, gpio_callback*, uint32_t) {
