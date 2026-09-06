@@ -171,7 +171,7 @@ private:
     // The optional features, detected by tag over the injected pack
     template<typename TAG>
     static constexpr bool feature_enabled =
-        (pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>, TAG> || ...);
+        (fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, TAG> || ...);
 
     static constexpr bool pr_swap_enabled = feature_enabled<pe::pr_swap_feature>;
     static constexpr bool dr_swap_enabled = feature_enabled<pe::dr_swap_feature>;
@@ -182,19 +182,19 @@ private:
     // An enabling observer is the feature's arbitration voice (and,
     // for VCONN, the switch-hardware connector) - hold it to the
     // feature's contract right where the tag is honored
-    static_assert(((!pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+    static_assert(((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
                                             pe::pr_swap_feature> ||
                     concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, power_role>) &&
                    ...),
                   "an observer enabling pr_swap_feature must provide "
                   "allowSwap(power_role) -> bool");
-    static_assert(((!pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+    static_assert(((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
                                             pe::dr_swap_feature> ||
                     concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, data_role>) &&
                    ...),
                   "an observer enabling dr_swap_feature must provide "
                   "allowSwap(data_role) -> bool");
-    static_assert(((!pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+    static_assert(((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
                                             pe::vconn_feature> ||
                     concepts::vconn_port<std::remove_cvref_t<OBSERVERs>>) &&
                    ...),
@@ -209,7 +209,7 @@ private:
 
     template<typename T>
     struct is_vconn_enabler
-        : std::bool_constant<pe::observer_enables_v<T, pe::vconn_feature>> {};
+        : std::bool_constant<fsm::observer_enables_v<T, pe::vconn_feature>> {};
 
     // Lazy: the filtered pack is only fronted when the feature exists
     template<bool ENABLED, typename = void>
@@ -227,7 +227,7 @@ private:
     template<typename FIRST, typename... REST>
     auto& pickVconnPort(FIRST& first, REST&... rest)
     {
-        if constexpr (pe::observer_enables_v<std::remove_cvref_t<FIRST>, pe::vconn_feature>) {
+        if constexpr (fsm::observer_enables_v<std::remove_cvref_t<FIRST>, pe::vconn_feature>) {
             return first;
         } else {
             return pickVconnPort(rest...);

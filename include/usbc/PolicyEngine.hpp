@@ -187,99 +187,41 @@ struct hard_reset_received {};
 
 } // namespace event
 
-// The optional features, as tags: a state declares the feature it
-// belongs to (`using feature = pe::..._feature;`), and an injected
-// observer declaring the same tag (`using enables = ...;` - one tag,
-// or an mtl::typelist of them) switches the feature on. A disabled
-// feature's states - and every transition touching them - are
-// removed from the tables at compile time; the enabling observer
-// must satisfy the feature's contract (checked where it is detected)
+// The optional features, as tags - the fsm library's feature mechanism:
+// a state declares the feature it belongs to (`using feature =
+// pe::..._feature;`), and an injected observer declaring the same tag
+// (`using enables = ...;` - one tag, or an mtl::typelist of them)
+// switches the feature on (fsm::observer_enables_v). A disabled
+// feature's states - and every table entry touching them, timer-range
+// map entries included - are removed at compile time
+// (fsm::remove_features_t); the enabling observer must satisfy the
+// feature's contract (checked where it is detected)
 struct pr_swap_feature {};  // contract: allowSwap(power_role)
 struct dr_swap_feature {};  // contract: allowSwap(data_role)
 struct vconn_feature {};    // contract: concepts::vconn_port
 
-// Whether ENABLES (a tag, or a typelist of tags) names TAG
-template<typename ENABLES, typename TAG>
-struct enables_lists : std::is_same<ENABLES, TAG> {};
-
-template<typename... TAGs, typename TAG>
-struct enables_lists<mtl::typelist<TAGs...>, TAG>
-    : std::bool_constant<(std::is_same_v<TAGs, TAG> || ...)> {};
-
-template<typename OBSERVER, typename TAG>
-struct observer_enables : std::false_type {};
-
-template<typename OBSERVER, typename TAG>
-    requires requires { typename OBSERVER::enables; }
-struct observer_enables<OBSERVER, TAG> : enables_lists<typename OBSERVER::enables, TAG> {};
-
-template<typename OBSERVER, typename TAG>
-inline constexpr bool observer_enables_v = observer_enables<OBSERVER, TAG>::value;
-
-// Whether STATE belongs to the tagged feature
-template<typename STATE, typename TAG>
-struct state_in_feature : std::false_type {};
-
-template<typename STATE, typename TAG>
-    requires requires { typename STATE::feature; }
-struct state_in_feature<STATE, TAG> : std::is_same<typename STATE::feature, TAG> {};
-
-// The disabled features as ONE predicate set, so disabling costs a
-// single filter pass over the table (chained per-feature passes and
-// eager conditional_t branches measured multiples of the
-// instantiations). entry_pred drops every transition whose source or
-// target belongs to a disabled feature (fsm::initial<> and friends
-// never match); timer_pred is the timer-range map counterpart (the
-// map check is bidirectional: entries for filtered states must go too)
+// The disabled features of a configuration as one tag list, so
+// disabling costs a single filter pass over a table or map (chained
+// per-feature passes measured multiples of the instantiations)
 template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
-struct in_disabled_feature {
-    template<typename STATE>
-    static constexpr bool matches =
-        (!PR_SWAP && state_in_feature<STATE, pr_swap_feature>::value) ||
-        (!DR_SWAP && state_in_feature<STATE, dr_swap_feature>::value) ||
-        (!VCONN && state_in_feature<STATE, vconn_feature>::value);
-
-    template<typename ENTRY>
-    struct entry_pred : std::false_type {};
-
-    template<typename ENTRY>
-        requires requires {
-            typename ENTRY::from;
-            typename ENTRY::to;
-        }
-    struct entry_pred<ENTRY> : std::bool_constant<matches<typename ENTRY::from> ||
-                                                  matches<typename ENTRY::to>> {};
-
-    template<typename ENTRY>
-    struct timer_pred : std::false_type {};
-
-    template<typename STATE, auto const& BOUND>
-    struct timer_pred<fsm::timed_by<STATE, BOUND>> : std::bool_constant<matches<STATE>> {};
-};
+using disabled_features_t = mtl::concat_t<
+    mtl::concat_t<std::conditional_t<PR_SWAP, mtl::typelist<>, mtl::typelist<pr_swap_feature>>,
+                  std::conditional_t<DR_SWAP, mtl::typelist<>, mtl::typelist<dr_swap_feature>>>,
+    std::conditional_t<VCONN, mtl::typelist<>, mtl::typelist<vconn_feature>>>;
 
 // Lazy by design: the everything-enabled specialization returns the
-// list untouched without ever naming remove_if (a conditional_t
-// alias would evaluate the filter branch either way)
+// list untouched without ever naming the filter (a conditional_t alias
+// would evaluate the filter branch either way). One trait for the
+// transition lists and the timer-range maps: the filter knows both
 template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
-struct table_without_disabled
-    : std::type_identity<mtl::remove_if_t<
-          LIST, in_disabled_feature<PR_SWAP, DR_SWAP, VCONN>::template entry_pred>> {};
+struct without_disabled
+    : std::type_identity<
+          fsm::remove_features_t<LIST, disabled_features_t<PR_SWAP, DR_SWAP, VCONN>>> {};
 template<typename LIST>
-struct table_without_disabled<LIST, true, true, true> : std::type_identity<LIST> {};
+struct without_disabled<LIST, true, true, true> : std::type_identity<LIST> {};
 
 template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
-struct map_without_disabled
-    : std::type_identity<mtl::remove_if_t<
-          LIST, in_disabled_feature<PR_SWAP, DR_SWAP, VCONN>::template timer_pred>> {};
-template<typename LIST>
-struct map_without_disabled<LIST, true, true, true> : std::type_identity<LIST> {};
-
-template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
-using table_without_disabled_t =
-    typename table_without_disabled<LIST, PR_SWAP, DR_SWAP, VCONN>::type;
-template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
-using map_without_disabled_t =
-    typename map_without_disabled<LIST, PR_SWAP, DR_SWAP, VCONN>::type;
+using without_disabled_t = typename without_disabled<LIST, PR_SWAP, DR_SWAP, VCONN>::type;
 
 // The engines' timer wrapper: a timeout-driven transition may ask the
 // port for an action (a role flip, Error Recovery) that tears the

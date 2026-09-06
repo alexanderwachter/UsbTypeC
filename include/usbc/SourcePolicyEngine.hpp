@@ -1227,12 +1227,12 @@ using source_transitions = mtl::typelist<
 // megabytes per object file, measured
 template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
 struct source_table_for
-    : mtl::rebind_t<table_without_disabled_t<source_transitions, PR_SWAP, DR_SWAP, VCONN>,
+    : mtl::rebind_t<without_disabled_t<source_transitions, PR_SWAP, DR_SWAP, VCONN>,
                     fsm::transition_table> {};
 
 template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
 using source_timer_ranges_for =
-    map_without_disabled_t<source_timer_ranges, PR_SWAP, DR_SWAP, VCONN>;
+    without_disabled_t<source_timer_ranges, PR_SWAP, DR_SWAP, VCONN>;
 
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them

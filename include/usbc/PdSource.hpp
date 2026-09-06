@@ -48,11 +48,11 @@ template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
 class PdSource {
     // The single-role facade wires none of the tag-enabled features:
     // an enabling observer here would be silently ignored
-    static_assert(((!pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+    static_assert(((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
                                             pe::pr_swap_feature> &&
-                    !pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+                    !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
                                             pe::dr_swap_feature> &&
-                    !pe::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
+                    !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
                                             pe::vconn_feature>) &&
                    ...),
                   "PdSource does not wire the optional features (swaps, VCONN); "

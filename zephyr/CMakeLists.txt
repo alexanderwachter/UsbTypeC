@@ -17,6 +17,7 @@ zephyr_library_sources(
 zephyr_include_directories(
     ${CMAKE_CURRENT_LIST_DIR}/../include
     ${CMAKE_CURRENT_LIST_DIR}/../lib/McuTemplateLibrary/include
+    ${CMAKE_CURRENT_LIST_DIR}/../lib/McuTemplateLibrary/zephyr/include
     ${CMAKE_CURRENT_LIST_DIR}/include
 )
 
