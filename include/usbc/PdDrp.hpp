@@ -382,8 +382,11 @@ private:
         active_role active = active_role::none;
         data_role data     = data_role::ufp; // for the header between hooks
         // carried across the engine handover of a power role swap: the
-        // negotiated revision holds for the connection
+        // negotiated revision and the MessageID lifecycle hold for the
+        // connection (a swap is no reset trigger, 6.7.1) - captured
+        // before the retiring engine's teardown resets its layer
         pd_revision swap_revision = pd_revision::rev_3_x;
+        prl::message_id_state swap_ids{};
 
         template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
         void onEnterState(MACHINE& machine)
@@ -408,9 +411,10 @@ private:
                 header(power_role::source);
                 if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_src>) {
                     swap_revision = snk.negotiatedRevision();
+                    swap_ids      = snk.messageIds();
                     snk.vbusRemoved(); // the sink engine's half is done
                     active = active_role::source;
-                    src.attachedAfterSwap(data, swap_revision); // continue the PR_Swap
+                    src.attachedAfterSwap(data, swap_revision, swap_ids); // continue the swap
                 } else {
                     active = active_role::source;
                     src.attached();
@@ -424,7 +428,7 @@ private:
                 // engine takes over the PS_RDY exchange
                 header(power_role::sink);
                 active = active_role::sink;
-                snk.startSwapWaitSourceOn(data, swap_revision);
+                snk.startSwapWaitSourceOn(data, swap_revision, swap_ids);
             }
         }
 
@@ -455,6 +459,7 @@ private:
             } else if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_src>) {
                 if constexpr (std::is_same_v<NEW_STATE, tc::drp::swap_standby_to_snk>) {
                     swap_revision = src.negotiatedRevision(); // before the reset
+                    swap_ids      = src.messageIds();
                 } else {
                     port.vconn_.detached(); // a real detach, not a swap
                 }

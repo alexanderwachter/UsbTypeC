@@ -361,6 +361,7 @@ int pdDrpTests()
     // swap standby - draw stops, detach detection is suspended
     check(port.swapPowerRole());
     check(transmittedControl(tcpc, usbc::control_message_type::pr_swap));
+    auto const pr_swap_id = usbc::pd_header::decode(tcpc.last_transmitted.header).message_id;
     txSuccess();
     deliver(partnerControl(usbc::control_message_type::accept, usbc::power_role::source,
                            usbc::data_role::dfp));
@@ -378,6 +379,10 @@ int pdDrpTests()
     check(supply.voltage == 5000 && supply.outputs > 0);
     supply.settle();
     check(transmittedControl(tcpc, usbc::control_message_type::ps_rdy));
+    // the MessageID lifecycle survived the engine handover: a PR_Swap
+    // is no reset trigger (6.7.1), the counter continues
+    check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id ==
+          ((pr_swap_id + 1u) & 0x7u));
     txSuccess();
     check(timers.source_pe.armed); // SwapSourceStartTimer
     timers.source_pe.expire();
@@ -414,6 +419,7 @@ int pdDrpTests()
     deliver(partnerControl(usbc::control_message_type::pr_swap, usbc::power_role::sink,
                            usbc::data_role::ufp));
     check(transmittedControl(tcpc, usbc::control_message_type::accept));
+    auto const accept_id = usbc::pd_header::decode(tcpc.last_transmitted.header).message_id;
     txSuccess();
     check(timers.source_pe.armed); // tSrcTransition
     timers.source_pe.expire();
@@ -421,6 +427,10 @@ int pdDrpTests()
     supply.settle();
     check(tcpc.pull == usbc::cc_pull::rd && !tcpc.sourcing); // Rd asserted
     check(transmittedControl(tcpc, usbc::control_message_type::ps_rdy));
+    // ... and in this direction too: the sink engine's first message
+    // continues where the source engine's counter stood
+    check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id ==
+          ((accept_id + 1u) & 0x7u));
     txSuccess();
 
     // the new source drives VBUS and reports PS_RDY: Attached.SNK, the

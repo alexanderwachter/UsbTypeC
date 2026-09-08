@@ -81,6 +81,19 @@ namespace prl {
 
 inline constexpr std::uint8_t n_retry_count = spec::n_retry_count; // nRetryCount, PD rev 3.x
 
+inline constexpr std::size_t sop_count = 5; // SOP* types with own MessageID lifecycles
+
+// The per-SOP* MessageID state: the transmit counters and the receive
+// side's stored copies. Handed across a power-role swap like the
+// negotiated revision: 6.7.1 resets the counters only at power-on,
+// Hard Reset, Cable Reset or Soft_Reset - a PR_Swap continues them,
+// even though this stack changes engines (and with them protocol
+// layer instances) mid-swap
+struct message_id_state {
+    std::array<std::uint8_t, sop_count> tx_counter{};
+    std::array<std::optional<std::uint8_t>, sop_count> rx_id{};
+};
+
 inline constexpr auto t_receive             = std::chrono::milliseconds{1}; // tReceive
 inline constexpr auto t_hard_reset_complete = std::chrono::milliseconds{5}; // tHardResetComplete
 
@@ -304,6 +317,15 @@ public:
     void resetRevision() { setRevision(pd_revision::rev_3_x); }
     void seedRevision(pd_revision rev) { setRevision(rev); }
 
+    // The MessageID lifecycle, handed over the same way: the swap is
+    // no reset trigger (6.7.1), the counters continue
+    prl::message_id_state messageIds() const { return {tx_counter_, rx_id_}; }
+    void seedMessageIds(prl::message_id_state const& ids)
+    {
+        tx_counter_ = ids.tx_counter;
+        rx_id_      = ids.rx_id;
+    }
+
     void onAlert(alert_status alerts)
     {
         if (any(alerts & alert_status::hard_reset_received)) {
@@ -398,8 +420,6 @@ private:
         ProtocolLayer& prl;
     };
 
-    static constexpr std::size_t sop_count = 5;
-
     static constexpr std::size_t index(sop_type sop) { return static_cast<std::size_t>(sop); }
 
     void increment(sop_type sop)
@@ -464,8 +484,8 @@ private:
     client_reporter reporter_{*this};
     fsm::state_machine<prl::tx_table, fsm::timed<TIMER&>, prl::phy_driver<TCPC>, client_reporter>
         sm_{timed_, driver_, reporter_};
-    std::array<std::uint8_t, sop_count> tx_counter_{};
-    std::array<std::optional<std::uint8_t>, sop_count> rx_id_{};
+    std::array<std::uint8_t, prl::sop_count> tx_counter_{};
+    std::array<std::optional<std::uint8_t>, prl::sop_count> rx_id_{};
     pd_revision revision_ = pd_revision::rev_3_x;
 };
 

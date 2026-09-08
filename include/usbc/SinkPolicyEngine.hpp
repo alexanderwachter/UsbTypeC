@@ -1430,16 +1430,20 @@ public:
     // The port was the source and asserted Rd mid PR_Swap: announce
     // the supply is off and await the new source's PS_RDY. The event
     // carries the preserved data role (the entered state seeds the
-    // context with it); the negotiated revision holds for the
-    // connection and is handed over from the retiring engine
-    void startSwapWaitSourceOn(data_role role, pd_revision revision)
+    // context with it); the negotiated revision and the MessageID
+    // lifecycle hold for the connection - a swap is no reset trigger
+    // (6.7.1) - and are handed over from the retiring engine
+    void startSwapWaitSourceOn(data_role role, pd_revision revision,
+                               prl::message_id_state const& ids)
     {
         prl_.seedRevision(revision);
+        prl_.seedMessageIds(ids);
         sm_.process(pe::event::swap_wait_source_on{role});
     }
 
-    // The revision the protocol layer negotiated with this partner
+    // The protocol layer's per-partner state, read at the handover
     pd_revision negotiatedRevision() const { return prl_.revision(); }
+    prl::message_id_state messageIds() const { return prl_.messageIds(); }
 
     // A DRP announces its source-role capabilities: Get_Source_Cap is
     // answered with them instead of Not_Supported
