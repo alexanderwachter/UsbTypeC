@@ -224,7 +224,7 @@ namespace state {
 // Transition_to_default already restored and suppression elides it)
 struct pe_snk_startup {
     static constexpr prl::reset_action prl_action{};
-    static constexpr restore_default_action power_action{};
+    static constexpr auto annotations           = fsm::annotate(restore_default_action{});
     static constexpr power_level power          = power_level::default_power;
     static constexpr pd_status pd               = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -359,6 +359,7 @@ struct pe_snk_transition_sink {
 
 struct pe_snk_ready {
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd        = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -374,6 +375,7 @@ struct pe_snk_ready {
 
 struct pe_snk_give_sink_cap {
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd        = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -397,6 +399,7 @@ private:
 struct pe_snk_bist_carrier {
     static constexpr auto timeout = t_bist_cont_mode; // BISTContModeTimer
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "transmits the BIST carrier";
@@ -422,6 +425,7 @@ struct pe_snk_request_wait {
 // source-role capabilities, then returns to Ready
 struct pe_dr_snk_give_source_cap {
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -443,6 +447,7 @@ private:
 // support, then returns to Ready
 struct pe_snk_send_not_supported {
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd        = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -462,6 +467,7 @@ struct pe_snk_send_not_supported {
 struct pe_snk_chunk_received {
     static constexpr auto timeout = t_chunking_not_supported; // ChunkingNotSupportedTimer
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd        = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -482,6 +488,7 @@ struct pe_snk_send_dr_swap {
     using feature = dr_swap_feature;
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends DR_Swap";
@@ -509,6 +516,7 @@ private:
 struct pe_snk_accept_dr_swap {
     using feature = dr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
@@ -532,6 +540,7 @@ private:
 struct pe_snk_dr_swap_change {
     using feature = dr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "flips the data role";
@@ -556,6 +565,7 @@ struct pe_snk_vcs_send_swap {
     using feature = vconn_feature;
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends VCONN_Swap";
@@ -578,6 +588,7 @@ private:
 struct pe_snk_vcs_accept {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
@@ -602,6 +613,7 @@ private:
 struct pe_snk_vcs_active {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -618,6 +630,7 @@ struct pe_snk_vcs_active {
 struct pe_snk_vcs_send_ps_rdy {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PS_RDY";
@@ -640,6 +653,7 @@ private:
 struct pe_snk_vcs_partner_on {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -653,6 +667,7 @@ struct pe_snk_vcs_partner_on {
 struct pe_snk_vcs_ps_rdy_sent {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -668,6 +683,7 @@ struct pe_snk_send_pr_swap {
     using feature = pr_swap_feature;
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PR_Swap";
@@ -695,6 +711,7 @@ private:
 struct pe_snk_accept_pr_swap {
     using feature = pr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
@@ -719,6 +736,7 @@ struct pe_snk_dr_swap_wait {
     using feature = dr_swap_feature;
     static constexpr auto timeout = t_dr_swap_wait; // tDRSwapWait
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -730,6 +748,7 @@ struct pe_snk_pr_swap_wait {
     using feature = pr_swap_feature;
     static constexpr auto timeout = t_pr_swap_wait; // tPRSwapWait
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -752,6 +771,7 @@ struct pe_snk_request_gate {
 struct pe_snk_dr_swap_gate {
     using feature = dr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -762,6 +782,7 @@ struct pe_snk_dr_swap_gate {
 struct pe_snk_pr_swap_gate {
     using feature = pr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -915,7 +936,7 @@ struct pe_snk_hard_reset {
 // PE_SNK_Transition_to_default: back to vSafe5V defaults; the engine
 // then advances through Startup and Discovery
 struct pe_snk_transition_to_default {
-    static constexpr restore_default_action power_action{};
+    static constexpr auto annotations           = fsm::annotate(restore_default_action{});
     static constexpr power_level power          = power_level::transition;
     static constexpr pd_status pd        = pd_status::not_connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
@@ -1214,45 +1235,25 @@ struct contract_store : fsm::observing<contract_store<POWER>> {
     {
         power.derived().setLimit(limit.voltage, i_snk_stdby);
     }
-    // store only - contract_apply acts on the power annotation edge
+    // store only - power_effects acts on the power annotation edge
     void notifyEntry(active_contract contract) { power.contract_ = contract; }
 
     POWER& power;
 };
 
-// Applies the stored contract exactly when the diagram's Power column
-// changes to Explicit Contract; with change suppression, bounces
-// between Ready and its service states stay silent
+// The power effects, delivered from the states' annotation sets by
+// overload: the stored contract is applied exactly when the power
+// element appears or changes (only Explicit Contract states carry it,
+// so bounces between Ready and its service states stay suppressed and
+// the engines' wildcard transitions stay shareable), and vSafe5V
+// defaults are restored on the states carrying the restore action.
+// One observer for both - the set lifts the one-observation limit
+// that used to split it
 template<typename POWER>
-struct contract_apply : fsm::observing<contract_apply<POWER>> {
-    explicit contract_apply(POWER& power_ref) : power(power_ref) {}
+struct power_effects : fsm::observing<power_effects<POWER>> {
+    explicit power_effects(POWER& power_ref) : power(power_ref) {}
 
-    // Only Explicit Contract states are observed: every other power
-    // level is a non-event here, and leaving them unannotated keeps
-    // the engines' wildcard transitions shareable (no suppression to
-    // depend on outside the explicit level)
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::power)
-        requires(STATE::power == power_level::explicit_contract)
-    {
-        return STATE::power;
-    }
     void notifyEntry(power_level) { power.applyContract(); }
-
-    POWER& power;
-};
-
-// Restores vSafe5V defaults on the states carrying a restore
-// power_action (Startup, Transition_to_default)
-template<typename POWER>
-struct default_restore : fsm::observing<default_restore<POWER>> {
-    explicit default_restore(POWER& power_ref) : power(power_ref) {}
-
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::power_action)
-    {
-        return STATE::power_action;
-    }
     void notifyEntry(restore_default_action) { power.restoreDefaults(); }
 
     POWER& power;
@@ -1275,23 +1276,21 @@ struct default_restore : fsm::observing<default_restore<POWER>> {
 // when a contract was actually in place
 template<typename DERIVED>
 class SinkPower : public fsm::observer_group<pe::contract_store<SinkPower<DERIVED>>,
-                                             pe::contract_apply<SinkPower<DERIVED>>,
-                                             pe::default_restore<SinkPower<DERIVED>>> {
+                                             pe::power_effects<SinkPower<DERIVED>>> {
 public:
     using derived_type = DERIVED;
 
-    // store before apply: the contract terms must be fresh when the
-    // power annotation edge fires on the same entry
+    // store before the effects: the contract terms must be fresh when
+    // the power annotation edge fires on the same entry
     SinkPower()
-        : fsm::observer_group<pe::contract_store<SinkPower>, pe::contract_apply<SinkPower>,
-                              pe::default_restore<SinkPower>>(store_, apply_, restore_)
+        : fsm::observer_group<pe::contract_store<SinkPower>, pe::power_effects<SinkPower>>(
+              store_, effects_)
     {
     }
 
 private:
     friend pe::contract_store<SinkPower>;
-    friend pe::contract_apply<SinkPower>;
-    friend pe::default_restore<SinkPower>;
+    friend pe::power_effects<SinkPower>;
 
     DERIVED& derived() { return static_cast<DERIVED&>(*this); }
 
@@ -1312,8 +1311,7 @@ private:
     }
 
     pe::contract_store<SinkPower> store_{*this};
-    pe::contract_apply<SinkPower> apply_{*this};
-    pe::default_restore<SinkPower> restore_{*this};
+    pe::power_effects<SinkPower> effects_{*this};
     pe::active_contract contract_{};
     bool contract_active_ = false;
 };
