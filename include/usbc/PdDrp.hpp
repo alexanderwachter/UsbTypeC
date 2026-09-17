@@ -388,8 +388,10 @@ private:
         pd_revision swap_revision = pd_revision::rev_3_x;
         prl::message_id_state swap_ids{};
 
+        // Both hooks depend on the edge (a swap standby or a hard-reset
+        // window versus a real detach): the edge forms
         template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onEnterState(MACHINE& machine)
+        void onEnterFrom(MACHINE& machine)
         {
             if constexpr (std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
                 data = machine.template getIf<NEW_STATE>()->dataRole();
@@ -433,7 +435,7 @@ private:
         }
 
         template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onExitState(MACHINE&)
+        void onExitFrom(MACHINE&)
         {
             if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_snk>) {
                 // the swap standby and the hard-reset window keep the

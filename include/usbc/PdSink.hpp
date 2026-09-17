@@ -115,20 +115,22 @@ private:
         PdSink& port;
         bool active = false;
 
-        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onEnterState(MACHINE& machine)
+        // the entry needs the state entered only: one body per state
+        template<typename STATE, typename MACHINE>
+        void onEnter(MACHINE& machine)
         {
-            if constexpr (std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
+            if constexpr (std::is_same_v<STATE, tc::state::attached_snk>) {
                 // seed the collision-avoidance view of the source's Rp
                 port.engine_.sinkTxChanged(
-                    tc::sinkTxOk(machine.template getIf<NEW_STATE>()->context.cc));
+                    tc::sinkTxOk(machine.template getIf<STATE>()->context.cc));
                 active = true;
                 port.engine_.vbusPresent(); // fresh attach, or VBUS back
             }
         }
 
+        // the exit depends on where the machine goes: the edge form
         template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onExitState(MACHINE&)
+        void onExitFrom(MACHINE&)
         {
             // the hard-reset window keeps the engine live: it still
             // awaits the source's capabilities; every other exit of

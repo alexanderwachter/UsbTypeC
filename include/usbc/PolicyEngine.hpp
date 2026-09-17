@@ -98,9 +98,8 @@ constexpr std::string_view specNote(power_level power, pd_status pd)
 struct restore_default_action {
     static constexpr std::string_view note = "restores default power";
     // restoring already restored defaults changes nothing (the power
-    // observers guard on an active contract): the shared wildcard path
-    // may re-notify where per-edge dispatch suppressed
-    static constexpr bool idempotent       = true;
+    // observers guard on an active contract): a wildcard's entry may
+    // re-notify it
     constexpr bool operator==(restore_default_action const&) const = default;
 };
 struct active_contract {

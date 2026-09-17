@@ -118,18 +118,19 @@ private:
     struct router {
         PdSource& port;
 
-        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onEnterState(MACHINE&)
+        // hooks of one state: the edge does not matter here
+        template<typename STATE, typename MACHINE>
+        void onEnter(MACHINE&)
         {
-            if constexpr (std::is_same_v<NEW_STATE, tc::state::attached_src>) {
+            if constexpr (std::is_same_v<STATE, tc::state::attached_src>) {
                 port.engine_.attached();
             }
         }
 
-        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onExitState(MACHINE&)
+        template<typename STATE, typename MACHINE>
+        void onExit(MACHINE&)
         {
-            if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_src>) {
+            if constexpr (std::is_same_v<STATE, tc::state::attached_src>) {
                 port.engine_.detached();
             }
         }

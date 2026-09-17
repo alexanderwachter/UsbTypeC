@@ -29,8 +29,9 @@ void logInitialState(char const* state);
 void logStateChange(char const* from, char const* to);
 
 struct StateLogger {
+    // the line names both states: the edge form
     template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-    void onEnterState(MACHINE&)
+    void onEnterFrom(MACHINE&)
     {
         // Compiled out below debug level, call sites and name strings
         // included - the module's LOG_DBG would drop only the bodies

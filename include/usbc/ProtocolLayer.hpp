@@ -131,12 +131,11 @@ struct hard_reset_sent {
 // the states' dot_action diagram labels
 struct reset_action {
     static constexpr std::string_view note = "resets the protocol layer";
-    // re-resetting an already reset layer changes nothing: the shared
-    // wildcard path may re-notify where per-edge dispatch suppressed
-    static constexpr bool idempotent       = true;
+    // re-resetting an already reset layer changes nothing: a wildcard's
+    // entry may re-notify it
     constexpr bool operator==(reset_action const&) const = default;
 };
-struct hard_reset_action { // NOT idempotent: a notification transmits
+struct hard_reset_action { // not repeatable: a notification transmits
     static constexpr std::string_view note = "requests a hard reset";
     constexpr bool operator==(hard_reset_action const&) const = default;
 };
