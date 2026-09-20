@@ -255,8 +255,8 @@ struct phy_driver : fsm::observing<phy_driver<TCPC>> {
 
 } // namespace prl
 
-// The client is type-erased behind plain function pointers (the
-// setIdleHook idiom - no RTTI, no virtuals): the layer is fully
+// The client is type-erased behind plain function pointers (no RTTI,
+// no virtuals): the layer is fully
 // role-independent, and templating it on the client duplicated the
 // whole PRL - tx machine, receive drain, counters - once per policy
 // engine (measured ~2 kB flash in a DRP image)

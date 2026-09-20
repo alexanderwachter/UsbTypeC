@@ -13,9 +13,10 @@
  * Transition_to_off, the PS_RDY exchange); this class watches their
  * swap states and flips the Type-C terminations at the spec's
  * Assert_Rd/Assert_Rp moments. A flip tears the old role's engine down
- * and brings the other one up, which must not happen while the
- * reporting machine still processes - such actions are deferred and
- * run from pump() once the call chain unwound.
+ * and brings the other one up, right from the observing hooks: every
+ * machine is queued (fsm::QueuedMachine), so what feeds back into the
+ * reporting machine is delivered after its running transition instead
+ * of re-entering it.
  *
  * The user provides the domain pieces only: the drivers (TCPC, VBUS),
  * the timers, the capabilities and policies of both roles, the power
@@ -88,15 +89,11 @@ public:
                        sink_power, watch_),
           source_engine_(tcpc, timers.source_prl, timers.source_pe, source_capabilities,
                          source_policy_, supply, source_power, watch_),
-          vconn_timer_{timers.vconn, *this},
-          vconn_(pickVconnPort(observers...), vconn_timer_, watch_),
+          vconn_(pickVconnPort(observers...), timers.vconn, watch_),
           router_{tcpc, sink_engine_, source_engine_, *this},
           drp_(tcpc, vbus, timers.tc, timers.tc_deadline, advertisement, router_,
                observers...)
     {
-        sink_engine_.setIdleHook([](void* self) { static_cast<PdDrp*>(self)->pump(); }, this);
-        source_engine_.setIdleHook([](void* self) { static_cast<PdDrp*>(self)->pump(); },
-                                   this);
         // a DRP answers Get_Source_Cap/Get_Sink_Cap in either role
         sink_engine_.provideSourceCapabilities(source_capabilities);
         source_engine_.provideSinkCapabilities(sink_capabilities);
@@ -301,58 +298,51 @@ private:
         return vconn_.isVconnSource() || drp_.swapAllowed(vconn_source_role{});
     }
 
-    // What a completed engine step asks the Type-C layer to do; flips
-    // tear an engine down, so they never run inside the reporting
-    // machine's process() - pump() executes them once it is idle
-    enum class pending_action : std::uint8_t {
-        none,
-        standby_to_source, // agreed SNK->SRC swap: hold the standby
-        complete_to_src,   // PE_PRS_SNK_SRC_Assert_Rp
-        begin_to_sink,     // PE_PRS_SRC_SNK_Assert_Rd
-        complete_to_snk,   // the new source's PS_RDY arrived
-        error_recovery,    // nHardResetCount exhausted
-        hard_reset_window, // hold the attach while VBUS cycles
-        vconn_announce,    // the switch is on: transmit our PS_RDY
-        hard_reset,        // a VCONN hand-off timed out
-    };
-
     // Injected into both engines' machines: watches the swap states'
-    // portReport() observations
+    // annotations, and executes the requested port actions right from
+    // the hooks: every machine is queued, so an action that feeds back
+    // into the reporting machine (an engine flip, a vconn
+    // acknowledgment) is delivered after the running transition
     struct swap_watch : fsm::observing<swap_watch> {
         explicit swap_watch(PdDrp& port_ref) : port(port_ref) {}
 
         // an agreed DR_Swap only touches the header and the Type-C
-        // context - safe to apply synchronously
+        // context
         void notifyEntry(pe::data_role_changed) { port.drp_.applyDataRoleSwap(); }
-        void notifyEntry(pe::enter_swap_standby)
-        {
-            port.pending_ = pending_action::standby_to_source;
-        }
+        // the swap is agreed: the standby suspends detach detection
+        // while the old source collapses VBUS, and its tPSSourceOff
+        // timeout restarts resolution if the PS_RDY never comes; the
+        // sink engine stays live for it
+        void notifyEntry(pe::enter_swap_standby) { port.drp_.beginSwapToSource(); }
+        // Assert_Rp completes into the source role (the source engine
+        // takes over, drives VBUS and answers with PS_RDY); Assert_Rd
+        // holds the standby whose tPSSourceOn guards the partner's
+        // PS_RDY
         void notifyEntry(pe::assert_new_role role)
         {
-            port.pending_ = role.role == power_role::source ? pending_action::complete_to_src
-                                                            : pending_action::begin_to_sink;
+            if (role.role == power_role::source) {
+                port.drp_.completeSwap();
+            } else {
+                port.drp_.beginSwapToSink();
+            }
         }
-        void notifyEntry(pe::swap_completed) { port.pending_ = pending_action::complete_to_snk; }
-        void notifyEntry(pe::request_error_recovery)
-        {
-            port.pending_ = pending_action::error_recovery;
-        }
-        void notifyEntry(pe::hard_reset_window)
-        {
-            port.pending_ = pending_action::hard_reset_window;
-        }
+        void notifyEntry(pe::swap_completed) { port.drp_.completeSwap(); }
+        // terminations removed for tErrorRecovery, resolution
+        // restarts; the teardown resets the engines
+        void notifyEntry(pe::request_error_recovery) { port.drp_.errorRecovery(); }
+        // the attach is held while VBUS legitimately cycles; the sink
+        // engine stays live to await the capabilities
+        void notifyEntry(pe::hard_reset_window) { port.drp_.hardResetWindow(); }
         // the VCONN hand-off: the engines' progress feeds the vconn
-        // machine (a different machine - safe synchronously); its own
-        // requests defer like every engine-touching action
+        // machine, whose own requests come back through the hooks below
         void notifyEntry(pe::vconn_swap_agreed) { port.vconn_.swapAgreed(); }
         void notifyEntry(pe::vconn_partner_on) { port.vconn_.partnerPsRdy(); }
         void notifyEntry(pe::vconn_ps_rdy_sent) { port.vconn_.psRdySent(); }
-        void notifyEntry(pe::announce_vconn_on)
-        {
-            port.pending_ = pending_action::vconn_announce;
-        }
-        void notifyEntry(pe::request_hard_reset) { port.pending_ = pending_action::hard_reset; }
+        // the vconn machine turned the switch on: the active engine
+        // announces it with PS_RDY
+        void notifyEntry(pe::announce_vconn_on) { port.announceVconnOn(); }
+        // a VCONN hand-off timed out: escalate, VCONN stays here
+        void notifyEntry(pe::request_hard_reset) { port.escalateVconnFailure(); }
 
         PdDrp& port;
     };
@@ -500,7 +490,6 @@ private:
             case active_role::source: src.onAlert(alerts); break;
             case active_role::none: break; // nobody negotiating
             }
-            port.pump(); // flips recorded while routing run now
         }
 
         // No allowSwap here: the enabling observers are the sole
@@ -517,95 +506,34 @@ private:
         }
     };
 
-    // Executes the recorded Type-C action; called only when both
-    // engine machines are idle (after alert routing, and from the
-    // source engine's settle hook)
-    void pump()
+    // The vconn machine turned the switch on: the active engine
+    // announces it with PS_RDY
+    void announceVconnOn()
     {
-        auto const action = pending_;
-        pending_          = pending_action::none;
-        switch (action) {
-        case pending_action::standby_to_source:
-            // the swap is agreed: the standby suspends detach
-            // detection while the old source collapses VBUS, and its
-            // tPSSourceOff timeout restarts resolution if the PS_RDY
-            // never comes; the sink engine stays live for it
-            drp_.beginSwapToSource();
-            break;
-        case pending_action::complete_to_src:
-            // Assert_Rp: the source engine takes over, drives VBUS and
-            // answers with PS_RDY
-            drp_.completeSwap();
-            break;
-        case pending_action::begin_to_sink:
-            // Assert_Rd and hold the standby: the sink engine sends
-            // our PS_RDY and the standby's tPSSourceOn guards the
-            // partner's (a timeout restarts connection resolution)
-            drp_.beginSwapToSink();
-            break;
-        case pending_action::complete_to_snk:
-            drp_.completeSwap();
-            break;
-        case pending_action::error_recovery:
-            // terminations removed for tErrorRecovery, resolution
-            // restarts; the teardown resets the engines
-            drp_.errorRecovery();
-            break;
-        case pending_action::hard_reset_window:
-            // the attach is held while VBUS legitimately cycles; the
-            // sink engine stays live to await the capabilities
-            drp_.hardResetWindow();
-            break;
-        case pending_action::vconn_announce:
-            // the vconn machine turned the switch on: the active
-            // engine announces it with PS_RDY
-            if (router_.active == router::active_role::sink) {
-                sink_engine_.sendVconnPsRdy();
-            } else if (router_.active == router::active_role::source) {
-                source_engine_.sendVconnPsRdy();
-            }
-            break;
-        case pending_action::hard_reset:
-            // the VCONN hand-off timed out: escalate, VCONN stays here
-            if (router_.active == router::active_role::sink) {
-                sink_engine_.hardReset();
-            } else if (router_.active == router::active_role::source) {
-                source_engine_.hardReset();
-            }
-            vconn_.swapFailureHandled();
-            break;
-        case pending_action::none: break;
+        if (router_.active == router::active_role::sink) {
+            sink_engine_.sendVconnPsRdy();
+        } else if (router_.active == router::active_role::source) {
+            source_engine_.sendVconnPsRdy();
         }
     }
 
-    // The vconn machine's timer, wrapped: its timeout records a port
-    // request that must run once the machine finished processing
-    struct VconnTimer {
-        TIMER& inner;
-        PdDrp& port;
-        fsm::timer_callback callback = nullptr;
-        void* context                = nullptr;
-
-        void start(std::chrono::milliseconds duration, fsm::timer_callback cb, void* ctx)
-        {
-            callback = cb;
-            context  = ctx;
-            inner.start(
-                duration,
-                [](void* self) {
-                    auto& timer = *static_cast<VconnTimer*>(self);
-                    timer.callback(timer.context);
-                    timer.port.pump();
-                },
-                this);
+    // A VCONN hand-off timed out: escalate, VCONN stays here. The
+    // acknowledgment feeds back into the reporting vconn machine -
+    // queued, delivered after its timeout transition completed
+    void escalateVconnFailure()
+    {
+        if (router_.active == router::active_role::sink) {
+            sink_engine_.hardReset();
+        } else if (router_.active == router::active_role::source) {
+            source_engine_.hardReset();
         }
-        void stop() { inner.stop(); }
-    };
+        vconn_.swapFailureHandled();
+    }
 
     // Stand-in when VCONN is compiled out: every call site stays
     // valid, nothing ever sources
     struct no_vconn {
-        no_vconn(auto&, VconnTimer&, swap_watch&) {}
+        no_vconn(auto&, TIMER&, swap_watch&) {}
         void attachedSource(bool) {}
         void detached() {}
         void swapAgreed() {}
@@ -622,14 +550,12 @@ private:
     swap_watch watch_;
     SinkEngine sink_engine_;
     SourceEngine source_engine_;
-    VconnTimer vconn_timer_;
     [[no_unique_address]] no_vconn_port dummy_vconn_port_{};
-    std::conditional_t<vconn_enabled, VconnMachine<vconn_port_t, VconnTimer, swap_watch>,
+    std::conditional_t<vconn_enabled, VconnMachine<vconn_port_t, TIMER, swap_watch>,
                        no_vconn>
         vconn_;
     router router_;
     Drp drp_;
-    pending_action pending_ = pending_action::none;
 };
 
 } // namespace usbc

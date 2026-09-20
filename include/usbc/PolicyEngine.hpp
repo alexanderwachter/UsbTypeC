@@ -243,36 +243,12 @@ struct without_disabled<LIST, true, true, true> : std::type_identity<LIST> {};
 template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
 using without_disabled_t = typename without_disabled<LIST, PR_SWAP, DR_SWAP, VCONN>::type;
 
-// The engines' timer wrapper: a timeout-driven transition may ask the
-// port for an action (a role flip, Error Recovery) that tears the
-// engine down - the after hook, installed once by the owning engine,
-// runs it when the machine finished processing. Shared by both
-// engines so the protocol layer and fsm::timed instantiate on one
-// timer type instead of one nested class per engine
-template<typename TIMER>
-struct pumped_timer {
-    TIMER& inner;
-    void (*after)(void*)         = nullptr;
-    void* after_context          = nullptr;
-    fsm::timer_callback callback = nullptr;
-    void* context                = nullptr;
-
-    void start(std::chrono::milliseconds duration, fsm::timer_callback cb, void* ctx)
-    {
-        callback = cb;
-        context  = ctx;
-        inner.start(
-            duration,
-            [](void* self) {
-                auto& timer = *static_cast<pumped_timer*>(self);
-                timer.callback(timer.context);
-                if (timer.after != nullptr) {
-                    timer.after(timer.after_context);
-                }
-            },
-            this);
-    }
-    void stop() { inner.stop(); }
+// Annotation tag: a due request parked by PD3 collision avoidance -
+// the engine re-initiates on SinkTxOk, and a gate entered while Ok
+// already holds fires right away (the queued machine delivers the
+// retry after the gate's entry completes)
+struct retry_gated {
+    constexpr bool operator==(retry_gated const&) const = default;
 };
 
 inline pd_message makeControlMessage(control_message_type type, power_role power, data_role data)

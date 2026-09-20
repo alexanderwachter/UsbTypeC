@@ -6,8 +6,10 @@
  * holds the attach while the source legitimately cycles VBUS through
  * vSafe0V (instead of detaching and renegotiating from scratch), and
  * an exhausted HardResetCounter escalates to Type-C Error Recovery.
- * Engine-tearing actions are deferred and run from pump() once the
- * reporting machine is idle, exactly like the DRP facade.
+ * Engine-tearing actions run straight from the observing hooks: every
+ * machine is queued (fsm::QueuedMachine), so an action feeding back
+ * into the reporting machine is delivered after the running
+ * transition instead of re-entering it.
  *
  * The user provides the domain pieces only: the drivers (TCPC, VBUS),
  * the timers, the capabilities, the selection policy, and the power
@@ -65,37 +67,25 @@ public:
           router_{*this},
           sink_(tcpc, vbus, timers.tc, router_, observers...)
     {
-        engine_.setIdleHook([](void* self) { static_cast<PdSink*>(self)->pump(); }, this);
     }
 
     // Go live: present Rd and negotiate when a source attaches
     void start() { sink_.start(); }
 
 private:
-    // What a completed engine step asks the Type-C layer to do; both
-    // actions tear the engine down or suspend its inputs, so they
-    // never run inside the reporting machine's process() - pump()
-    // executes them once it is idle
-    enum class pending_action : std::uint8_t {
-        none,
-        error_recovery,    // nHardResetCount exhausted
-        hard_reset_window, // hold the attach while VBUS cycles
-    };
-
-    // Injected into the engine's machine: watches the states'
-    // portReport() observations (the swap and VCONN observations
-    // cannot occur - their states are compiled out)
+    // Injected into the engine's machine: watches the states' port
+    // requests (the swap and VCONN observations cannot occur - their
+    // states are compiled out). Both actions tear the engine down or
+    // suspend its inputs; the queued machines order the fallout
     struct port_watch : fsm::observing<port_watch> {
         explicit port_watch(PdSink& port_ref) : port(port_ref) {}
 
-        void notifyEntry(pe::request_error_recovery)
-        {
-            port.pending_ = pending_action::error_recovery;
-        }
-        void notifyEntry(pe::hard_reset_window)
-        {
-            port.pending_ = pending_action::hard_reset_window;
-        }
+        // terminations removed for tErrorRecovery, resolution
+        // restarts; the teardown resets the engine
+        void notifyEntry(pe::request_error_recovery) { port.sink_.errorRecovery(); }
+        // the attach is held while VBUS legitimately cycles; the
+        // engine stays live to await the capabilities
+        void notifyEntry(pe::hard_reset_window) { port.sink_.hardResetWindow(); }
 
         PdSink& port;
     };
@@ -152,11 +142,7 @@ private:
             }
         }
 
-        void onPdAlert(alert_status alerts)
-        {
-            port.engine_.onAlert(alerts);
-            port.pump(); // actions recorded while routing run now
-        }
+        void onPdAlert(alert_status alerts) { port.engine_.onAlert(alerts); }
 
     private:
         void detach()
@@ -166,35 +152,12 @@ private:
         }
     };
 
-    // Executes the recorded Type-C action; called only when the
-    // engine's machine is idle (after alert routing, and from the
-    // engine's timer hook)
-    void pump()
-    {
-        auto const action = pending_;
-        pending_          = pending_action::none;
-        switch (action) {
-        case pending_action::error_recovery:
-            // terminations removed for tErrorRecovery, resolution
-            // restarts; the teardown resets the engine
-            sink_.errorRecovery();
-            break;
-        case pending_action::hard_reset_window:
-            // the attach is held while VBUS legitimately cycles; the
-            // engine stays live to await the capabilities
-            sink_.hardResetWindow();
-            break;
-        case pending_action::none: break;
-        }
-    }
-
     using Sink = TypeCSink<TCPC, VBUS, TIMER, router, OBSERVERs...>;
 
     port_watch watch_;
     SinkEngine engine_;
     router router_;
     Sink sink_;
-    pending_action pending_ = pending_action::none;
 };
 
 } // namespace usbc

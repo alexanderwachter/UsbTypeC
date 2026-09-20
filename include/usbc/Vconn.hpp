@@ -175,7 +175,7 @@ template<concepts::vconn_port VCONN_PORT, fsm::concepts::timer TIMER, typename..
 class VconnMachine {
 public:
     VconnMachine(VCONN_PORT& vconn_port, TIMER& timer, OBSERVERs&... observers)
-        : driver_(vconn_port), timed_(timer), sm_(timed_, driver_, observers...)
+        : driver_(vconn_port), timer_(timer), timed_(timer_), sm_(timed_, driver_, observers...)
     {
     }
 
@@ -200,8 +200,13 @@ public:
 
 private:
     vconn::vconn_driver<VCONN_PORT> driver_;
-    fsm::timed<TIMER&> timed_;
-    fsm::state_machine<vconn::vconn_table, fsm::timed<TIMER&>,
+    fsm::QueuedTimer<TIMER> timer_;
+    fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
+    // Queued: the tVCONNSourceTimeout expiry's hard-reset request is
+    // acted on from the observing hook, which feeds back into this
+    // machine (swapFailureHandled) - ordered delivery, no facade pump
+    fsm::QueuedMachine<vconn::vconn_table, 2, fsm::inline_work, fsm::no_lock,
+                       fsm::timed<fsm::QueuedTimer<TIMER>&>,
                        vconn::vconn_driver<VCONN_PORT>, OBSERVERs...>
         sm_;
 };

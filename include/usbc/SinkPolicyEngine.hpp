@@ -755,6 +755,7 @@ struct pe_snk_pr_swap_wait {
 // source owns the schedule)
 struct pe_snk_request_gate {
     static constexpr power_level power          = power_level::contract_or_default;
+    static constexpr auto annotations           = fsm::annotate(retry_gated{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -765,7 +766,7 @@ struct pe_snk_request_gate {
 struct pe_snk_dr_swap_gate {
     using feature = dr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
+    static constexpr auto annotations           = fsm::annotate(power, retry_gated{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -776,7 +777,7 @@ struct pe_snk_dr_swap_gate {
 struct pe_snk_pr_swap_gate {
     using feature = pr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
+    static constexpr auto annotations           = fsm::annotate(power, retry_gated{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -1322,11 +1323,10 @@ public:
         : tcpc_(tcpc),
           capabilities_(capabilities),
           policy_(policy),
-          prl_pumped_{prl_timer, &SinkPolicyEngine::afterTimerCallback, this},
-          prl_(tcpc, prl_pumped_, port_),
-          pumped_{pe_timer, &SinkPolicyEngine::afterTimerCallback, this},
-          timed_(pumped_),
-          sm_(timed_, prl_, observers...)
+          prl_(tcpc, prl_timer, port_),
+          pe_timer_(pe_timer),
+          timed_(pe_timer_),
+          sm_(timed_, prl_, gates_, observers...)
     {
         tcpc_.setMessageHeaderInfo(
             {power_role::sink, data_role::ufp, pd_revision::rev_3_x});
@@ -1446,15 +1446,6 @@ public:
         source_capabilities_ = capabilities;
     }
 
-    // The facade's deferred port actions run through this hook once a
-    // timeout-driven transition finished processing - the machine is
-    // idle then (message-driven actions pump after alert routing)
-    void setIdleHook(void (*hook)(void*), void* hook_context)
-    {
-        idle_hook_    = hook;
-        idle_context_ = hook_context;
-    }
-
     // The swap completed into Attached.SNK: resume the sink flow (the
     // new source's PS_RDY implies VBUS is live)
     void finishSwap()
@@ -1464,17 +1455,22 @@ public:
     }
 
 private:
-    // Runs behind every pumped-timer callback: a retry gated on
-    // SinkTxOk fires, then the facade's deferred actions execute -
-    // the machine finished processing by now
-    static void afterTimerCallback(void* self)
-    {
-        auto& pe = *static_cast<SinkPolicyEngine*>(self);
-        pe.afterTimeout();
-        if (pe.idle_hook_ != nullptr) {
-            pe.idle_hook_(pe.idle_context_);
+    // A retry whose gate opens while SinkTxOk already holds fires
+    // right away: the retry_gated annotation marks the gate states,
+    // and the queued machine delivers the retry after the gate's
+    // entry completes (the parked case fires from sinkTxChanged)
+    struct gate_watch : fsm::observing<gate_watch> {
+        explicit gate_watch(SinkPolicyEngine& pe_ref) : pe(pe_ref) {}
+
+        void notifyEntry(pe::retry_gated)
+        {
+            if (pe.sinkTxAllows()) {
+                pe.fireGated();
+            }
         }
-    }
+
+        SinkPolicyEngine& pe;
+    };
 
     // The protocol layer's client, forwarding into the engine
     struct PrlPort {
@@ -1564,15 +1560,6 @@ private:
             sm_.process(pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
             break;
         case pending_ams::none: break;
-        }
-    }
-
-    // Invoked by the pumped timer after a timeout-driven transition: a
-    // retry landing in its gate under SinkTxOk fires right away
-    void afterTimeout()
-    {
-        if (sinkTxAllows()) {
-            fireGated();
         }
     }
 
@@ -1840,21 +1827,18 @@ private:
         { p.allowSwap(vconn_source_role{}) } -> std::convertible_to<bool>;
     };
 
-    void (*idle_hook_)(void*) = nullptr;
-    void* idle_context_       = nullptr;
-    bool bist_test_data_      = false;
-    bool sink_tx_ok_          = true; // last Rp seen (SinkTxOk/NG)
-    pending_ams pending_ams_  = pending_ams::none;
+    bool bist_test_data_     = false;
+    bool sink_tx_ok_         = true; // last Rp seen (SinkTxOk/NG)
+    pending_ams pending_ams_ = pending_ams::none;
     PrlPort port_{*this};
-    // both timers pumped: the PRL's HardResetCompleteTimer also drives
-    // transitions whose port requests the facade must execute
-    pe::pumped_timer<TIMER> prl_pumped_;
-    ProtocolLayer<TCPC, pe::pumped_timer<TIMER>> prl_; // also an observer of sm_
-    pe::pumped_timer<TIMER> pumped_;
-    fsm::timed<pe::pumped_timer<TIMER>&> timed_;
-    fsm::state_machine<pe::sink_table_for<pr_swap_capable, dr_swap_capable, vconn_capable>,
-                       fsm::timed<pe::pumped_timer<TIMER>&>,
-                       ProtocolLayer<TCPC, pe::pumped_timer<TIMER>>, OBSERVERs...>
+    ProtocolLayer<TCPC, TIMER> prl_; // also an observer of sm_
+    fsm::QueuedTimer<TIMER> pe_timer_;
+    fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
+    gate_watch gates_{*this};
+    fsm::QueuedMachine<pe::sink_table_for<pr_swap_capable, dr_swap_capable, vconn_capable>, 4,
+                       fsm::inline_work, fsm::no_lock,
+                       fsm::timed<fsm::QueuedTimer<TIMER>&>, ProtocolLayer<TCPC, TIMER>,
+                       gate_watch, OBSERVERs...>
         sm_;
 };
 

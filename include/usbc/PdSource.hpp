@@ -6,9 +6,9 @@
  * Type-C Error Recovery. A hard reset's VBUS cycle is the engine's
  * own doing (Transition_to_default drives the supply through vSafe0V
  * and back) and needs no connection-layer window - source detach
- * detection is CC-based. Engine-tearing actions are deferred and run
- * from pump() once the reporting machine is idle, exactly like the
- * DRP facade.
+ * detection is CC-based. Engine-tearing actions run straight from
+ * the observing hooks: every machine is queued (fsm::QueuedMachine),
+ * so the fallout is ordered delivery, not re-entrancy.
  *
  * The user provides the domain pieces only: the drivers (TCPC, VBUS),
  * the timers, the capabilities, the request policy, and the power
@@ -67,7 +67,6 @@ public:
           router_{*this},
           source_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
     {
-        engine_.setIdleHook([](void* self) { static_cast<PdSource*>(self)->pump(); }, this);
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
     // advertisement
@@ -83,24 +82,16 @@ public:
     void start() { source_.start(); }
 
 private:
-    // Error Recovery tears the engine down, so it never runs inside
-    // the reporting machine's process() - pump() executes it once the
-    // call chain unwound
-    enum class pending_action : std::uint8_t {
-        none,
-        error_recovery, // nHardResetCount exhausted
-    };
-
-    // Injected into the engine's machine: watches the states'
-    // portReport() observations (the swap and VCONN observations
-    // cannot occur - their states are compiled out)
+    // Injected into the engine's machine: watches the states' port
+    // requests (the swap and VCONN observations cannot occur - their
+    // states are compiled out). Error Recovery tears the engine down;
+    // the queued machines order the fallout
     struct port_watch : fsm::observing<port_watch> {
         explicit port_watch(PdSource& port_ref) : port(port_ref) {}
 
-        void notifyEntry(pe::request_error_recovery)
-        {
-            port.pending_ = pending_action::error_recovery;
-        }
+        // terminations removed for tErrorRecovery, resolution
+        // restarts; the teardown resets the engine
+        void notifyEntry(pe::request_error_recovery) { port.source_.errorRecovery(); }
 
         PdSource& port;
     };
@@ -130,26 +121,8 @@ private:
             }
         }
 
-        void onPdAlert(alert_status alerts)
-        {
-            port.engine_.onAlert(alerts);
-            port.pump(); // actions recorded while routing run now
-        }
+        void onPdAlert(alert_status alerts) { port.engine_.onAlert(alerts); }
     };
-
-    // Executes the recorded Type-C action; called only when the
-    // engine's machine is idle (after alert routing, and from the
-    // engine's timer and supply hooks)
-    void pump()
-    {
-        auto const action = pending_;
-        pending_          = pending_action::none;
-        if (action == pending_action::error_recovery) {
-            // terminations removed for tErrorRecovery, resolution
-            // restarts; the teardown resets the engine
-            source_.errorRecovery();
-        }
-    }
 
     using Source = TypeCSource<TCPC, VBUS, TIMER, router, OBSERVERs...>;
 
@@ -157,7 +130,6 @@ private:
     SourceEngine engine_;
     router router_;
     Source source_;
-    pending_action pending_ = pending_action::none;
 };
 
 } // namespace usbc

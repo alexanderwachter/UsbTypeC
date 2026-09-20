@@ -1359,10 +1359,9 @@ public:
           capabilities_(capabilities),
           policy_(policy),
           supply_(supply),
-          prl_pumped_{prl_timer, &SourcePolicyEngine::afterTimerCallback, this},
-          prl_(tcpc, prl_pumped_, port_),
-          pumped_{pe_timer, &SourcePolicyEngine::afterTimerCallback, this},
-          timed_(pumped_),
+          prl_(tcpc, prl_timer, port_),
+          pe_timer_(pe_timer),
+          timed_(pe_timer_),
           sm_(timed_, prl_, action_driver_, observers...)
     {
         tcpc_.setMessageHeaderInfo(
@@ -1373,9 +1372,6 @@ public:
                 auto& engine = *static_cast<SourcePolicyEngine*>(self);
                 if (at_target) {
                     engine.sm_.process(pe::event::supply_settled{});
-                }
-                if (engine.idle_hook_ != nullptr) {
-                    engine.idle_hook_(engine.idle_context_);
                 }
             },
             this);
@@ -1470,27 +1466,8 @@ public:
 
     bool hardReset() { return sm_.process(pe::event::hard_reset_request{}); }
 
-    // The facade's deferred port actions run through this hook once an
-    // engine-internal event source (the supply settle callback) is done
-    // processing - the machines are idle then
-    void setIdleHook(void (*hook)(void*), void* hook_context)
-    {
-        idle_hook_ = hook;
-        idle_context_ = hook_context;
-    }
-
 private:
     // The protocol layer's client, forwarding into the engine
-    // Runs behind every pumped-timer callback: the facade's deferred
-    // actions (Error Recovery, a role flip) execute once the machine
-    // finished processing
-    static void afterTimerCallback(void* self)
-    {
-        auto& pe = *static_cast<SourcePolicyEngine*>(self);
-        if (pe.idle_hook_ != nullptr) {
-            pe.idle_hook_(pe.idle_context_);
-        }
-    }
 
     struct PrlPort {
         SourcePolicyEngine& pe;
@@ -1789,16 +1766,11 @@ private:
     std::span<sink_capability const> sink_capabilities_{}; // empty: not a DRP
     POLICY& policy_;
     SUPPLY& supply_;
-    void (*idle_hook_)(void*) = nullptr;
-    void* idle_context_       = nullptr;
-    bool bist_test_data_      = false;
+    bool bist_test_data_ = false;
     PrlPort port_{*this};
-    // both timers pumped: the PRL's HardResetCompleteTimer also drives
-    // transitions whose port requests the facade must execute
-    pe::pumped_timer<TIMER> prl_pumped_;
-    ProtocolLayer<TCPC, pe::pumped_timer<TIMER>> prl_; // also an observer of sm_
-    pe::pumped_timer<TIMER> pumped_;
-    fsm::timed<pe::pumped_timer<TIMER>&> timed_;
+    ProtocolLayer<TCPC, TIMER> prl_; // also an observer of sm_
+    fsm::QueuedTimer<TIMER> pe_timer_;
+    fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     ActionDriver action_driver_{*this};
     // The optional features follow the injected policy: without a
     // feature's arbitration hook, its states are filtered from the
@@ -1814,10 +1786,10 @@ private:
         { p.allowSwap(vconn_source_role{}) } -> std::convertible_to<bool>;
     };
 
-    fsm::state_machine<pe::source_table_for<pr_swap_capable, dr_swap_capable, vconn_capable>,
-                       fsm::timed<pe::pumped_timer<TIMER>&>,
-                       ProtocolLayer<TCPC, pe::pumped_timer<TIMER>>, ActionDriver,
-                       OBSERVERs...>
+    fsm::QueuedMachine<pe::source_table_for<pr_swap_capable, dr_swap_capable, vconn_capable>,
+                       4, fsm::inline_work, fsm::no_lock,
+                       fsm::timed<fsm::QueuedTimer<TIMER>&>, ProtocolLayer<TCPC, TIMER>,
+                       ActionDriver, OBSERVERs...>
         sm_;
 };
 
