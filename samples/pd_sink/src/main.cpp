@@ -50,11 +50,6 @@ struct Power : usbc::SinkPower<Power> {
 
 // Extra observer in the connection machine: log the attach results
 struct AttachLogger : fsm::observing<AttachLogger> {
-    static constexpr auto observe_nonstatic(auto const& state)
-        -> decltype((state.attachedInfo()))
-    {
-        return state.attachedInfo();
-    }
     void notifyEntry(usbc::tc::attach_info info)
     {
         LOG_INF("attached: CC%d", info.orientation == usbc::plug_orientation::cc1 ? 1 : 2);

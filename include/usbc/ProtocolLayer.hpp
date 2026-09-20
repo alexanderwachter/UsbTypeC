@@ -125,6 +125,12 @@ struct hard_reset_sent {
     constexpr bool operator==(hard_reset_sent const&) const = default;
 };
 
+// Annotation tag: a state carrying it accepts a tx_request - the
+// layer's transmit() gate, tracked by the client reporter
+struct tx_ready {
+    constexpr bool operator==(tx_ready const&) const = default;
+};
+
 // Commands to the protocol layer: a policy engine state carries one as
 // a static prl_action member and the ProtocolLayer, injected into that
 // machine as an observer, executes it on entry. The note strings feed
@@ -142,7 +148,9 @@ struct hard_reset_action { // not repeatable: a notification transmits
 
 namespace state {
 
-struct wait_for_message_request {};
+struct wait_for_message_request {
+    static constexpr auto annotations = fsm::annotate(tx_ready{});
+};
 
 struct wait_for_phy_response {
     static constexpr auto timeout = t_receive; // CRCReceiveTimer
@@ -156,7 +164,8 @@ struct wait_for_phy_response {
     // Re-entry is the retransmission: same message, same MessageID
     explicit wait_for_phy_response(tx_context& ctx) : context(ctx) { ++context.retry_counter; }
 
-    pd_message const& txMessage() const { return context.message; }
+    // the message in flight, observed by the phy driver
+    pd_message const& values() const { return context.message; }
 
     tx_context& context;
 };
@@ -164,10 +173,12 @@ struct wait_for_phy_response {
 // PRL_Tx_Transmission_Error folded with the idle wait: reported on
 // entry, rests until the policy engine transmits again or resets
 struct transmission_error {
+    static constexpr auto annotations = fsm::annotate(tx_ready{});
+
     explicit transmission_error(tx_context& ctx) : context(ctx) {}
 
     // the failed message's SOP*, observed by the client reporter
-    sop_type failedSop() const { return context.message.sop; }
+    sop_type values() const { return context.message.sop; }
 
     tx_context& context;
 };
@@ -176,8 +187,8 @@ struct wait_for_hard_reset_complete {
     static constexpr auto timeout = t_hard_reset_complete; // HardResetCompleteTimer
 
     // leaving this state completes the hard reset, whichever edge takes
-    // it out; observed by the client reporter
-    static constexpr hard_reset_sent report_hard_reset_sent{};
+    // it out; observed on exit by the client reporter
+    static constexpr auto annotations = fsm::annotate(hard_reset_sent{});
 };
 
 } // namespace state
@@ -227,17 +238,15 @@ struct tx_table : fsm::transition_table<
                     fsm::to<state::wait_for_message_request>>> {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
-// Hands a state's txMessage() to the TCPC on entry; the accessor is
-// the marker that makes a state a transmitting one. A refused hand-off
-// is not reported: CRCReceiveTimer turns it into a retry
+// Hands a state's pd_message instance value to the TCPC on entry; a
+// pd_message in a state's values() is the marker that makes it a
+// transmitting one. A refused hand-off is not reported:
+// CRCReceiveTimer turns it into a retry
 template<concepts::pd_transport TCPC>
 struct phy_driver : fsm::observing<phy_driver<TCPC>> {
     explicit phy_driver(TCPC& tcpc_ref) : tcpc(tcpc_ref) {}
 
-    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.txMessage()))
-    {
-        return state.txMessage();
-    }
+    using observes = mtl::typelist<pd_message>;
 
     void notifyEntry(pd_message const& message) { tcpc.transmit(message); }
 
@@ -256,34 +265,30 @@ class ProtocolLayer : public fsm::observing<ProtocolLayer<TCPC, TIMER>> {
 public:
     template<concepts::prl_client CLIENT>
     ProtocolLayer(TCPC& tcpc, TIMER& timer, CLIENT& client)
-        : tcpc_(tcpc), client_(&client), hooks_(&hooks_for<CLIENT>), timed_(timer)
+        : tcpc_(tcpc), client_(&client), hooks_(&hooks_for<CLIENT>), timer_(timer),
+          timed_(timer_)
     {
     }
 
     // The protocol layer is itself an observer of the policy engine's
-    // machine: states command it through static prl_action annotations
-    // and transmit by exposing txMessage(). The observing contract runs
-    // the static hook before the nonstatic one, so a state carrying
-    // both resets first and its message goes out with MessageID 0
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::prl_action)
-    {
-        return STATE::prl_action;
-    }
+    // machine: states command it through the action elements of their
+    // annotation sets and transmit through a pd_message in their
+    // values(). The observing contract delivers the static set before
+    // the instance values, so a state carrying both resets first and
+    // its message goes out with MessageID 0
     void notifyEntry(prl::reset_action) { reset(sop_type::sop); }
     void notifyEntry(prl::hard_reset_action) { transmitHardReset(); }
-
-    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.txMessage()))
-    {
-        return state.txMessage();
-    }
     void notifyEntry(pd_message const& message) { transmit(message); }
 
     // Stamps the MessageID and the negotiated revision; the rest of
     // the header is the caller's. False when a message or hard reset
-    // is already in flight
+    // is already in flight - asked of the state, since the queued
+    // machine's process() reports acceptance, not the transition
     bool transmit(pd_message message)
     {
+        if (!tx_ready_) { // a message or hard reset is in flight
+            return false;
+        }
         auto header       = pd_header::decode(message.header);
         header.message_id = tx_counter_[index(message.sop)];
         header.revision   = revision_;
@@ -399,21 +404,17 @@ private:
     struct client_reporter : fsm::observing<client_reporter> {
         explicit client_reporter(ProtocolLayer& prl_ref) : prl(prl_ref) {}
 
-        // entering a state with a failedSop() is the transmission error
-        static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.failedSop()))
-        {
-            return state.failedSop();
-        }
+        // entering a state whose value is the failed SOP* is the
+        // transmission error
         void notifyEntry(sop_type sop) { prl.giveUp(sop); }
 
-        // leaving a report_hard_reset_sent state completes the hard
+        // the tx_ready annotation marks the states accepting a
+        // tx_request: transmit()'s gate
+        void notifyEntry(prl::tx_ready) { prl.tx_ready_ = true; }
+        void notifyExit(prl::tx_ready) { prl.tx_ready_ = false; }
+
+        // leaving a hard_reset_sent-annotated state completes the hard
         // reset - via PHY confirmation, the timer, or a reset event
-        template<typename STATE>
-        static constexpr auto observe_static() -> decltype(STATE::report_hard_reset_sent)
-        {
-            return STATE::report_hard_reset_sent;
-        }
         void notifyExit(prl::hard_reset_sent) { prl.hooks_->hard_reset_sent(prl.client_); }
 
         ProtocolLayer& prl;
@@ -478,10 +479,17 @@ private:
     TCPC& tcpc_;
     void* client_;
     client_hooks const* hooks_;
-    fsm::timed<TIMER&> timed_;
+    fsm::QueuedTimer<TIMER> timer_;
+    fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     prl::phy_driver<TCPC> driver_{tcpc_};
     client_reporter reporter_{*this};
-    fsm::state_machine<prl::tx_table, fsm::timed<TIMER&>, prl::phy_driver<TCPC>, client_reporter>
+    bool tx_ready_ = false; // set by the initial state's entry below
+    // Queued: the client's reaction to a report (a tx_error's soft
+    // reset, say) transmits from within the delivering hook - the
+    // queue turns that re-entrancy into ordered delivery
+    fsm::QueuedMachine<prl::tx_table, 4, fsm::inline_work, fsm::no_lock,
+                       fsm::timed<fsm::QueuedTimer<TIMER>&>, prl::phy_driver<TCPC>,
+                       client_reporter>
         sm_{timed_, driver_, reporter_};
     std::array<std::uint8_t, prl::sop_count> tx_counter_{};
     std::array<std::optional<std::uint8_t>, prl::sop_count> rx_id_{};

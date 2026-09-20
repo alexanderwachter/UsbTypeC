@@ -48,10 +48,10 @@
  * vbus driver is re-armed per state (vSafe5V in sink-role states,
  * vSafe0V in source-role states, vSinkDisconnect while Attached.SNK)
  * and the callback's meaning is mapped through the armed level.
- * Injected observers watching the attached states' attachedInfo()
+ * Injected observers watching the attached states' instance values
  * learn which role attached through the info type: tc::attach_info
  * (orientation and advertisement) for Attached.SNK, plug_orientation
- * for Attached.SRC.
+ * for Attached.SRC; the hw drivers apply the tc::polarity element.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -145,6 +145,7 @@ template<drp_timing const& TIMING>
 struct unattached_snk : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = TIMING.t_drp - t_src_slice<TIMING>;
 
     using state::sink_state::sink_state;
@@ -155,6 +156,7 @@ template<drp_timing const& TIMING>
 struct unattached_src : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = t_src_slice<TIMING>;
 
     // entering on the discharge-complete event records what it means
@@ -174,6 +176,7 @@ template<drp_timing const& TIMING>
 struct try_src : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto deadline    = TIMING.t_drp_try;
 
     // entered only with the phase fresh (an expired phase leaves
@@ -188,6 +191,7 @@ template<drp_timing const& TIMING>
 struct try_src_debounce : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = TIMING.t_try_cc_debounce;
     static constexpr auto deadline    = TIMING.t_drp_try;
 
@@ -206,6 +210,7 @@ template<drp_timing const& TIMING>
 struct try_wait_snk : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = TIMING.t_drp_try_wait;
 
     // a fresh-attach gateway: a stale hard-reset window flag must not
@@ -223,6 +228,7 @@ template<drp_timing const& TIMING>
 struct try_snk : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = TIMING.t_drp_try;
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
@@ -234,6 +240,7 @@ template<drp_timing const& TIMING>
 struct try_snk_monitor : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
     using state::sink_state::sink_state;
@@ -245,6 +252,7 @@ template<drp_timing const& TIMING>
 struct try_snk_debounce : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = TIMING.t_pd_debounce;
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
@@ -263,6 +271,7 @@ template<drp_timing const& TIMING>
 struct try_wait_src : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto deadline    = TIMING.t_drp_try_wait;
 
     explicit try_wait_src(port_context& ctx) : source_state(ctx)
@@ -278,6 +287,7 @@ template<drp_timing const& TIMING>
 struct try_wait_src_debounce : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = TIMING.t_try_cc_debounce;
     static constexpr auto deadline    = TIMING.t_drp_try_wait;
 
@@ -295,6 +305,7 @@ template<drp_timing const& TIMING>
 struct try_wait_src_safe0v : state::source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
 
     using state::source_state::source_state;
 };
@@ -312,10 +323,17 @@ inline constexpr auto t_ps_source_on  = std::chrono::milliseconds{435}; // tPSSo
 // completes: a swap without the partner's PS_RDY has failed, and
 // connection resolution restarts from Unattached.SNK
 
+// Annotation tag marking that window: completeSwap()/abortSwap() only
+// mean something inside it, tracked by the hw driver
+struct swap_standby {
+    constexpr bool operator==(swap_standby const&) const = default;
+};
+
 // The old sink, waiting for the old source's PS_RDY before taking over
 struct swap_standby_to_src : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch, swap_standby{});
     static constexpr auto timeout     = t_ps_source_off;
 
     using state::sink_state::sink_state;
@@ -325,6 +343,7 @@ struct swap_standby_to_src : state::sink_state {
 struct swap_standby_to_snk : state::sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch, swap_standby{});
     static constexpr auto timeout     = t_ps_source_on;
 
     using state::sink_state::sink_state;
@@ -658,11 +677,6 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
                       "drp_hw_driver: every state must annotate a role hw config");
     }
 
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::hw)
-    {
-        return STATE::hw;
-    }
     void notifyEntry(hw_config const& config) // a sink-role state
     {
         tcpc.setCc(config.pull, rp);
@@ -678,15 +692,16 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
         vbus.discharge(config.discharge);
     }
 
-    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.orientation()))
-    {
-        return state.orientation();
-    }
-    void notifyEntry(plug_orientation orientation) { tcpc.setPlugOrientation(orientation); }
+    void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }
+
+    // the PR_Swap window, tracked for completeSwap()/abortSwap()
+    void notifyEntry(drp::swap_standby) { in_swap_standby = true; }
+    void notifyExit(drp::swap_standby) { in_swap_standby = false; }
 
     TCPC& tcpc;
     VBUS& vbus;
     rp_value rp;
+    bool in_swap_standby = false;
 };
 
 } // namespace tc
@@ -712,9 +727,9 @@ public:
     // preference-none port never arms it
     TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, TIMER& deadline_timer,
              rp_value advertisement, OBSERVERs&... observers)
-        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timed_(timer),
-          deadlined_(deadline_timer), observers_(observers...),
-          sm_(timed_, deadlined_, hw_, vbus_, observers...)
+        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timer_(timer),
+          deadline_timer_(deadline_timer), timed_(timer_), deadlined_(deadline_timer_),
+          observers_(observers...), sm_(timed_, deadlined_, hw_, vbus_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
@@ -752,9 +767,16 @@ public:
         return sm_.process(tc::event::swap_to_sink{});
     }
 
-    bool completeSwap() { return sm_.process(tc::event::swap_complete{}); }
+    // Both only mean something in a swap standby - the hw driver's
+    // swap_standby annotation tracking replaces the old process()
+    // return (the queued machine reports acceptance, not whether a
+    // transition fired)
+    bool completeSwap()
+    {
+        return hw_.in_swap_standby && sm_.process(tc::event::swap_complete{});
+    }
 
-    bool abortSwap() { return sm_.process(tc::event::swap_abort{}); }
+    bool abortSwap() { return hw_.in_swap_standby && sm_.process(tc::event::swap_abort{}); }
 
     // Data role swap directed by the layer above (a USB PD DR_Swap):
     // no termination changes, only the context's data role flips. Same
@@ -773,12 +795,15 @@ public:
 
     // The flip without the arbitration: for a PD layer applying a
     // DR_Swap it already negotiated (the verdict was asked when the
-    // message exchange began)
+    // message exchange began). The attach check replaces the old
+    // process() return: the queued machine reports acceptance, not
+    // whether the internal transition fired
     bool applyDataRoleSwap()
     {
-        if (!sm_.process(tc::event::swap_data_role{})) {
+        if (!dataRole()) {
             return false;
         }
+        sm_.process(tc::event::swap_data_role{});
         auto const swapped = *dataRole();
         std::apply([&](auto&... observer) { (forwardDataRole(observer, swapped), ...); },
                    observers_);
@@ -861,12 +886,15 @@ private:
     TCPC& tcpc_;
     tc::drp_hw_driver<TCPC, VBUS> hw_;
     tc::vbus_watcher<VBUS> vbus_;
-    fsm::timed<TIMER&> timed_;
-    fsm::deadlined<TIMER&> deadlined_;
+    fsm::QueuedTimer<TIMER> timer_;
+    fsm::QueuedTimer<TIMER> deadline_timer_;
+    fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
+    fsm::deadlined<fsm::QueuedTimer<TIMER>&> deadlined_;
     std::tuple<OBSERVERs&...> observers_;
-    fsm::state_machine<tc::drp::table_for_t<TIMING, PREFERENCE>, fsm::timed<TIMER&>,
-                       fsm::deadlined<TIMER&>, tc::drp_hw_driver<TCPC, VBUS>,
-                       tc::vbus_watcher<VBUS>, OBSERVERs...>
+    fsm::QueuedMachine<tc::drp::table_for_t<TIMING, PREFERENCE>, 4, fsm::inline_work,
+                       fsm::no_lock, fsm::timed<fsm::QueuedTimer<TIMER>&>,
+                       fsm::deadlined<fsm::QueuedTimer<TIMER>&>,
+                       tc::drp_hw_driver<TCPC, VBUS>, tc::vbus_watcher<VBUS>, OBSERVERs...>
         sm_;
 };
 

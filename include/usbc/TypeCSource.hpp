@@ -72,6 +72,7 @@ namespace state {
 struct disabled_src {
     static constexpr src_hw_config hw{.pull = cc_pull::open, .source = false,
                                       .discharge = false};
+    static constexpr auto annotations = fsm::annotate(hw);
 };
 
 // The spec's ErrorRecovery state, source flavor: both terminations
@@ -80,7 +81,8 @@ struct disabled_src {
 struct error_recovery_src {
     static constexpr src_hw_config hw{.pull = cc_pull::open, .source = false,
                                       .discharge = false};
-    static constexpr auto timeout = t_error_recovery;
+    static constexpr auto annotations = fsm::annotate(hw);
+    static constexpr auto timeout     = t_error_recovery;
 };
 
 // Common context plus the internal-transition handlers keeping it
@@ -103,6 +105,7 @@ struct source_state {
 struct unattached_src : source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
 
     // entering on the discharge-complete event records what it means -
     // a transition does not run the internal handlers
@@ -116,6 +119,7 @@ struct unattached_src : source_state {
 struct attach_wait_src : source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
     attach_wait_src(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
@@ -129,6 +133,7 @@ struct attach_wait_src : source_state {
 struct attach_wait_src_debounced : source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
 
     using source_state::source_state;
 };
@@ -136,6 +141,7 @@ struct attach_wait_src_debounced : source_state {
 struct attached_src : source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = true, .discharge = false};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
 
     // entered from the debounced wait on the vSafe0V event
     attached_src(event::vbus_reached_safe0v const&, port_context& ctx) : attached_src(ctx)
@@ -155,13 +161,21 @@ struct attached_src : source_state {
 
     plug_orientation orientation() const { return context.orientation; }
     data_role dataRole() const { return context.data; }
-    plug_orientation attachedInfo() const { return context.orientation; }
+    // the attach result, observed as the state's instance value (a
+    // source reports the orientation only)
+    // the attach report and the CC polarity: clients consume the
+    // orientation, the hw driver applies the polarity
+    auto values() const
+    {
+        return fsm::annotate(context.orientation, polarity{context.orientation});
+    }
 };
 
 // Discharges VBUS to vSafe0V before presenting Rp for a new attach
 struct unattached_wait_src : source_state {
     static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = true};
     static constexpr vbus_level watch = vbus_level::safe0v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
 
     unattached_wait_src(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
     {
@@ -298,23 +312,13 @@ struct src_hw_driver : fsm::observing<src_hw_driver<TCPC, VBUS>> {
                       "src_hw_driver: every state must annotate an src hw config");
     }
 
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::hw)
-    {
-        return STATE::hw;
-    }
     void notifyEntry(src_hw_config const& config)
     {
         tcpc.setCc(config.pull, rp);
         tcpc.sourceVbus(config.source);
         vbus.discharge(config.discharge);
     }
-
-    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.orientation()))
-    {
-        return state.orientation();
-    }
-    void notifyEntry(plug_orientation orientation) { tcpc.setPlugOrientation(orientation); }
+    void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }
 
     TCPC& tcpc;
     VBUS& vbus;
@@ -339,8 +343,8 @@ public:
     // above
     TypeCSource(TCPC& tcpc, VBUS& vbus, TIMER& timer, rp_value advertisement,
                 OBSERVERs&... observers)
-        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timed_(timer),
-          observers_(observers...), sm_(timed_, hw_, vbus_, observers...)
+        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timer_(timer),
+          timed_(timer_), observers_(observers...), sm_(timed_, hw_, vbus_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
@@ -364,9 +368,11 @@ private:
     TCPC& tcpc_;
     tc::src_hw_driver<TCPC, VBUS> hw_;
     tc::vbus_watcher<VBUS> vbus_;
-    fsm::timed<TIMER&> timed_;
+    fsm::QueuedTimer<TIMER> timer_;
+    fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     std::tuple<OBSERVERs&...> observers_;
-    fsm::state_machine<tc::source_table, fsm::timed<TIMER&>, tc::src_hw_driver<TCPC, VBUS>,
+    fsm::QueuedMachine<tc::source_table, 4, fsm::inline_work, fsm::no_lock,
+                       fsm::timed<fsm::QueuedTimer<TIMER>&>, tc::src_hw_driver<TCPC, VBUS>,
                        tc::vbus_watcher<VBUS>, OBSERVERs...>
         sm_;
 };

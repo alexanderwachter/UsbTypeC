@@ -29,11 +29,6 @@ namespace {
 // Observer injected into the source's machine, watching the attached
 // state's attachedInfo() (a source reports the orientation only)
 struct AttachLogger : fsm::observing<AttachLogger> {
-    static constexpr auto observe_nonstatic(auto const& state)
-        -> decltype((state.attachedInfo()))
-    {
-        return state.attachedInfo();
-    }
     void notifyEntry(usbc::plug_orientation orientation)
     {
         LOG_INF("sink attached: CC%d, VBUS on",

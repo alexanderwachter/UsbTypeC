@@ -95,6 +95,7 @@ namespace state {
 // removed, nothing monitored. start() fires the started event
 struct disabled_snk {
     static constexpr hw_config hw{cc_pull::open, false};
+    static constexpr auto annotations = fsm::annotate(hw);
 };
 
 // The spec's ErrorRecovery state: both terminations removed for at
@@ -103,7 +104,8 @@ struct disabled_snk {
 // nHardResetCount exhausted)
 struct error_recovery {
     static constexpr hw_config hw{cc_pull::open, false};
-    static constexpr auto timeout = t_error_recovery;
+    static constexpr auto annotations = fsm::annotate(hw);
+    static constexpr auto timeout     = t_error_recovery;
 };
 
 // Common context plus the internal-transition handlers keeping it
@@ -126,6 +128,7 @@ struct sink_state {
 struct unattached_snk : sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
 
     using sink_state::sink_state;
 };
@@ -133,6 +136,7 @@ struct unattached_snk : sink_state {
 struct attach_wait_snk : sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
     // every fresh attach passes through here: a stale hard-reset
@@ -149,6 +153,7 @@ struct attach_wait_snk : sink_state {
 struct attach_wait_snk_debounced : sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
 
     using sink_state::sink_state;
 };
@@ -156,6 +161,7 @@ struct attach_wait_snk_debounced : sink_state {
 struct attached_snk : sink_state {
     static constexpr hw_config hw{cc_pull::rd, true};
     static constexpr vbus_level watch = vbus_level::sink_disconnect;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
 
     explicit attached_snk(port_context& ctx)
         : sink_state(ctx), advertisement_(advertisementOf(ctx.cc))
@@ -197,7 +203,14 @@ struct attached_snk : sink_state {
 
     plug_orientation orientation() const { return context.orientation; }
     data_role dataRole() const { return context.data; }
-    attach_info attachedInfo() const { return {context.orientation, advertisement_}; }
+    // the attach result and the CC polarity, observed as instance
+    // values: the hw driver applies the polarity, the port layers
+    // and loggers consume the attach info
+    auto values() const
+    {
+        return fsm::annotate(attach_info{context.orientation, advertisement_},
+                             polarity{context.orientation});
+    }
 
 private:
     rp_value advertisement_;
@@ -210,6 +223,7 @@ private:
 struct hard_reset_snk : sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = t_hard_reset_window;
 
     explicit hard_reset_snk(port_context& ctx) : sink_state(ctx) { context.resuming = true; }
@@ -219,6 +233,7 @@ struct hard_reset_snk : sink_state {
 struct hard_reset_recover_snk : sink_state {
     static constexpr hw_config hw{cc_pull::rd, false};
     static constexpr vbus_level watch = vbus_level::safe5v;
+    static constexpr auto annotations = fsm::annotate(hw, watch);
     static constexpr auto timeout     = t_hard_reset_window;
 
     using sink_state::sink_state;
@@ -345,22 +360,12 @@ struct hw_driver : fsm::observing<hw_driver<TCPC>> {
                       "hw_driver: every state must annotate an hw config");
     }
 
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::hw)
-    {
-        return STATE::hw;
-    }
     void notifyEntry(hw_config const& config)
     {
         tcpc.setCc(config.pull, rp_value::usb_default);
         tcpc.sinkVbus(config.sink);
     }
-
-    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.orientation()))
-    {
-        return state.orientation();
-    }
-    void notifyEntry(plug_orientation orientation) { tcpc.setPlugOrientation(orientation); }
+    void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }
 
     TCPC& tcpc;
 };
@@ -380,8 +385,8 @@ public:
     // receives the alert bits this layer does not consume - the hook
     // for the PD layers above
     TypeCSink(TCPC& tcpc, VBUS& vbus, TIMER& timer, OBSERVERs&... observers)
-        : tcpc_(tcpc), hw_(tcpc), vbus_(vbus), timed_(timer), observers_(observers...),
-          sm_(timed_, hw_, vbus_, observers...)
+        : tcpc_(tcpc), hw_(tcpc), vbus_(vbus), timer_(timer), timed_(timer_),
+          observers_(observers...), sm_(timed_, hw_, vbus_, observers...)
     {
     }
 
@@ -403,9 +408,11 @@ private:
     TCPC& tcpc_;
     tc::hw_driver<TCPC> hw_;
     tc::vbus_watcher<VBUS> vbus_;
-    fsm::timed<TIMER&> timed_;
+    fsm::QueuedTimer<TIMER> timer_;
+    fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     std::tuple<OBSERVERs&...> observers_;
-    fsm::state_machine<tc::sink_table, fsm::timed<TIMER&>, tc::hw_driver<TCPC>,
+    fsm::QueuedMachine<tc::sink_table, 4, fsm::inline_work, fsm::no_lock,
+                       fsm::timed<fsm::QueuedTimer<TIMER>&>, tc::hw_driver<TCPC>,
                        tc::vbus_watcher<VBUS>, OBSERVERs...>
         sm_;
 };

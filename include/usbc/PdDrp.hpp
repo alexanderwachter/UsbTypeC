@@ -321,11 +321,6 @@ private:
     struct swap_watch : fsm::observing<swap_watch> {
         explicit swap_watch(PdDrp& port_ref) : port(port_ref) {}
 
-        static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.portReport()))
-        {
-            return state.portReport();
-        }
         // an agreed DR_Swap only touches the header and the Type-C
         // context - safe to apply synchronously
         void notifyEntry(pe::data_role_changed) { port.drp_.applyDataRoleSwap(); }

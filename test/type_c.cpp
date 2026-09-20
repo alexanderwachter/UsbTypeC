@@ -56,11 +56,6 @@ struct mock_tc_client : fsm::observing<mock_tc_client> {
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
     usbc::rp_value advertisement       = usbc::rp_value::usb_default;
 
-    static constexpr auto observe_nonstatic(auto const& state)
-        -> decltype((state.attachedInfo()))
-    {
-        return state.attachedInfo();
-    }
     void notifyEntry(usbc::tc::attach_info info)
     {
         ++attached;
@@ -81,11 +76,6 @@ struct mock_src_client : fsm::observing<mock_src_client> {
     int detached                       = 0;
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
 
-    static constexpr auto observe_nonstatic(auto const& state)
-        -> decltype((state.attachedInfo()))
-    {
-        return state.attachedInfo();
-    }
     void notifyEntry(usbc::plug_orientation o)
     {
         ++attached;

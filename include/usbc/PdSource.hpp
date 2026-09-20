@@ -97,11 +97,6 @@ private:
     struct port_watch : fsm::observing<port_watch> {
         explicit port_watch(PdSource& port_ref) : port(port_ref) {}
 
-        static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.portReport()))
-        {
-            return state.portReport();
-        }
         void notifyEntry(pe::request_error_recovery)
         {
             port.pending_ = pending_action::error_recovery;

@@ -72,10 +72,17 @@ struct swap_failed_handled {}; // the requested hard reset is underway
 
 } // namespace event
 
+// The switch annotation, a strong type: the set's element type is
+// the key
+struct vconn_switch {
+    bool on;
+    constexpr bool operator==(vconn_switch const&) const = default;
+};
+
 namespace state {
 
 struct vconn_off {
-    static constexpr bool vconn = false;
+    static constexpr auto annotations = fsm::annotate(vconn_switch{false});
 
     // a source attach without Ra: nothing to power, stay off
     void handle(event::attached_source const&) {}
@@ -83,31 +90,29 @@ struct vconn_off {
 
 // The VCONN Source (spec term): sourcing steadily until a swap
 struct vconn_source {
-    static constexpr bool vconn = true;
+    static constexpr auto annotations = fsm::annotate(vconn_switch{true});
 };
 
 // PE_VCS_Turn_On_VCONN: the switch is on; the port announces it with
 // PS_RDY through the active engine
 struct pe_vcs_turn_on_vconn {
-    static constexpr bool vconn = true;
-
-    pe::announce_vconn_on portReport() const { return {}; }
+    static constexpr auto annotations =
+        fsm::annotate(vconn_switch{true}, pe::announce_vconn_on{});
 };
 
 // PE_VCS_Wait_For_VCONN: we relinquish - still sourcing until the new
 // VCONN source's PS_RDY, due within tVCONNSourceTimeout
 struct pe_vcs_wait_for_vconn {
-    static constexpr bool vconn   = true;
-    static constexpr auto timeout = t_source_timeout; // VCONNOnTimer
+    static constexpr auto annotations = fsm::annotate(vconn_switch{true});
+    static constexpr auto timeout     = t_source_timeout; // VCONNOnTimer
 };
 
 // The spec's timeout outcome is a hard reset (PE_VCS_Wait_For_VCONN
 // -> Hard_Reset): the port-level integration executes it and
 // acknowledges; VCONN stays with us
 struct pe_vcs_timeout {
-    static constexpr bool vconn = true;
-
-    pe::request_hard_reset portReport() const { return {}; }
+    static constexpr auto annotations =
+        fsm::annotate(vconn_switch{true}, pe::request_hard_reset{});
 };
 
 } // namespace state
@@ -152,16 +157,11 @@ template<typename VCONN_PORT>
 struct vconn_driver : fsm::observing<vconn_driver<VCONN_PORT>> {
     explicit vconn_driver(VCONN_PORT& port_ref) : port(port_ref) {}
 
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::vconn)
+    void notifyEntry(vconn_switch vconn)
     {
-        return STATE::vconn;
-    }
-    void notifyEntry(bool on)
-    {
-        if (on != applied) {
-            applied = on;
-            port.setVconn(on);
+        if (vconn.on != applied) {
+            applied = vconn.on;
+            port.setVconn(vconn.on);
         }
     }
 

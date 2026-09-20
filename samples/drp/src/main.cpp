@@ -35,14 +35,9 @@ LOG_MODULE_REGISTER(drp_sample, LOG_LEVEL_INF);
 
 namespace {
 
-// Observer injected into the DRP's machine, watching both attached
-// states' attachedInfo(); the info type encodes the resolved role
+// Observer injected into the DRP's machine, consuming both attached
+// states' attach values; the info type encodes the resolved role
 struct AttachLogger : fsm::observing<AttachLogger> {
-    static constexpr auto observe_nonstatic(auto const& state)
-        -> decltype((state.attachedInfo()))
-    {
-        return state.attachedInfo();
-    }
     void notifyEntry(usbc::tc::attach_info info)
     {
         LOG_INF("attached as sink: CC%d",

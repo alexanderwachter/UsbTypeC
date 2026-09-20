@@ -58,11 +58,6 @@ struct mock_drp_client : fsm::observing<mock_drp_client> {
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
     usbc::rp_value advertisement       = usbc::rp_value::usb_default;
 
-    static constexpr auto observe_nonstatic(auto const& state)
-        -> decltype((state.attachedInfo()))
-    {
-        return state.attachedInfo();
-    }
     void notifyEntry(usbc::tc::attach_info info)
     {
         ++attached_snk;

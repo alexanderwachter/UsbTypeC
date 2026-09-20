@@ -81,6 +81,14 @@ struct hard_reset {};     // PD-directed: open the hard-reset window
 
 } // namespace event
 
+// The resolved CC polarity of an attach, applied to the TCPC by the
+// hw drivers - a strong type so it cannot collide with the raw
+// plug_orientation the source-role attach reports to clients
+struct polarity {
+    plug_orientation orientation;
+    constexpr bool operator==(polarity const&) const = default;
+};
+
 // Machine-owned context shared by every connection-layer state, across
 // both roles: the latest CC status (interpreted through the presented
 // pull), the vbus conditions, and the resolved plug orientation and
@@ -152,11 +160,7 @@ template<concepts::vbus VBUS>
 struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
     explicit vbus_watcher(VBUS& vbus_ref) : vbus(vbus_ref) {}
 
-    template<typename STATE>
-    static constexpr auto observe_static() -> decltype(STATE::watch)
-    {
-        return STATE::watch;
-    }
+    // the states carry their watch level in their annotation sets
     void notifyEntry(vbus_level level)
     {
         monitored = level;
@@ -200,13 +204,17 @@ protected:
     // Leaves Disabled through the started event; when it fires, the
     // callbacks register, the monitor re-arms for its initial report,
     // and a present partner is seeded from the CC status. A second
-    // start() finds no started transition and does nothing
+    // start() does nothing (the queued process() reports acceptance,
+    // not whether the transition fired - the latch keeps this
+    // idempotent)
     void startPort()
     {
-        auto& self = derived();
-        if (!self.sm_.process(event::started{})) {
+        if (started_) {
             return;
         }
+        started_   = true;
+        auto& self = derived();
+        self.sm_.process(event::started{});
         self.vbus_.vbus.setCallback(
             [](void* frontend, bool met) {
                 static_cast<port_frontend*>(frontend)->vbusEvent(met);
@@ -262,7 +270,10 @@ private:
 
     // The vbus driver reports the condition the watcher armed; the
     // event follows the level's family - events a table does not
-    // handle are dropped by the machine
+    // handle are dropped by the machine. Reports may arrive
+    // synchronously from within a state entry's monitor re-arm: sm_
+    // is an fsm::QueuedMachine, which delivers them in order after
+    // the running transition completes
     void vbusEvent(bool met)
     {
         auto& self = derived();
@@ -289,6 +300,8 @@ private:
             self.sm_.process(event::cc_changed{*cc});
         }
     }
+
+    bool started_ = false;
 };
 
 } // namespace tc

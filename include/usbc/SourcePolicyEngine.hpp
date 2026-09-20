@@ -74,6 +74,7 @@ namespace usbc {
 struct supply_target {
     millivolt voltage = pe::v_safe_5v;
     milliamp current  = pe::i_default_current;
+    constexpr bool operator==(supply_target const&) const = default;
 };
 
 namespace concepts {
@@ -180,8 +181,8 @@ namespace state {
 // power restore covers the detach entry (after a hard reset,
 // Transition_to_default already restored and suppression elides it)
 struct pe_src_startup {
-    static constexpr prl::reset_action prl_action{};
-    static constexpr auto annotations            = fsm::annotate(restore_default_action{});
+    static constexpr auto annotations =
+        fsm::annotate(prl::reset_action{}, restore_default_action{});
     static constexpr power_level power           = power_level::default_power;
     static constexpr pd_status pd                = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note   = specNote(power, pd);
@@ -268,7 +269,7 @@ struct pe_src_transition_supply {
     }
     explicit pe_src_transition_supply(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return context.reply; }
+    pd_message const& values() const { return context.reply; }
 
     src_context& context;
 };
@@ -294,7 +295,7 @@ struct pe_src_transition_supply_settle {
 
     explicit pe_src_transition_supply_settle(src_context& ctx) : context(ctx) {}
 
-    supply_target supplyTarget() const { return context.target; }
+    supply_target values() const { return context.target; }
 
     src_context& context;
 };
@@ -311,7 +312,7 @@ struct pe_src_transition_supply_ps_rdy {
                                            context.data);
     }
 
-    pd_message const& txMessage() const { return context.reply; }
+    pd_message const& values() const { return context.reply; }
 
     src_context& context;
 };
@@ -329,7 +330,7 @@ struct pe_src_ready {
         context.pd_connected      = true;
     }
 
-    active_contract report() const
+    active_contract values() const
     {
         return {context.target.voltage, context.target.current};
     }
@@ -349,7 +350,7 @@ struct pe_src_capability_response {
     }
     explicit pe_src_capability_response(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return context.reply; }
+    pd_message const& values() const { return context.reply; }
 
     src_context& context;
 };
@@ -368,7 +369,7 @@ struct pe_dr_src_give_sink_cap {
     }
     explicit pe_dr_src_give_sink_cap(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return message_; }
+    pd_message const& values() const { return message_; }
 
     src_context& context;
 
@@ -391,7 +392,7 @@ struct pe_src_send_not_supported {
     }
     explicit pe_src_send_not_supported(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return context.reply; }
+    pd_message const& values() const { return context.reply; }
 
     src_context& context;
 };
@@ -439,7 +440,7 @@ struct pe_src_send_dr_swap {
     {
     }
 
-    pd_message const& txMessage() const { return message_; }
+    pd_message const& values() const { return message_; }
 
     src_context& context;
 
@@ -462,7 +463,7 @@ struct pe_src_accept_dr_swap {
     }
     explicit pe_src_accept_dr_swap(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return message_; }
+    pd_message const& values() const { return message_; }
 
     src_context& context;
 
@@ -493,7 +494,7 @@ struct pe_src_dr_swap_change {
         context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
     }
 
-    data_role_changed portReport() const { return {context.data}; }
+    data_role_changed values() const { return {context.data}; }
 
     src_context& context;
 };
@@ -514,7 +515,7 @@ struct pe_src_vcs_send_swap {
     }
     explicit pe_src_vcs_send_swap(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return message_; }
+    pd_message const& values() const { return message_; }
 
     src_context& context;
 
@@ -537,7 +538,7 @@ struct pe_src_vcs_accept {
     }
     explicit pe_src_vcs_accept(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return message_; }
+    pd_message const& values() const { return message_; }
 
     src_context& context;
 
@@ -551,7 +552,7 @@ private:
 struct pe_src_vcs_active {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
+    static constexpr auto annotations           = fsm::annotate(power, vconn_swap_agreed{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -562,7 +563,6 @@ struct pe_src_vcs_active {
     }
     explicit pe_src_vcs_active(src_context& ctx) : context(ctx) {}
 
-    vconn_swap_agreed portReport() const { return {}; }
 
     src_context& context;
 };
@@ -582,7 +582,7 @@ struct pe_src_vcs_send_ps_rdy {
     }
     explicit pe_src_vcs_send_ps_rdy(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return message_; }
+    pd_message const& values() const { return message_; }
 
     src_context& context;
 
@@ -594,13 +594,12 @@ private:
 struct pe_src_vcs_partner_on {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
+    static constexpr auto annotations           = fsm::annotate(power, vconn_partner_on{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_vcs_partner_on(src_context& ctx) : context(ctx) {}
 
-    vconn_partner_on portReport() const { return {}; }
 
     src_context& context;
 };
@@ -608,13 +607,12 @@ struct pe_src_vcs_partner_on {
 struct pe_src_vcs_ps_rdy_sent {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
+    static constexpr auto annotations           = fsm::annotate(power, vconn_ps_rdy_sent{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_vcs_ps_rdy_sent(src_context& ctx) : context(ctx) {}
 
-    vconn_ps_rdy_sent portReport() const { return {}; }
 
     src_context& context;
 };
@@ -667,7 +665,7 @@ struct pe_src_send_pr_swap {
     {
     }
 
-    pd_message const& txMessage() const { return message_; }
+    pd_message const& values() const { return message_; }
 
     src_context& context;
 
@@ -690,7 +688,7 @@ struct pe_src_accept_pr_swap {
     }
     explicit pe_src_accept_pr_swap(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return message_; }
+    pd_message const& values() const { return message_; }
 
     src_context& context;
 
@@ -756,7 +754,7 @@ struct pe_src_swap_supply_off {
 
     explicit pe_src_swap_supply_off(src_context& ctx) : context(ctx) {}
 
-    supply_target supplyTarget() const { return {0, 0}; }
+    static constexpr auto annotations = fsm::annotate(supply_target{0, 0});
 
     src_context& context;
 };
@@ -771,7 +769,7 @@ struct pe_src_swap_assert_rd {
 
     explicit pe_src_swap_assert_rd(src_context& ctx) : context(ctx) {}
 
-    assert_new_role portReport() const { return {power_role::sink}; }
+    static constexpr auto annotations = fsm::annotate(assert_new_role{power_role::sink});
 
     src_context& context;
 };
@@ -794,7 +792,7 @@ struct pe_src_swap_source_on {
     }
     explicit pe_src_swap_source_on(src_context& ctx) : context(ctx) {}
 
-    supply_target supplyTarget() const { return {v_safe_5v, i_default_current}; }
+    static constexpr auto annotations = fsm::annotate(supply_target{v_safe_5v, i_default_current});
 
     src_context& context;
 };
@@ -813,7 +811,7 @@ struct pe_src_swap_source_on_ps_rdy {
                                            context.data);
     }
 
-    pd_message const& txMessage() const { return context.reply; }
+    pd_message const& values() const { return context.reply; }
 
     src_context& context;
 };
@@ -853,7 +851,7 @@ struct pe_src_bist_carrier {
 // Accepts a received Soft_Reset; the protocol layer resets before the
 // Accept goes out (guaranteed hook order), then re-advertises
 struct pe_src_soft_reset {
-    static constexpr prl::reset_action prl_action{};
+    static constexpr auto annotations            = fsm::annotate(prl::reset_action{});
     static constexpr power_level power           = power_level::contract_or_default;
     static constexpr pd_status pd                = pd_status::connected;
     static constexpr std::string_view dot_note   = specNote(power, pd);
@@ -866,7 +864,7 @@ struct pe_src_soft_reset {
     }
     explicit pe_src_soft_reset(src_context& ctx) : context(ctx) {}
 
-    pd_message const& txMessage() const { return context.reply; }
+    pd_message const& values() const { return context.reply; }
 
     src_context& context;
 };
@@ -874,7 +872,7 @@ struct pe_src_soft_reset {
 // PE_SRC_Send_Soft_Reset: protocol errors first try a soft reset
 struct pe_src_send_soft_reset {
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr prl::reset_action prl_action{};
+    static constexpr auto annotations            = fsm::annotate(prl::reset_action{});
     static constexpr power_level power           = power_level::contract_or_default;
     static constexpr pd_status pd                = pd_status::connected;
     static constexpr std::string_view dot_note   = specNote(power, pd);
@@ -886,13 +884,13 @@ struct pe_src_send_soft_reset {
                                            context.data);
     }
 
-    pd_message const& txMessage() const { return context.reply; }
+    pd_message const& values() const { return context.reply; }
 
     src_context& context;
 };
 
 struct pe_src_hard_reset {
-    static constexpr prl::hard_reset_action prl_action{};
+    static constexpr auto annotations            = fsm::annotate(prl::hard_reset_action{});
     static constexpr power_level power           = power_level::contract_or_default;
     static constexpr pd_status pd                = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note   = specNote(power, pd);
@@ -911,7 +909,9 @@ struct pe_src_hard_reset {
 // advertises once the supply settled (or rests in Startup after a
 // detach)
 struct pe_src_transition_to_default {
-    static constexpr prl::reset_action prl_action{};
+    // the protocol reset, and VBUS removed - both compile-time facts
+    static constexpr auto annotations =
+        fsm::annotate(prl::reset_action{}, supply_target{0, 0});
     static constexpr power_level power           = power_level::transition;
     static constexpr pd_status pd                = pd_status::not_connected;
     static constexpr std::string_view dot_note   = specNote(power, pd);
@@ -925,8 +925,6 @@ struct pe_src_transition_to_default {
         context.explicit_contract = false;
         context.target            = {};
     }
-
-    supply_target supplyTarget() const { return {0, 0}; }
 
     src_context& context;
 };
@@ -965,7 +963,7 @@ struct pe_src_error_recovery {
 
     explicit pe_src_error_recovery(src_context& ctx) : context(ctx) {}
 
-    request_error_recovery portReport() const { return {}; }
+    static constexpr auto annotations = fsm::annotate(request_error_recovery{});
 
     src_context& context;
 };
@@ -1271,10 +1269,6 @@ struct src_contract_store : fsm::observing<src_contract_store<POWER>> {
                       "milliamp) and onContractLost()");
     }
 
-    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.report()))
-    {
-        return state.report();
-    }
     void notifyEntry(active_contract contract) { power.contract_ = contract; }
 
     POWER& power;
@@ -1555,11 +1549,6 @@ private:
             pe.supply_.setOutput(pe::v_safe_5v, pe::i_default_current);
         }
 
-        static constexpr auto observe_nonstatic(auto const& state)
-            -> decltype((state.supplyTarget()))
-        {
-            return state.supplyTarget();
-        }
         void notifyEntry(supply_target target)
         {
             pe.supply_.setOutput(target.voltage, target.current);

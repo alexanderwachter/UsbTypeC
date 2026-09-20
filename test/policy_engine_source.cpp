@@ -194,12 +194,7 @@ std::uint8_t transmittedType(mock_tcpc const& tcpc)
 struct recovery_watch : fsm::observing<recovery_watch> {
     int requests = 0;
 
-    static constexpr auto observe_nonstatic(auto const& state) -> decltype((state.portReport()))
-    {
-        return state.portReport();
-    }
     void notifyEntry(usbc::pe::request_error_recovery) { ++requests; }
-    void notifyEntry(auto const&) {} // the swap observations, unused here
 };
 
 // The engine's optional swap features follow the injected policy's

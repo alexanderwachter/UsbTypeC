@@ -110,23 +110,44 @@ struct active_contract {
 // Port observations: an engine state reporting one of these through
 // portReport() tells the port-level integration (the PdDrp facade)
 // what it needs from the Type-C layer
+// All but data_role_changed are compile-time facts of their states
+// and sit in the static annotation sets (comparable for the sets'
+// change suppression); data_role_changed carries the runtime role
 struct data_role_changed { // an agreed DR_Swap: both sides flipped
     data_role role;
 };
 struct assert_new_role { // a PR_Swap reached the termination change
     power_role role;
+    constexpr bool operator==(assert_new_role const&) const = default;
 };
 struct enter_swap_standby { // agreed PR_Swap: hold the connection
     power_role role;        // layer's swap standby toward this role
+    constexpr bool operator==(enter_swap_standby const&) const = default;
 };
-struct swap_completed {}; // the new source's PS_RDY: the swap is done
-struct request_error_recovery {}; // nHardResetCount exhausted
-struct hard_reset_window {}; // hold the attach while VBUS cycles
-struct request_hard_reset {}; // e.g. a VCONN_Swap hand-off timed out
-struct vconn_swap_agreed {};  // VCONN_Swap accepted: the vconn machine takes over
-struct vconn_partner_on {};   // the new VCONN source's PS_RDY arrived
-struct vconn_ps_rdy_sent {};  // our VCONN PS_RDY is on the wire
-struct announce_vconn_on {};  // vconn machine: transmit our PS_RDY
+struct swap_completed { // the new source's PS_RDY: the swap is done
+    constexpr bool operator==(swap_completed const&) const = default;
+};
+struct request_error_recovery { // nHardResetCount exhausted
+    constexpr bool operator==(request_error_recovery const&) const = default;
+};
+struct hard_reset_window { // hold the attach while VBUS cycles
+    constexpr bool operator==(hard_reset_window const&) const = default;
+};
+struct request_hard_reset { // e.g. a VCONN_Swap hand-off timed out
+    constexpr bool operator==(request_hard_reset const&) const = default;
+};
+struct vconn_swap_agreed { // VCONN_Swap accepted: the vconn machine takes over
+    constexpr bool operator==(vconn_swap_agreed const&) const = default;
+};
+struct vconn_partner_on { // the new VCONN source's PS_RDY arrived
+    constexpr bool operator==(vconn_partner_on const&) const = default;
+};
+struct vconn_ps_rdy_sent { // our VCONN PS_RDY is on the wire
+    constexpr bool operator==(vconn_ps_rdy_sent const&) const = default;
+};
+struct announce_vconn_on { // vconn machine: transmit our PS_RDY
+    constexpr bool operator==(announce_vconn_on const&) const = default;
+};
 
 namespace event {
 
