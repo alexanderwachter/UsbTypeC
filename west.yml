@@ -17,6 +17,18 @@ manifest:
       url-base: https://github.com/zephyrproject-rtos
 
   projects:
+    # mtl as a Zephyr module (CONFIG_MTL): west update fetches it, the
+    # build discovers its Kconfig and cmake on its own. Keep the
+    # revision in lockstep with the lib/McuTemplateLibrary submodule,
+    # which the host (cmake) build and the fsm headers build against
+    - name: mtl
+      url: https://github.com/alexanderwachter/McuTemplateLibrary
+      revision: e4e98efeb4877a2b78909a8ee0ffd9017665f813
+      path: modules/lib/mtl
+      # west fsm_dotgen (DOT graphs of the tables) and west
+      # fsm_liveview (watch or replay machines in the browser)
+      west-commands: zephyr/scripts/west-commands.yml
+
     - name: zephyr
       remote: zephyrproject
       revision: v4.4.0

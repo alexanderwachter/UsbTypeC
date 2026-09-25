@@ -4,10 +4,9 @@
 
 if(CONFIG_USB_TYPEC_STACK)
 
-# The bundled mtl library's Zephyr module: its include paths, the fsm
-# debug-check policy (MTL_FSM_CHECKS follows CONFIG_ASSERT), and the
-# transition trace logger behind CONFIG_MTL_FSM_TRACE
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/../lib/McuTemplateLibrary/zephyr mtl)
+# mtl comes in as a west module of its own (west.yml): its include
+# paths, the fsm debug-check policy (MTL_FSM_CHECKS follows
+# CONFIG_ASSERT), and the trace logger need no wiring here
 
 zephyr_library_named(usbc)
 
