@@ -143,9 +143,9 @@ inline constexpr std::chrono::milliseconds t_src_slice = TIMING.t_drp * TIMING.d
 // Unattached.SNK of a DRP: Rd presented for the sink slice of tDRP
 template<drp_timing const& TIMING>
 struct unattached_snk : state::sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_drp - t_src_slice<TIMING>;
 
     using state::sink_state::sink_state;
@@ -154,9 +154,9 @@ struct unattached_snk : state::sink_state {
 // Unattached.SRC of a DRP: Rp presented for the source slice of tDRP
 template<drp_timing const& TIMING>
 struct unattached_src : state::source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = t_src_slice<TIMING>;
 
     // entering on the discharge-complete event records what it means
@@ -174,9 +174,9 @@ struct unattached_src : state::source_state {
 // flapping partner cannot extend it
 template<drp_timing const& TIMING>
 struct try_src : state::source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto deadline    = TIMING.t_drp_try;
 
     // entered only with the phase fresh (an expired phase leaves
@@ -189,9 +189,9 @@ struct try_src : state::source_state {
 // abort it - the failure exit leaves the phase instead of re-arming
 template<drp_timing const& TIMING>
 struct try_src_debounce : state::source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_try_cc_debounce;
     static constexpr auto deadline    = TIMING.t_drp_try;
 
@@ -208,9 +208,9 @@ struct try_src_debounce : state::source_state {
 // as sink when the partner sources VBUS
 template<drp_timing const& TIMING>
 struct try_wait_snk : state::sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_drp_try_wait;
 
     // a fresh-attach gateway: a stale hard-reset window flag must not
@@ -226,9 +226,9 @@ struct try_wait_snk : state::sink_state {
 // tTryTimeout deadline
 template<drp_timing const& TIMING>
 struct try_snk : state::sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_drp_try;
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
@@ -238,9 +238,9 @@ struct try_snk : state::sink_state {
 // Monitoring phase of Try.SNK: the phase deadline is the only clock
 template<drp_timing const& TIMING>
 struct try_snk_monitor : state::sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
     using state::sink_state::sink_state;
@@ -250,9 +250,9 @@ struct try_snk_monitor : state::sink_state {
 // present attaches; a failure after the phase deadline expired exits
 template<drp_timing const& TIMING>
 struct try_snk_debounce : state::sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_pd_debounce;
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
@@ -269,9 +269,9 @@ struct try_snk_debounce : state::sink_state {
 // phase deadline
 template<drp_timing const& TIMING>
 struct try_wait_src : state::source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto deadline    = TIMING.t_drp_try_wait;
 
     explicit try_wait_src(port_context& ctx) : source_state(ctx)
@@ -285,9 +285,9 @@ struct try_wait_src : state::source_state {
 // deadline expired exits
 template<drp_timing const& TIMING>
 struct try_wait_src_debounce : state::source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_try_cc_debounce;
     static constexpr auto deadline    = TIMING.t_drp_try_wait;
 
@@ -303,9 +303,9 @@ struct try_wait_src_debounce : state::source_state {
 // Rd debounced but VBUS not yet at vSafe0V: attach follows the report
 template<drp_timing const& TIMING>
 struct try_wait_src_safe0v : state::source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
 
     using state::source_state::source_state;
 };
@@ -331,9 +331,9 @@ struct swap_standby {
 
 // The old sink, waiting for the old source's PS_RDY before taking over
 struct swap_standby_to_src : state::sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch, swap_standby{});
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch, swap_standby{});
     static constexpr auto timeout     = t_ps_source_off;
 
     using state::sink_state::sink_state;
@@ -341,9 +341,9 @@ struct swap_standby_to_src : state::sink_state {
 
 // The old source, its PS_RDY sent, waiting for the new source's
 struct swap_standby_to_snk : state::sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch, swap_standby{});
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch, swap_standby{});
     static constexpr auto timeout     = t_ps_source_on;
 
     using state::sink_state::sink_state;
@@ -667,29 +667,26 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
     }
 
     // A state the dispatch would silently skip is a table bug: the
-    // previous state's terminations would stay applied. notified_of
-    // also proves each annotation is one of the two role configs the
-    // entry hooks accept
+    // previous state's terminations or power paths would stay applied.
+    // Checked per element: every state must carry both
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(fsm::all_states_notified_v<drp_hw_driver, TABLE>,
-                      "drp_hw_driver: every state must annotate a role hw config");
+        static_assert(fsm::all_states_notified_v<annotation_probe<cc_termination>, TABLE>,
+                      "drp_hw_driver: every state must annotate its CC termination");
+        static_assert(fsm::all_states_notified_v<annotation_probe<vbus_power>, TABLE>,
+                      "drp_hw_driver: every state must annotate its VBUS power path");
     }
 
-    void notifyEntry(hw_config const& config) // a sink-role state
+    void notifyEntry(cc_termination termination) { tcpc.setCc(termination.pull, rp); }
+
+    // One position for both roles: entering the other role's states
+    // collapses this one's path by value
+    void notifyEntry(vbus_power power)
     {
-        tcpc.setCc(config.pull, rp);
-        tcpc.sourceVbus(false);
-        vbus.discharge(false);
-        tcpc.sinkVbus(config.sink);
-    }
-    void notifyEntry(src_hw_config const& config) // a source-role state
-    {
-        tcpc.setCc(config.pull, rp);
-        tcpc.sinkVbus(false);
-        tcpc.sourceVbus(config.source);
-        vbus.discharge(config.discharge);
+        tcpc.sinkVbus(power.path == vbus_path::sink);
+        tcpc.sourceVbus(power.path == vbus_path::source);
+        vbus.discharge(power.path == vbus_path::discharge);
     }
 
     void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }

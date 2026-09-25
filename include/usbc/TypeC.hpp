@@ -89,6 +89,39 @@ struct polarity {
     constexpr bool operator==(polarity const&) const = default;
 };
 
+// The presented CC termination; the hw driver applies it (a source
+// role adds its configured Rp advertisement)
+struct cc_termination {
+    cc_pull pull;
+    constexpr bool operator==(cc_termination const&) const = default;
+};
+
+// The switch positions of the VBUS power circuitry, mutually
+// exclusive by construction
+enum class vbus_path : std::uint8_t {
+    off,       // both paths open
+    sink,      // the sink path draws from VBUS
+    source,    // the source path drives VBUS
+    discharge, // paths open, actively discharging toward vSafe0V
+};
+
+// The VBUS power annotation - the element that switches power. Every
+// connection state carries one, so a role change collapses the old
+// role's path, suppressed while unchanged
+struct vbus_power {
+    vbus_path path = vbus_path::off;
+    constexpr bool operator==(vbus_power const&) const = default;
+};
+
+// Compile-time probe consuming exactly one annotation type: the
+// drivers' validate() checks completeness per element with it - one
+// all_states_notified over several accepted types would pass a state
+// that carries only one of them
+template<typename T>
+struct annotation_probe : fsm::observing<annotation_probe<T>> {
+    void notifyEntry(T const&) {}
+};
+
 // Machine-owned context shared by every connection-layer state, across
 // both roles: the latest CC status (interpreted through the presented
 // pull), the vbus conditions, and the resolved plug orientation and
@@ -132,10 +165,10 @@ constexpr bool metMeansPresent(vbus_level level)
 // a report (a lost detach at worst)
 template<typename TABLE>
 struct watch_family_handled {
-    template<typename STATE, bool WATCHING = requires { STATE::watch; }>
+    template<typename STATE, bool WATCHING = requires { STATE::vbus_watch; }>
     struct pred
         : std::bool_constant<
-              familyOf(STATE::watch) == vbus_family::discharge
+              familyOf(STATE::vbus_watch) == vbus_family::discharge
                   ? (fsm::handles_event_v<TABLE, STATE, event::vbus_reached_safe0v> &&
                      fsm::handles_event_v<TABLE, STATE, event::vbus_left_safe0v>)
                   : (fsm::handles_event_v<TABLE, STATE, event::vbus_present> &&
@@ -169,8 +202,12 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
 
     // Only a state presenting no terminations (Disabled, ErrorRecovery)
     // may go unwatched: nothing can attach while the pull is open
-    template<typename STATE, bool HAS_HW = requires { STATE::hw; }>
-    struct idle_without_watch : std::bool_constant<STATE::hw.pull == cc_pull::open> {};
+    template<typename STATE,
+             bool HAS_TERMINATION =
+                 requires { STATE::annotations.template get<cc_termination>(); }>
+    struct idle_without_watch
+        : std::bool_constant<STATE::annotations.template get<cc_termination>().pull ==
+                             cc_pull::open> {};
 
     template<typename STATE>
     struct idle_without_watch<STATE, false> : std::false_type {};

@@ -56,32 +56,22 @@ constexpr plug_orientation srcOrientationOf(cc_status status)
     return isRd(status.cc1) ? plug_orientation::cc1 : plug_orientation::cc2;
 }
 
-// The CC pull (Rp with the port's configured advertisement, or open
-// while Disabled), power path, and discharge a state requires
-struct src_hw_config {
-    cc_pull pull;
-    bool source;
-    bool discharge;
-    constexpr bool operator==(src_hw_config const&) const = default;
-};
 
 namespace state {
 
 // The spec's Disabled state: the port is not operating, terminations
 // removed, nothing monitored. start() fires the started event
 struct disabled_src {
-    static constexpr src_hw_config hw{.pull = cc_pull::open, .source = false,
-                                      .discharge = false};
-    static constexpr auto annotations = fsm::annotate(hw);
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::open}, vbus_power{vbus_path::off});
 };
 
 // The spec's ErrorRecovery state, source flavor: both terminations
 // removed for at least tErrorRecovery, then connection resolution
 // restarts. Entered on the PD layer's command
 struct error_recovery_src {
-    static constexpr src_hw_config hw{.pull = cc_pull::open, .source = false,
-                                      .discharge = false};
-    static constexpr auto annotations = fsm::annotate(hw);
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::open}, vbus_power{vbus_path::off});
     static constexpr auto timeout     = t_error_recovery;
 };
 
@@ -103,9 +93,9 @@ struct source_state {
 };
 
 struct unattached_src : source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
 
     // entering on the discharge-complete event records what it means -
     // a transition does not run the internal handlers
@@ -117,9 +107,9 @@ struct unattached_src : source_state {
 };
 
 struct attach_wait_src : source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
     attach_wait_src(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
@@ -131,17 +121,17 @@ struct attach_wait_src : source_state {
 
 // AttachWait.SRC with a stable single Rd, waiting for VBUS at vSafe0V
 struct attach_wait_src_debounced : source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
 
     using source_state::source_state;
 };
 
 struct attached_src : source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = true, .discharge = false};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::source}, vbus_watch);
 
     // entered from the debounced wait on the vSafe0V event
     attached_src(event::vbus_reached_safe0v const&, port_context& ctx) : attached_src(ctx)
@@ -173,9 +163,9 @@ struct attached_src : source_state {
 
 // Discharges VBUS to vSafe0V before presenting Rp for a new attach
 struct unattached_wait_src : source_state {
-    static constexpr src_hw_config hw{.pull = cc_pull::rp, .source = false, .discharge = true};
-    static constexpr vbus_level watch = vbus_level::safe0v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::discharge}, vbus_watch);
 
     unattached_wait_src(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
     {
@@ -304,19 +294,22 @@ struct src_hw_driver : fsm::observing<src_hw_driver<TCPC, VBUS>> {
     }
 
     // A state the dispatch would silently skip is a table bug: the
-    // previous state's terminations would stay applied
+    // previous state's terminations or power paths would stay applied.
+    // Checked per element: every state must carry both
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(fsm::all_states_notified_v<src_hw_driver, TABLE>,
-                      "src_hw_driver: every state must annotate an src hw config");
+        static_assert(fsm::all_states_notified_v<annotation_probe<cc_termination>, TABLE>,
+                      "src_hw_driver: every state must annotate its CC termination");
+        static_assert(fsm::all_states_notified_v<annotation_probe<vbus_power>, TABLE>,
+                      "src_hw_driver: every state must annotate its VBUS power path");
     }
 
-    void notifyEntry(src_hw_config const& config)
+    void notifyEntry(cc_termination termination) { tcpc.setCc(termination.pull, rp); }
+    void notifyEntry(vbus_power power)
     {
-        tcpc.setCc(config.pull, rp);
-        tcpc.sourceVbus(config.source);
-        vbus.discharge(config.discharge);
+        tcpc.sourceVbus(power.path == vbus_path::source);
+        vbus.discharge(power.path == vbus_path::discharge);
     }
     void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }
 

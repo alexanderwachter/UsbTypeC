@@ -75,14 +75,6 @@ constexpr rp_value advertisementOf(cc_status status)
     }
 }
 
-// The CC terminations and power path a state requires, applied by the
-// hw_driver observer with change suppression
-struct hw_config {
-    cc_pull pull;
-    bool sink;
-    constexpr bool operator==(hw_config const&) const = default;
-};
-
 // Delivered to the client on attach, observed on the attached state
 struct attach_info {
     plug_orientation orientation;
@@ -94,8 +86,8 @@ namespace state {
 // The spec's Disabled state: the port is not operating, terminations
 // removed, nothing monitored. start() fires the started event
 struct disabled_snk {
-    static constexpr hw_config hw{cc_pull::open, false};
-    static constexpr auto annotations = fsm::annotate(hw);
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::open}, vbus_power{vbus_path::off});
 };
 
 // The spec's ErrorRecovery state: both terminations removed for at
@@ -103,8 +95,8 @@ struct disabled_snk {
 // table's unattached anchor. Entered on the PD layer's command (e.g.
 // nHardResetCount exhausted)
 struct error_recovery {
-    static constexpr hw_config hw{cc_pull::open, false};
-    static constexpr auto annotations = fsm::annotate(hw);
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::open}, vbus_power{vbus_path::off});
     static constexpr auto timeout     = t_error_recovery;
 };
 
@@ -126,17 +118,17 @@ struct sink_state {
 };
 
 struct unattached_snk : sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
 
     using sink_state::sink_state;
 };
 
 struct attach_wait_snk : sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
     // every fresh attach passes through here: a stale hard-reset
@@ -151,17 +143,17 @@ struct attach_wait_snk : sink_state {
 
 // AttachWait.SNK with a stable single Rp, waiting for VBUS
 struct attach_wait_snk_debounced : sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
 
     using sink_state::sink_state;
 };
 
 struct attached_snk : sink_state {
-    static constexpr hw_config hw{cc_pull::rd, true};
-    static constexpr vbus_level watch = vbus_level::sink_disconnect;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::sink_disconnect;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::sink}, vbus_watch);
 
     explicit attached_snk(port_context& ctx)
         : sink_state(ctx), advertisement_(advertisementOf(ctx.cc))
@@ -221,9 +213,9 @@ private:
 // is off. The policy engine's NoResponseTimer owns the give-up; the
 // timeout here only terminates a dead port
 struct hard_reset_snk : sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = t_hard_reset_window;
 
     explicit hard_reset_snk(port_context& ctx) : sink_state(ctx) { context.resuming = true; }
@@ -231,9 +223,9 @@ struct hard_reset_snk : sink_state {
 
 // ... second phase: VBUS is down, its return resumes Attached.SNK
 struct hard_reset_recover_snk : sink_state {
-    static constexpr hw_config hw{cc_pull::rd, false};
-    static constexpr vbus_level watch = vbus_level::safe5v;
-    static constexpr auto annotations = fsm::annotate(hw, watch);
+    static constexpr vbus_level vbus_watch = vbus_level::safe5v;
+    static constexpr auto annotations =
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
     static constexpr auto timeout     = t_hard_reset_window;
 
     using sink_state::sink_state;
@@ -352,19 +344,22 @@ struct hw_driver : fsm::observing<hw_driver<TCPC>> {
     explicit hw_driver(TCPC& tcpc_ref) : tcpc(tcpc_ref) {}
 
     // A state the dispatch would silently skip is a table bug: the
-    // previous state's terminations would stay applied
+    // previous state's terminations or power paths would stay applied.
+    // Checked per element: every state must carry both
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(fsm::all_states_notified_v<hw_driver, TABLE>,
-                      "hw_driver: every state must annotate an hw config");
+        static_assert(fsm::all_states_notified_v<annotation_probe<cc_termination>, TABLE>,
+                      "hw_driver: every state must annotate its CC termination");
+        static_assert(fsm::all_states_notified_v<annotation_probe<vbus_power>, TABLE>,
+                      "hw_driver: every state must annotate its VBUS power paths");
     }
 
-    void notifyEntry(hw_config const& config)
+    void notifyEntry(cc_termination termination)
     {
-        tcpc.setCc(config.pull, rp_value::usb_default);
-        tcpc.sinkVbus(config.sink);
+        tcpc.setCc(termination.pull, rp_value::usb_default);
     }
+    void notifyEntry(vbus_power power) { tcpc.sinkVbus(power.path == vbus_path::sink); }
     void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }
 
     TCPC& tcpc;
