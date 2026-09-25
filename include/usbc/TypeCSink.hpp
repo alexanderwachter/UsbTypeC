@@ -86,8 +86,9 @@ namespace state {
 // The spec's Disabled state: the port is not operating, terminations
 // removed, nothing monitored. start() fires the started event
 struct disabled_snk {
-    static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::open}, vbus_power{vbus_path::off});
+    static constexpr vbus_level vbus_watch = vbus_level::unwatched;
+    static constexpr auto annotations     = fsm::annotate(cc_termination{cc_pull::open},
+                                                          vbus_power{vbus_path::open}, vbus_watch);
 };
 
 // The spec's ErrorRecovery state: both terminations removed for at
@@ -95,8 +96,9 @@ struct disabled_snk {
 // table's unattached anchor. Entered on the PD layer's command (e.g.
 // nHardResetCount exhausted)
 struct error_recovery {
-    static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::open}, vbus_power{vbus_path::off});
+    static constexpr vbus_level vbus_watch = vbus_level::unwatched;
+    static constexpr auto annotations     = fsm::annotate(cc_termination{cc_pull::open},
+                                                          vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = t_error_recovery;
 };
 
@@ -120,7 +122,7 @@ struct sink_state {
 struct unattached_snk : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
 
     using sink_state::sink_state;
 };
@@ -128,7 +130,7 @@ struct unattached_snk : sink_state {
 struct attach_wait_snk : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
     // every fresh attach passes through here: a stale hard-reset
@@ -145,7 +147,7 @@ struct attach_wait_snk : sink_state {
 struct attach_wait_snk_debounced : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
 
     using sink_state::sink_state;
 };
@@ -215,7 +217,7 @@ private:
 struct hard_reset_snk : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = t_hard_reset_window;
 
     explicit hard_reset_snk(port_context& ctx) : sink_state(ctx) { context.resuming = true; }
@@ -225,7 +227,7 @@ struct hard_reset_snk : sink_state {
 struct hard_reset_recover_snk : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = t_hard_reset_window;
 
     using sink_state::sink_state;

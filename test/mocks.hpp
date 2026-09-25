@@ -129,7 +129,9 @@ struct mock_vbus {
     bool monitor(usbc::vbus_level level)
     {
         monitored = level;
-        report(); // contract: current condition state as soon as known
+        if (level != usbc::vbus_level::unwatched) {
+            report(); // contract: current condition state as soon as known
+        }
         return true;
     }
     // Discharging takes time and completes asynchronously: the test
@@ -146,6 +148,7 @@ struct mock_vbus {
     bool met() const
     {
         switch (*monitored) {
+        case usbc::vbus_level::unwatched: return false; // nothing armed
         case usbc::vbus_level::safe0v: return voltage_mv <= usbc::spec::v_safe_0v_max;
         case usbc::vbus_level::safe5v:
             return voltage_mv >= usbc::spec::v_safe_5v_min &&
@@ -166,7 +169,8 @@ struct mock_vbus {
     void setVoltage(std::int32_t mv)
     {
         voltage_mv = mv;
-        if (monitored && met() != reported_met) {
+        if (monitored && *monitored != usbc::vbus_level::unwatched &&
+            met() != reported_met) {
             report();
         }
     }

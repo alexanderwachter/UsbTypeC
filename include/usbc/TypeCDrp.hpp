@@ -145,7 +145,7 @@ template<drp_timing const& TIMING>
 struct unattached_snk : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_drp - t_src_slice<TIMING>;
 
     using state::sink_state::sink_state;
@@ -154,9 +154,10 @@ struct unattached_snk : state::sink_state {
 // Unattached.SRC of a DRP: Rp presented for the source slice of tDRP
 template<drp_timing const& TIMING>
 struct unattached_src : state::source_state {
-    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
+    // toggling: nothing measured - AttachWait re-arms vSafe0V on entry
+    static constexpr vbus_level vbus_watch = vbus_level::unwatched;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = t_src_slice<TIMING>;
 
     // entering on the discharge-complete event records what it means
@@ -176,7 +177,7 @@ template<drp_timing const& TIMING>
 struct try_src : state::source_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe0v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto deadline    = TIMING.t_drp_try;
 
     // entered only with the phase fresh (an expired phase leaves
@@ -191,7 +192,7 @@ template<drp_timing const& TIMING>
 struct try_src_debounce : state::source_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe0v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_try_cc_debounce;
     static constexpr auto deadline    = TIMING.t_drp_try;
 
@@ -210,7 +211,7 @@ template<drp_timing const& TIMING>
 struct try_wait_snk : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_drp_try_wait;
 
     // a fresh-attach gateway: a stale hard-reset window flag must not
@@ -228,7 +229,7 @@ template<drp_timing const& TIMING>
 struct try_snk : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_drp_try;
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
@@ -240,7 +241,7 @@ template<drp_timing const& TIMING>
 struct try_snk_monitor : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
     using state::sink_state::sink_state;
@@ -252,7 +253,7 @@ template<drp_timing const& TIMING>
 struct try_snk_debounce : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_pd_debounce;
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
@@ -271,7 +272,7 @@ template<drp_timing const& TIMING>
 struct try_wait_src : state::source_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe0v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto deadline    = TIMING.t_drp_try_wait;
 
     explicit try_wait_src(port_context& ctx) : source_state(ctx)
@@ -287,7 +288,7 @@ template<drp_timing const& TIMING>
 struct try_wait_src_debounce : state::source_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe0v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_try_cc_debounce;
     static constexpr auto deadline    = TIMING.t_drp_try_wait;
 
@@ -305,7 +306,7 @@ template<drp_timing const& TIMING>
 struct try_wait_src_safe0v : state::source_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe0v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::off}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
 
     using state::source_state::source_state;
 };
@@ -333,7 +334,7 @@ struct swap_standby {
 struct swap_standby_to_src : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch, swap_standby{});
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch, swap_standby{});
     static constexpr auto timeout     = t_ps_source_off;
 
     using state::sink_state::sink_state;
@@ -343,7 +344,7 @@ struct swap_standby_to_src : state::sink_state {
 struct swap_standby_to_snk : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::off}, vbus_watch, swap_standby{});
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch, swap_standby{});
     static constexpr auto timeout     = t_ps_source_on;
 
     using state::sink_state::sink_state;
@@ -685,8 +686,8 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
     void notifyEntry(vbus_power power)
     {
         tcpc.sinkVbus(power.path == vbus_path::sink);
-        tcpc.sourceVbus(power.path == vbus_path::source);
-        vbus.discharge(power.path == vbus_path::discharge);
+        tcpc.sourceVbus(power.path == vbus_path::safe5v);
+        vbus.discharge(power.path == vbus_path::safe0v);
     }
 
     void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }

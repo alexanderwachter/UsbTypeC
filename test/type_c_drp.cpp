@@ -158,7 +158,7 @@ int typeCDrpTests()
     drp tc{f.tcpc, f.vbus, f.timer, f.deadline, usbc::rp_value::p_1a5, f.client};
 
     // construction rests in Disabled: nothing registered, nothing driven
-    check(f.tcpc.callback == nullptr && !f.vbus.monitored);
+    check(f.tcpc.callback == nullptr && f.vbus.monitored == usbc::vbus_level::unwatched);
 
     // start() goes live toggling at Rd with the sink slice armed
     tc.start();
@@ -169,7 +169,7 @@ int typeCDrpTests()
     // the toggle alternates Rd and Rp with the configured advertisement
     f.timer.expire();
     check(f.tcpc.pull == usbc::cc_pull::rp && f.tcpc.rp == usbc::rp_value::p_1a5);
-    check(f.vbus.monitored == usbc::vbus_level::safe0v);
+    check(f.vbus.monitored == usbc::vbus_level::unwatched); // resting Rp: nothing measured
     check(f.timer.armed);
     f.timer.expire();
     check(f.tcpc.pull == usbc::cc_pull::rd);

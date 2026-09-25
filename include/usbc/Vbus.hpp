@@ -30,8 +30,11 @@
 namespace usbc {
 
 // Detection conditions the standard defines on VBUS. "Met" means the
-// condition associated with the level holds.
+// condition associated with the level holds. monitor(unwatched) turns
+// monitoring off: the driver stops measuring and reports nothing
+// until a condition is armed again
 enum class vbus_level : std::uint8_t {
+    unwatched,          // nothing armed: no measurement, no reports
     safe0v,             // at vSafe0V (max 0.8 V): required before a source
                         // applies VBUS, reached after removal/discharge
     safe5v,             // at vSafe5V (4.75 V - 5.5 V): default VBUS present,

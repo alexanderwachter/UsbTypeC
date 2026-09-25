@@ -50,6 +50,11 @@ void Vbus::setCallback(vbus_callback callback, void* context)
 
 bool Vbus::monitor(vbus_level level)
 {
+    if (level == vbus_level::unwatched) {
+        // monitoring off: stop the sampling entirely
+        k_work_cancel_delayable(&work_);
+        return true;
+    }
     level_          = toZephyr(level);
     report_pending_ = true; // contract: report the current state once known
     schedule(K_NO_WAIT);

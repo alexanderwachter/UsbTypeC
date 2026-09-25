@@ -148,7 +148,7 @@ int typeCTests()
     sink tc{tcpc, vbus, timer, client};
 
     // construction rests in Disabled: nothing registered, nothing driven
-    check(tcpc.callback == nullptr && !vbus.monitored);
+    check(tcpc.callback == nullptr && vbus.monitored == usbc::vbus_level::unwatched);
 
     // start() applies Unattached.SNK: Rd presented, sink path off,
     // vSafe5V monitored, callbacks registered
@@ -249,14 +249,15 @@ int typeCSourceTests()
     source tc{tcpc, vbus, timer, usbc::rp_value::p_3a0, client};
 
     // construction rests in Disabled: nothing registered, nothing driven
-    check(tcpc.callback == nullptr && !vbus.monitored);
+    check(tcpc.callback == nullptr && vbus.monitored == usbc::vbus_level::unwatched);
 
     // start() applies Unattached.SRC: Rp with the configured
-    // advertisement, source path off, vSafe0V monitored and reported
+    // advertisement, source path off, nothing monitored while resting
+    // (AttachWait re-arms vSafe0V and gets the fresh arm-report)
     tc.start();
     check(tcpc.pull == usbc::cc_pull::rp && tcpc.rp == usbc::rp_value::p_3a0);
     check(!tcpc.sourcing && !vbus.discharging);
-    check(vbus.monitored == usbc::vbus_level::safe0v);
+    check(vbus.monitored == usbc::vbus_level::unwatched);
 
     auto const ccAlert = [&] {
         tcpc.alerts |= usbc::alert_status::cc_status_changed;

@@ -97,19 +97,20 @@ struct cc_termination {
 };
 
 // The switch positions of the VBUS power circuitry, mutually
-// exclusive by construction
+// exclusive by construction and named for the specification's VBUS
+// conditions where one is driven
 enum class vbus_path : std::uint8_t {
-    off,       // both paths open
-    sink,      // the sink path draws from VBUS
-    source,    // the source path drives VBUS
-    discharge, // paths open, actively discharging toward vSafe0V
+    open,   // both paths open, the line floats
+    sink,   // the sink path draws from VBUS
+    safe5v, // the source path applies vSafe5V
+    safe0v, // paths open, actively discharging to vSafe0V
 };
 
 // The VBUS power annotation - the element that switches power. Every
 // connection state carries one, so a role change collapses the old
 // role's path, suppressed while unchanged
 struct vbus_power {
-    vbus_path path = vbus_path::off;
+    vbus_path path = vbus_path::open;
     constexpr bool operator==(vbus_power const&) const = default;
 };
 
@@ -168,13 +169,15 @@ struct watch_family_handled {
     template<typename STATE, bool WATCHING = requires { STATE::vbus_watch; }>
     struct pred
         : std::bool_constant<
-              familyOf(STATE::vbus_watch) == vbus_family::discharge
-                  ? (fsm::handles_event_v<TABLE, STATE, event::vbus_reached_safe0v> &&
-                     fsm::handles_event_v<TABLE, STATE, event::vbus_left_safe0v>)
-                  : (fsm::handles_event_v<TABLE, STATE, event::vbus_present> &&
-                     fsm::handles_event_v<TABLE, STATE, event::vbus_removed>)> {};
+              STATE::vbus_watch == vbus_level::unwatched // no reports, nothing implied
+                  ? true
+                  : familyOf(STATE::vbus_watch) == vbus_family::discharge
+                        ? (fsm::handles_event_v<TABLE, STATE, event::vbus_reached_safe0v> &&
+                           fsm::handles_event_v<TABLE, STATE, event::vbus_left_safe0v>)
+                        : (fsm::handles_event_v<TABLE, STATE, event::vbus_present> &&
+                           fsm::handles_event_v<TABLE, STATE, event::vbus_removed>)> {};
 
-    // an unwatched state gets no reports and implies nothing
+    // a state without the member cannot arm anything and implies nothing
     template<typename STATE>
     struct pred<STATE, false> : std::true_type {};
 };
@@ -200,33 +203,20 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
         vbus.monitor(level);
     }
 
-    // Only a state presenting no terminations (Disabled, ErrorRecovery)
-    // may go unwatched: nothing can attach while the pull is open
-    template<typename STATE,
-             bool HAS_TERMINATION =
-                 requires { STATE::annotations.template get<cc_termination>(); }>
-    struct idle_without_watch
-        : std::bool_constant<STATE::annotations.template get<cc_termination>().pull ==
-                             cc_pull::open> {};
-
-    template<typename STATE>
-    struct idle_without_watch<STATE, false> : std::false_type {};
-
-    template<typename STATE>
-    struct watched_or_idle : std::bool_constant<fsm::is_notified_of_v<vbus_watcher, STATE> ||
-                                                idle_without_watch<STATE>::value> {};
-
+    // Every state declares its level - vbus_level::unwatched is the
+    // deliberate "monitoring off", never an omission
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(mtl::all_of_v<typename TABLE::states, watched_or_idle>,
-                      "vbus_watcher: a state presenting terminations must watch a VBUS level");
+        static_assert(fsm::all_states_notified_v<annotation_probe<vbus_level>, TABLE>,
+                      "vbus_watcher: every state must annotate its vbus_watch level "
+                      "(vbus_level::unwatched switches monitoring off)");
         static_assert(watch_events_consistent_v<TABLE>,
                       "vbus_watcher: a watching state must handle its level's event family");
     }
 
     VBUS& vbus;
-    vbus_level monitored = vbus_level::safe5v;
+    vbus_level monitored = vbus_level::unwatched;
 };
 
 // The driver-facing frontend every connection layer shares (CRTP):
