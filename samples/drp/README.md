@@ -4,8 +4,9 @@ DRP toggling with the UsbTypeC stack on Zephyr driver adapters: the
 port alternates between presenting Rd and Rp (tDRP/dcSRC.DRP) and
 resolves to whichever role the attached partner complements - a
 charger makes it a sink, a sink makes it a source. The injected
-`usbc::zephyr::StateLogger` traces every transition on the `usbc_fsm`
-log module at debug level.
+`mtl::zephyr::TraceLogger` traces every transition on the `mtl_fsm`
+log module (info level, behind `CONFIG_MTL_FSM_TRACE`) in the line
+grammar mtl's fsmview tool reads.
 
 Toggle timing and role preference are compile-time configuration:
 pass a constexpr `usbc::drp_timing` instance (designated initializers

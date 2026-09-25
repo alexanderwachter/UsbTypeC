@@ -12,7 +12,7 @@
  */
 
 #include <usbc/TypeCSink.hpp>
-#include <usbc/zephyr/StateLogger.hpp>
+#include <mtl/zephyr/TraceLogger.hpp>
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
@@ -47,15 +47,16 @@ struct AttachLogger : fsm::observing<AttachLogger> {
     void notifyExit(usbc::tc::attach_info) { LOG_INF("detached"); }
 };
 
-// The StateLogger traces every transition (module usbc_fsm, debug level)
+// The TraceLogger traces every transition (module mtl_fsm, info
+// level, behind CONFIG_MTL_FSM_TRACE) in the fsmview line grammar
 using Sink = usbc::TypeCSink<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                             AttachLogger, usbc::zephyr::StateLogger>;
+                             AttachLogger, mtl::zephyr::TraceLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
 usbc::zephyr::Timer timer;
 AttachLogger logger;
-usbc::zephyr::StateLogger state_logger;
+mtl::zephyr::TraceLogger state_logger;
 Sink sink{tcpc, vbus, timer, logger, state_logger};
 
 } // namespace

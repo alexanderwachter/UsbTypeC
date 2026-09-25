@@ -2,10 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# The bundled mtl library's Zephyr glue: fsm debug-check policy, timer
+# policies, the transition trace logger (CONFIG_MTL_FSM_TRACE)
+rsource "../lib/McuTemplateLibrary/zephyr/Kconfig"
+
 config USB_TYPEC_STACK
 	bool "USB Type-C stack with Power Delivery"
 	select CPP
 	select REQUIRES_FULL_LIBCPP
+	select MTL
 	help
 	  Enable the UsbTypeC library: USB Type-C connection state machines
 	  and USB Power Delivery according to the USB Type-C Cable and

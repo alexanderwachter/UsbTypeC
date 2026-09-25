@@ -1210,7 +1210,7 @@ using sink_timer_ranges_for =
 // live in test/compliance.cpp - one dedicated TU pays for them
 
 // The member observers behind SinkPower (POWER is SinkPower<DERIVED>);
-// injected together as one fsm::observer_group
+// injected together as one fsm::ObserverGroup
 
 // Stores the runtime values the states report: the contract terms on
 // Ready entry, and the standby limit applied during the transition
@@ -1270,15 +1270,15 @@ struct power_effects : fsm::observing<power_effects<POWER>> {
 // states carrying a restore action - with onContractLost() fired only
 // when a contract was actually in place
 template<typename DERIVED>
-class SinkPower : public fsm::observer_group<pe::contract_store<SinkPower<DERIVED>>,
-                                             pe::power_effects<SinkPower<DERIVED>>> {
+class SinkPower : public fsm::ObserverGroup<pe::contract_store<SinkPower<DERIVED>>,
+                                            pe::power_effects<SinkPower<DERIVED>>> {
 public:
     using derived_type = DERIVED;
 
     // store before the effects: the contract terms must be fresh when
     // the power annotation edge fires on the same entry
     SinkPower()
-        : fsm::observer_group<pe::contract_store<SinkPower>, pe::power_effects<SinkPower>>(
+        : fsm::ObserverGroup<pe::contract_store<SinkPower>, pe::power_effects<SinkPower>>(
               store_, effects_)
     {
     }

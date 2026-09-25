@@ -1254,7 +1254,7 @@ using source_timer_ranges_for =
 // live in test/compliance.cpp - one dedicated TU pays for them
 
 // The member observers behind SourcePower (POWER is
-// SourcePower<DERIVED>); injected together as one fsm::observer_group
+// SourcePower<DERIVED>); injected together as one fsm::ObserverGroup
 
 // Stores the contract terms the Ready state reports
 template<typename POWER>
@@ -1306,16 +1306,16 @@ struct src_power_effects : fsm::observing<src_power_effects<POWER>> {
 // The supply itself is engine-owned; this observer only reports, with
 // onContractLost() fired only when a contract was actually in place
 template<typename DERIVED>
-class SourcePower : public fsm::observer_group<pe::src_contract_store<SourcePower<DERIVED>>,
-                                               pe::src_power_effects<SourcePower<DERIVED>>> {
+class SourcePower : public fsm::ObserverGroup<pe::src_contract_store<SourcePower<DERIVED>>,
+                                              pe::src_power_effects<SourcePower<DERIVED>>> {
 public:
     using derived_type = DERIVED;
 
     // store before the effects: the contract terms must be fresh when
     // the power annotation edge fires on the same entry
     SourcePower()
-        : fsm::observer_group<pe::src_contract_store<SourcePower>,
-                              pe::src_power_effects<SourcePower>>(store_, effects_)
+        : fsm::ObserverGroup<pe::src_contract_store<SourcePower>,
+                             pe::src_power_effects<SourcePower>>(store_, effects_)
     {
     }
 

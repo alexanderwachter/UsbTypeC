@@ -16,7 +16,7 @@
  */
 
 #include <usbc/PdDrp.hpp>
-#include <usbc/zephyr/StateLogger.hpp>
+#include <mtl/zephyr/TraceLogger.hpp>
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
@@ -152,8 +152,8 @@ struct SwapPolicy : fsm::observing<SwapPolicy> {
     bool allowSwap(usbc::data_role) { return true; }
 };
 
-// The StateLogger rides along in the connection machine (module
-// usbc_fsm, debug level)
+// The TraceLogger rides along in the connection machine (module
+// mtl_fsm, info level, behind CONFIG_MTL_FSM_TRACE)
 // PD_DRP_MINIMAL drops the optional features (VCONN, PR_Swap,
 // DR_Swap) by not injecting their enabling observers - the engines'
 // swap and VCS states are then filtered from the tables. The
@@ -164,12 +164,12 @@ struct SwapPolicy : fsm::observing<SwapPolicy> {
 using Port = usbc::PdDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
                          usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, ContractMonitor,
                          usbc::default_drp_timing, usbc::drp_preference::none,
-                         usbc::zephyr::StateLogger>;
+                         mtl::zephyr::TraceLogger>;
 #else
 using Port = usbc::PdDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
                          usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, ContractMonitor,
                          usbc::default_drp_timing, usbc::drp_preference::none,
-                         usbc::zephyr::StateLogger, VconnPolicy, SwapPolicy>;
+                         mtl::zephyr::TraceLogger, VconnPolicy, SwapPolicy>;
 #endif
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
@@ -181,7 +181,7 @@ Power power;
 usbc::RequestPolicy source_policy;
 Supply supply;
 ContractMonitor contract_monitor;
-usbc::zephyr::StateLogger state_logger;
+mtl::zephyr::TraceLogger state_logger;
 #ifndef PD_DRP_MINIMAL
 VconnPolicy vconn_policy;
 SwapPolicy swap_policy;
