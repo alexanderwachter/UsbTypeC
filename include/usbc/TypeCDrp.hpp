@@ -33,8 +33,10 @@
  *                    the wall no longer applies)
  * A deadline expiring during a debounce does not abort it (the spec's
  * walls apply while the wanted termination has "not yet been
- * detected"): the expiry is recorded, an attach may still complete,
- * and a failed debounce leaves the phase instead of re-arming it.
+ * detected"): the deadline timer records its own expiry
+ * (drp::try_deadline answers the table's try_expired question), an
+ * attach may still complete, and a failed debounce leaves the phase
+ * instead of re-arming it.
  *
  * Deviations from the spec, accepted knowingly: TryWait.SNK attaches
  * on VBUS with a single Rp in the context rather than debouncing the
@@ -69,6 +71,7 @@
 #include <mtl/Typelist.hpp>
 #include <mtl/TypelistAlgorithms.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <concepts>
 #include <tuple>
@@ -181,8 +184,8 @@ struct try_src : state::source_state {
     static constexpr auto deadline    = TIMING.t_drp_try;
 
     // entered only with the phase fresh (an expired phase leaves
-    // through its debounce guard): open a new budget
-    explicit try_src(port_context& ctx) : source_state(ctx) { context.try_expired = false; }
+    // through its debounce guard): entry arms a new budget
+    using state::source_state::source_state;
 };
 
 // A single Rd appeared in Try.SRC: stable for tTryCCDebounce attaches.
@@ -201,8 +204,6 @@ struct try_src_debounce : state::source_state {
         context.cc = event.cc;
     }
     using state::source_state::source_state;
-    using state::source_state::handle; // the deadline handler must not hide the base's
-    void handle(fsm::deadline const&) { context.try_expired = true; }
 };
 
 // The partner did not present Rd: back to Rd for tDRPTryWait, attaching
@@ -233,7 +234,7 @@ struct try_snk : state::sink_state {
     static constexpr auto timeout     = TIMING.t_drp_try;
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
-    explicit try_snk(port_context& ctx) : sink_state(ctx) { context.try_expired = false; }
+    using state::sink_state::sink_state;
 };
 
 // Monitoring phase of Try.SNK: the phase deadline is the only clock
@@ -262,8 +263,6 @@ struct try_snk_debounce : state::sink_state {
         context.cc = event.cc;
     }
     using state::sink_state::sink_state;
-    using state::sink_state::handle; // the deadline handler must not hide the base's
-    void handle(fsm::deadline const&) { context.try_expired = true; }
 };
 
 // The partner did not present Rp: back to Rp under the tDRPTryWait
@@ -275,10 +274,7 @@ struct try_wait_src : state::source_state {
         fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto deadline    = TIMING.t_drp_try_wait;
 
-    explicit try_wait_src(port_context& ctx) : source_state(ctx)
-    {
-        context.try_expired = false;
-    }
+    using state::source_state::source_state;
 };
 
 // A single Rd appeared in TryWait.SRC: stable for tTryCCDebounce
@@ -297,8 +293,6 @@ struct try_wait_src_debounce : state::source_state {
         context.cc = event.cc;
     }
     using state::source_state::source_state;
-    using state::source_state::handle; // the deadline handler must not hide the base's
-    void handle(fsm::deadline const&) { context.try_expired = true; }
 };
 
 // Rd debounced but VBUS not yet at vSafe0V: attach follows the report
@@ -393,9 +387,51 @@ struct rp_in_context_with_vbus {
 };
 
 // The phase deadline expired while this debounce ran: its failure
-// exits the phase instead of re-arming it
-struct try_expired {
-    static bool check(auto const& state) { return state.context.try_expired; }
+// exits the phase instead of re-arming it. The table's question,
+// answered by the deadline timer (try_deadline below)
+struct try_expired {};
+
+// The Try phases' deadline timer, remembering what no observer can
+// see: fsm::deadlined arms it through the queued channel, and the
+// expiry is delivered as fsm::deadline - an internal transition of
+// the debounce states, outside every hook. So this wrapper of the
+// platform timer records the expiry as the platform fires it and
+// answers try_expired from the record; arming clears it, so it
+// always speaks for the phase in progress. Written from the timer's
+// context, read from the machine's: the store is sequenced before the
+// channel's release latch, and a read ahead of the delivery (the
+// flag may lead the event by the queue latency) only picks the exit
+// the deadline forces next - every try_expired row is the alternative
+// after the attach guards on a state whose wall is armed
+template<fsm::concepts::timer TIMER>
+class try_deadline {
+public:
+    explicit try_deadline(TIMER& timer) : timer_(timer) {}
+
+    void start(std::chrono::milliseconds duration, fsm::timer_callback callback, void* context)
+    {
+        callback_ = callback;
+        context_  = context;
+        expired_.store(false, std::memory_order_relaxed);
+        timer_.start(duration, &try_deadline::fired, this);
+    }
+
+    void stop() { timer_.stop(); }
+
+    bool check(try_expired) const { return expired_.load(std::memory_order_relaxed); }
+
+private:
+    static void fired(void* self)
+    {
+        auto& wall = *static_cast<try_deadline*>(self);
+        wall.expired_.store(true, std::memory_order_relaxed);
+        wall.callback_(wall.context_);
+    }
+
+    TIMER& timer_;
+    fsm::timer_callback callback_ = nullptr;
+    void* context_                = nullptr;
+    std::atomic<bool> expired_{false};
 };
 
 // --- timer-range maps --------------------------------------------------------
@@ -726,8 +762,9 @@ public:
     TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, TIMER& deadline_timer,
              rp_value advertisement, OBSERVERs&... observers)
         : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timer_(timer),
-          deadline_timer_(deadline_timer), timed_(timer_), deadlined_(deadline_timer_),
-          observers_(observers...), sm_(timed_, deadlined_, hw_, vbus_, observers...)
+          try_deadline_(deadline_timer), deadline_timer_(try_deadline_), timed_(timer_),
+          deadlined_(deadline_timer_), observers_(observers...),
+          sm_(timed_, deadlined_, hw_, vbus_, try_deadline_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
@@ -881,18 +918,23 @@ private:
         }
     }
 
+    // the deadline timer's channel wraps the platform timer in the
+    // expiry record answering try_expired; the record is in the pack
+    using deadline_channel = fsm::QueuedTimer<tc::drp::try_deadline<TIMER>>;
+
     TCPC& tcpc_;
     tc::drp_hw_driver<TCPC, VBUS> hw_;
     tc::vbus_watcher<VBUS> vbus_;
     fsm::QueuedTimer<TIMER> timer_;
-    fsm::QueuedTimer<TIMER> deadline_timer_;
+    tc::drp::try_deadline<TIMER> try_deadline_;
+    deadline_channel deadline_timer_;
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
-    fsm::deadlined<fsm::QueuedTimer<TIMER>&> deadlined_;
+    fsm::deadlined<deadline_channel&> deadlined_;
     std::tuple<OBSERVERs&...> observers_;
     fsm::QueuedMachine<tc::drp::table_for_t<TIMING, PREFERENCE>, 4, fsm::inline_work,
                        fsm::no_lock, fsm::timed<fsm::QueuedTimer<TIMER>&>,
-                       fsm::deadlined<fsm::QueuedTimer<TIMER>&>,
-                       tc::drp_hw_driver<TCPC, VBUS>, tc::vbus_watcher<VBUS>, OBSERVERs...>
+                       fsm::deadlined<deadline_channel&>, tc::drp_hw_driver<TCPC, VBUS>,
+                       tc::vbus_watcher<VBUS>, tc::drp::try_deadline<TIMER>, OBSERVERs...>
         sm_;
 };
 
