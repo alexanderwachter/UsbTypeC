@@ -33,7 +33,8 @@ What belongs in this repository:
 
 The state machines are built on the template-based `fsm` state machine from
 [McuTemplateLibrary](https://github.com/alexanderwachter/McuTemplateLibrary)
-(`mtl`), included as a git submodule at `lib/McuTemplateLibrary`.
+(`mtl`), a project of the west manifest (`west.yml`) fetched into the
+workspace at `modules/lib/mtl` by `west update`.
 
 ## Repository layout
 
@@ -43,23 +44,27 @@ The state machines are built on the template-based `fsm` state machine from
 | `src/` | Library sources |
 | `test/` | Host-side unit tests for the state machines |
 | `zephyr/` | Zephyr module definition (`module.yml`, Kconfig, CMake glue) |
-| `lib/McuTemplateLibrary` | `mtl` submodule providing the state machine framework |
 
 ## Building
 
-Clone with submodules:
+Set up the west workspace (fetches Zephyr and mtl):
 
 ```sh
-git clone --recurse-submodules <this repo>
+west init -m <this repo> workspace
+cd workspace
+west update
 ```
 
-Host build with tests:
+Host build with tests, from the manifest repository:
 
 ```sh
 cmake -B build
 cmake --build build
 ctest --test-dir build
 ```
+
+Without a west workspace, point the host build at an mtl checkout with
+`-DMTL_ROOT=<path>`.
 
 ## Using as a Zephyr module
 

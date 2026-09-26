@@ -12,7 +12,15 @@ set(TARGET_NAME usbc)
 
 option(ENABLE_TESTING "Enable the tests" ${PROJECT_IS_TOP_LEVEL})
 
-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/lib/McuTemplateLibrary)
+# mtl comes from the west workspace (west.yml pins its revision, west
+# update fetches it); a checkout elsewhere is named with -DMTL_ROOT
+set(MTL_ROOT "${CMAKE_CURRENT_LIST_DIR}/../modules/lib/mtl" CACHE PATH
+    "Path to the mtl library (default: the west module of the workspace)")
+if(NOT EXISTS ${MTL_ROOT}/CMakeLists.txt)
+    message(FATAL_ERROR "mtl not found at '${MTL_ROOT}': run 'west update', "
+                        "or point MTL_ROOT at an mtl checkout")
+endif()
+add_subdirectory(${MTL_ROOT} mtl)
 
 add_library(${TARGET_NAME} STATIC
     ${CMAKE_CURRENT_LIST_DIR}/src/UsbTypeC.cpp
