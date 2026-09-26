@@ -455,6 +455,11 @@ struct pe_snk_send_not_supported {
     {
         context.reply = event.reply;
     }
+    // a swap request the table's question refused (or nobody answers)
+    pe_snk_send_not_supported(event::swap_request const& event, pe_context& ctx) : context(ctx)
+    {
+        context.reply = makeControlMessage(event.refusal, power_role::sink, ctx.data);
+    }
     explicit pe_snk_send_not_supported(pe_context& ctx) : context(ctx) {}
 
     pd_message const& values() const { return context.reply; }
@@ -521,8 +526,9 @@ struct pe_snk_accept_dr_swap {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
 
-    pe_snk_accept_dr_swap(event::dr_swap_accepted const& event, pe_context& ctx)
-        : context(ctx), message_(event.accept)
+    pe_snk_accept_dr_swap(event::dr_swap_received const&, pe_context& ctx)
+        : context(ctx), message_(makeControlMessage(control_message_type::accept,
+                                                    power_role::sink, ctx.data))
     {
     }
     explicit pe_snk_accept_dr_swap(pe_context& ctx) : context(ctx) {}
@@ -593,8 +599,9 @@ struct pe_snk_vcs_accept {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
 
-    pe_snk_vcs_accept(event::vconn_swap_accepted const& event, pe_context& ctx)
-        : context(ctx), message_(event.accept)
+    pe_snk_vcs_accept(event::vconn_swap_received const&, pe_context& ctx)
+        : context(ctx), message_(makeControlMessage(control_message_type::accept,
+                                                    power_role::sink, ctx.data))
     {
     }
     explicit pe_snk_vcs_accept(pe_context& ctx) : context(ctx) {}
@@ -710,8 +717,9 @@ struct pe_snk_accept_pr_swap {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
 
-    pe_snk_accept_pr_swap(event::pr_swap_accepted const& event, pe_context& ctx)
-        : context(ctx), message_(event.accept)
+    pe_snk_accept_pr_swap(event::pr_swap_received const&, pe_context& ctx)
+        : context(ctx), message_(makeControlMessage(control_message_type::accept,
+                                                    power_role::sink, ctx.data))
     {
     }
     explicit pe_snk_accept_pr_swap(pe_context& ctx) : context(ctx) {}
@@ -1095,8 +1103,11 @@ using sink_transitions = mtl::typelist<
                     fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<event::protocol_error>,
                     fsm::to<state::pe_snk_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::dr_swap_accepted>,
-                    fsm::to<state::pe_snk_accept_dr_swap>>,
+    // the partner's DR_Swap: the table asks the injected policy
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::dr_swap_received>,
+                    fsm::to<state::pe_snk_accept_dr_swap>, fsm::guard<dr_swap_allowed>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::dr_swap_received>,
+                    fsm::to<state::pe_snk_send_not_supported>>,
     fsm::transition<fsm::from<state::pe_snk_accept_dr_swap>, fsm::on<event::message_sent>,
                     fsm::to<state::pe_snk_dr_swap_change>>,
     fsm::transition<fsm::from<state::pe_snk_accept_dr_swap>, fsm::on<event::protocol_error>,
@@ -1117,8 +1128,10 @@ using sink_transitions = mtl::typelist<
                     fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_vcs_send_swap>, fsm::on<event::protocol_error>,
                     fsm::to<state::pe_snk_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::vconn_swap_accepted>,
-                    fsm::to<state::pe_snk_vcs_accept>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::vconn_swap_received>,
+                    fsm::to<state::pe_snk_vcs_accept>, fsm::guard<vconn_swap_allowed>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::vconn_swap_received>,
+                    fsm::to<state::pe_snk_send_not_supported>>,
     fsm::transition<fsm::from<state::pe_snk_vcs_accept>, fsm::on<event::message_sent>,
                     fsm::to<state::pe_snk_vcs_active>>,
     fsm::transition<fsm::from<state::pe_snk_vcs_accept>, fsm::on<event::protocol_error>,
@@ -1155,8 +1168,10 @@ using sink_transitions = mtl::typelist<
                     fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<event::protocol_error>,
                     fsm::to<state::pe_snk_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::pr_swap_accepted>,
-                    fsm::to<state::pe_snk_accept_pr_swap>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::pr_swap_received>,
+                    fsm::to<state::pe_snk_accept_pr_swap>, fsm::guard<pr_swap_allowed>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::pr_swap_received>,
+                    fsm::to<state::pe_snk_send_not_supported>>,
     fsm::transition<fsm::from<state::pe_snk_accept_pr_swap>, fsm::on<event::message_sent>,
                     fsm::to<state::pe_snk_swap_transition_to_off>>,
     fsm::transition<fsm::from<state::pe_snk_accept_pr_swap>, fsm::on<event::protocol_error>,
@@ -1326,7 +1341,7 @@ public:
           prl_(tcpc, prl_timer, port_),
           pe_timer_(pe_timer),
           timed_(pe_timer_),
-          sm_(timed_, prl_, gates_, observers...)
+          sm_(timed_, prl_, gates_, policy_, observers...)
     {
         tcpc_.setMessageHeaderInfo(
             {power_role::sink, data_role::ufp, pd_revision::rev_3_x});
@@ -1650,14 +1665,11 @@ private:
             sm_.process(pe::event::ps_rdy{});
             advanceTransients(); // a VCONN hand-off completion
         } else if (isControl(header, control_message_type::dr_swap)) {
-            answerSwap<data_role>(pe::event::dr_swap_accepted{
-                makeControl(control_message_type::accept)});
+            sm_.process(pe::event::dr_swap_received{{refusal<dr_swap_capable>}});
         } else if (isControl(header, control_message_type::pr_swap)) {
-            answerSwap<power_role>(pe::event::pr_swap_accepted{
-                makeControl(control_message_type::accept)});
+            sm_.process(pe::event::pr_swap_received{{refusal<pr_swap_capable>}});
         } else if (isControl(header, control_message_type::vconn_swap)) {
-            answerSwap<vconn_source_role>(pe::event::vconn_swap_accepted{
-                makeControl(control_message_type::accept)});
+            sm_.process(pe::event::vconn_swap_received{{refusal<vconn_capable>}});
         } else if (isControl(header, control_message_type::get_sink_cap)) {
             sendSinkCapabilities();
         } else if (isControl(header, control_message_type::get_source_cap)) {
@@ -1672,41 +1684,14 @@ private:
         }
     }
 
-    // The partner asks for a role swap, arbitrated by the injected
-    // policy's optional allowSwap(role) - consulted with the role this
-    // port would take. A policy without one keeps the non-DRP answer
-    // (Not_Supported); a refusal answers Reject; a request outside
-    // Ready is discarded (an AMS is running)
-    template<typename ROLE, typename ACCEPTED>
-    void answerSwap(ACCEPTED const& accepted)
-    {
-        if constexpr (requires(ROLE role) {
-                          { policy_.allowSwap(role) } -> std::convertible_to<bool>;
-                      }) {
-            if (policy_.allowSwap(swapTarget<ROLE>())) {
-                sm_.process(accepted);
-            } else {
-                sm_.process(
-                    pe::event::unsupported{makeControl(control_message_type::reject)});
-            }
-        } else {
-            sm_.process(
-                pe::event::unsupported{makeControl(control_message_type::not_supported)});
-        }
-    }
-
-    template<typename ROLE>
-    ROLE swapTarget() const
-    {
-        if constexpr (std::is_same_v<ROLE, power_role>) {
-            return power_role::source; // a sink swaps to sourcing
-        } else if constexpr (std::is_same_v<ROLE, vconn_source_role>) {
-            return {}; // the arbitration decides on the port's vconn role
-        } else {
-            auto const data = sm_.template context<pe::pe_context>().data;
-            return data == data_role::ufp ? data_role::dfp : data_role::ufp;
-        }
-    }
+    // The partner's swap request is the table's question (the Ready
+    // rows on the *_swap_received events): the injected policy's
+    // answer accepts, the catch-all refuses - Reject where the
+    // feature exists, the non-DRP Not_Supported where it does not. A
+    // request outside Ready is discarded (an AMS is running)
+    template<bool CAPABLE>
+    static constexpr control_message_type refusal =
+        CAPABLE ? control_message_type::reject : control_message_type::not_supported;
 
     // BIST entry, honored only under an explicit vSafe5V contract
     // (spec): Carrier Mode 2 transmits the test carrier for
@@ -1813,19 +1798,16 @@ private:
     POLICY& policy_;
     enum class pending_ams : std::uint8_t { none, pr_swap, dr_swap };
 
-    // The optional features follow the injected policy: without a
-    // feature's arbitration hook, its states are filtered from the
-    // table (the facade's proxies expose the hooks exactly when an
-    // injected observer enables the feature by tag)
-    static constexpr bool pr_swap_capable = requires(POLICY p, power_role role) {
-        { p.allowSwap(role) } -> std::convertible_to<bool>;
-    };
-    static constexpr bool dr_swap_capable = requires(POLICY p, data_role role) {
-        { p.allowSwap(role) } -> std::convertible_to<bool>;
-    };
-    static constexpr bool vconn_capable = requires(POLICY p) {
-        { p.allowSwap(vconn_source_role{}) } -> std::convertible_to<bool>;
-    };
+    // The optional features follow the injected policy: it answers the
+    // table's swap questions or the feature's states are filtered from
+    // the table (the facade's proxies answer exactly when an injected
+    // observer enables the feature by tag)
+    static constexpr bool pr_swap_capable =
+        fsm::concepts::answers_stateless_guard<POLICY, pe::pr_swap_allowed>;
+    static constexpr bool dr_swap_capable =
+        fsm::concepts::answers_stateless_guard<POLICY, pe::dr_swap_allowed>;
+    static constexpr bool vconn_capable =
+        fsm::concepts::answers_stateless_guard<POLICY, pe::vconn_swap_allowed>;
 
     bool bist_test_data_     = false;
     bool sink_tx_ok_         = true; // last Rp seen (SinkTxOk/NG)
@@ -1835,10 +1817,11 @@ private:
     fsm::QueuedTimer<TIMER> pe_timer_;
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     gate_watch gates_{*this};
+    // the policy rides in the pack to answer the table's questions
     fsm::QueuedMachine<pe::sink_table_for<pr_swap_capable, dr_swap_capable, vconn_capable>, 4,
                        fsm::inline_work, fsm::no_lock,
                        fsm::timed<fsm::QueuedTimer<TIMER>&>, ProtocolLayer<TCPC, TIMER>,
-                       gate_watch, OBSERVERs...>
+                       gate_watch, POLICY, OBSERVERs...>
         sm_;
 };
 

@@ -169,12 +169,15 @@ struct send_pr_swap { // our PR_Swap goes out
 struct send_dr_swap { // our DR_Swap goes out
     pd_message message;
 };
-struct pr_swap_accepted { // the partner's PR_Swap passed arbitration
-    pd_message accept;
+// The partner's swap request, delivered as the table's question: the
+// guarded Ready row accepts when the injected policy answers yes, the
+// catch-all sends the refusal - Reject, or Not_Supported without the
+// feature (the Accept is built by the accepting state)
+struct swap_request {
+    control_message_type refusal;
 };
-struct dr_swap_accepted { // the partner's DR_Swap passed arbitration
-    pd_message accept;
-};
+struct pr_swap_received : swap_request {};
+struct dr_swap_received : swap_request {};
 struct swap_wait_source_on { // the port asserted Rd mid PR_Swap: this
     data_role role;          // engine announces the supply is off
 };
@@ -189,9 +192,7 @@ struct bist_carrier {};  // BIST Carrier Mode 2 requested (vSafe5V)
 struct send_vconn_swap { // our VCONN_Swap goes out
     pd_message message;
 };
-struct vconn_swap_accepted { // the partner's VCONN_Swap passed arbitration
-    pd_message accept;
-};
+struct vconn_swap_received : swap_request {}; // the partner's VCONN_Swap
 struct send_vconn_ps_rdy { // the vconn machine turned the switch on
     pd_message message;
 };
@@ -219,6 +220,16 @@ struct hard_reset_received {};
 struct pr_swap_feature {};  // contract: allowSwap(power_role)
 struct dr_swap_feature {};  // contract: allowSwap(data_role)
 struct vconn_feature {};    // contract: concepts::vconn_port
+
+// The tables' arbitration questions - fsm::guard tags without a static
+// check, answered by the policy injected into the engine's machine:
+// bool check(pe::pr_swap_allowed) - may this port take the other
+// power role? - and likewise the other data role and the VCONN source
+// role. A table asking a question nobody answers does not compile, so
+// a policy answering is exactly what brings the feature's states in
+struct pr_swap_allowed {};
+struct dr_swap_allowed {};
+struct vconn_swap_allowed {};
 
 // The disabled features of a configuration as one tag list, so
 // disabling costs a single filter pass over a table or map (chained

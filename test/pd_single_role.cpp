@@ -182,6 +182,15 @@ int pdSinkFacadeTests()
     negotiate();
     check(power.contracts == 1);
 
+    // a sink-only port's policy answers none of the swap questions:
+    // the partner's PR_Swap is Not_Supported, the contract stands
+    deliver(partnerControl(usbc::control_message_type::pr_swap, usbc::power_role::source,
+                           usbc::data_role::dfp));
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    txSuccess();
+    check(power.contracts == 1);
+
     // the source hard-resets: the window holds the attach while VBUS
     // legitimately cycles - no detach, the connection resumes and
     // renegotiates instead of resolving from scratch
@@ -271,6 +280,14 @@ int pdSourceFacadeTests()
     check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::ps_rdy));
     txSuccess();
     check(power.contracts == 1);
+
+    // a source-only port's policy answers none of the swap questions:
+    // the partner's DR_Swap is Not_Supported
+    deliver(partnerControl(usbc::control_message_type::dr_swap, usbc::power_role::sink,
+                           usbc::data_role::ufp));
+    check(transmittedType(tcpc) ==
+          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    txSuccess();
 
     // a mute PD sink (GoodCRCs, never Requests): hard resets until the
     // counter is spent, then Type-C Error Recovery - a fresh fixture,

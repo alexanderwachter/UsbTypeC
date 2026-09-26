@@ -244,14 +244,15 @@ struct recovery_watch : fsm::observing<recovery_watch> {
     void notifyEntry(usbc::pe::request_error_recovery) { ++requests; }
 };
 
-// The engine's optional swap features follow the injected policy's
-// allowSwap hooks; this test drives the swaps, so extend the stock
-// policy with the arbitration voice (the enabled corner of the
-// detection - the facade's proxy provides these hooks in real use)
+// The engine's optional swap features follow the injected policy
+// answering the tables' swap questions; this test drives the swaps,
+// so extend the stock policy with the answers (the enabled corner of
+// the detection - the facade's proxy answers in real use)
 struct swap_capable_policy : usbc::PowerPolicy {
     using usbc::PowerPolicy::PowerPolicy;
-    bool allowSwap(usbc::power_role) { return true; }
-    bool allowSwap(usbc::data_role) { return true; }
+    bool allow = true; // the partner's requests: Accept or Reject
+    bool check(usbc::pe::pr_swap_allowed) const { return allow; }
+    bool check(usbc::pe::dr_swap_allowed) const { return allow; }
 };
 
 usbc::pd_message makeExtended(bool chunked)
@@ -415,6 +416,19 @@ int policyEngineTests()
     check(transmittedType(tcpc) ==
           static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
     txSuccess();
+
+    // the partner's swap requests are the table's questions: the
+    // policy's no answers Reject from Ready, the contract stands
+    auto const lost_before_refusals = power.lost;
+    policy.allow = false;
+    deliver(makeControl(usbc::control_message_type::pr_swap));
+    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::reject));
+    txSuccess();
+    deliver(makeControl(usbc::control_message_type::dr_swap));
+    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::reject));
+    txSuccess();
+    check(power.voltage == 9000 && power.lost == lost_before_refusals);
+    policy.allow = true;
 
     // an unchunked extended message is answered immediately
     deliver(makeExtended(false));

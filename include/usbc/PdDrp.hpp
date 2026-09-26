@@ -8,8 +8,10 @@
  *
  * Role swaps are PD-negotiated (PR_Swap/DR_Swap): swapPowerRole() and
  * swapDataRole() send the request through the active engine, and the
- * partner's requests are arbitrated by the injected observers'
- * allowSwap hooks. The engines run the message choreography (Accept,
+ * partner's requests are the engine tables' questions
+ * (pe::pr_swap_allowed and kin), answered by this class's policy
+ * proxies from the injected observers' allowSwap hooks. The engines
+ * run the message choreography (Accept,
  * Transition_to_off, the PS_RDY exchange); this class watches their
  * swap states and flips the Type-C terminations at the spec's
  * Assert_Rd/Assert_Rp moments. A flip tears the old role's engine down
@@ -134,13 +136,8 @@ public:
     // TCPC header follows
     bool swapDataRole()
     {
-        auto const current = drp_.dataRole();
-        auto const role    = drp_.powerRole();
-        if (!current || !role) {
-            return false;
-        }
-        auto const target = *current == data_role::ufp ? data_role::dfp : data_role::ufp;
-        if (!drp_.swapAllowed(target)) {
+        auto const role = drp_.powerRole();
+        if (!role || !dataSwapAllowed()) {
             return false;
         }
         return *role == power_role::sink ? sink_engine_.requestDataSwap()
@@ -231,12 +228,13 @@ private:
         }
     }
 
-    // The user's policies extended with the swap arbitration: the
-    // engines consult allowSwap for the partner's PR_Swap/DR_Swap, and
-    // the verdict is the connection layer's (every enabling observer
-    // may veto). Each hook exists only while its feature is enabled -
-    // its absence is what filters the feature's states from the
-    // engines' tables
+    // The user's policies extended with the answers to the engine
+    // tables' swap questions (pe::pr_swap_allowed and kin, asked on
+    // the partner's request from Ready): the verdict is the connection
+    // layer's (every enabling observer may veto), asked with the role
+    // this engine's port would take. Each answer exists only while its
+    // feature is enabled - its absence is what filters the feature's
+    // states from the engine's table
     struct sink_policy_proxy {
         SINK_POLICY& inner;
         PdDrp& port;
@@ -247,17 +245,17 @@ private:
         {
             return inner.select(source_capabilities, capabilities);
         }
-        bool allowSwap(power_role role)
+        bool check(pe::pr_swap_allowed)
             requires(pr_swap_enabled)
         {
-            return port.drp_.swapAllowed(role);
+            return port.drp_.swapAllowed(power_role::source); // a sink swaps to sourcing
         }
-        bool allowSwap(data_role role)
+        bool check(pe::dr_swap_allowed)
             requires(dr_swap_enabled)
         {
-            return port.drp_.swapAllowed(role);
+            return port.dataSwapAllowed();
         }
-        bool allowSwap(vconn_source_role)
+        bool check(pe::vconn_swap_allowed)
             requires(vconn_enabled)
         {
             return port.allowVconnSwap();
@@ -273,22 +271,33 @@ private:
         {
             return inner.evaluate(rdo, capabilities);
         }
-        bool allowSwap(power_role role)
+        bool check(pe::pr_swap_allowed)
             requires(pr_swap_enabled)
         {
-            return port.drp_.swapAllowed(role);
+            return port.drp_.swapAllowed(power_role::sink); // a source swaps to sinking
         }
-        bool allowSwap(data_role role)
+        bool check(pe::dr_swap_allowed)
             requires(dr_swap_enabled)
         {
-            return port.drp_.swapAllowed(role);
+            return port.dataSwapAllowed();
         }
-        bool allowSwap(vconn_source_role)
+        bool check(pe::vconn_swap_allowed)
             requires(vconn_enabled)
         {
             return port.allowVconnSwap();
         }
     };
+
+    // A data role swap is asked with the role the port would take:
+    // the opposite of the attached pair's; refused while not attached
+    bool dataSwapAllowed()
+    {
+        auto const current = drp_.dataRole();
+        if (!current) {
+            return false;
+        }
+        return drp_.swapAllowed(*current == data_role::ufp ? data_role::dfp : data_role::ufp);
+    }
 
     // Relinquishing VCONN is always fine; becoming the VCONN source is
     // board-dependent and must match the VIF's claim - the injected
