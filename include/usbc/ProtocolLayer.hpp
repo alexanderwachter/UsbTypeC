@@ -98,19 +98,16 @@ inline constexpr auto t_receive             = std::chrono::milliseconds{1}; // t
 inline constexpr auto t_hard_reset_complete = std::chrono::milliseconds{5}; // tHardResetComplete
 
 // Shared by the transmitting states: the message in flight survives
-// the timeout-driven retransmission transitions. The retry limit is
-// per message - it follows the negotiated revision
+// the timeout-driven retransmission transitions
 struct tx_context {
     pd_message message{};
     std::uint8_t retry_counter = 0;
-    std::uint8_t retry_limit   = n_retry_count;
 };
 
 namespace event {
 
 struct tx_request {
     pd_message message;
-    std::uint8_t retry_limit = n_retry_count;
 };
 struct phy_success {};
 struct phy_discarded {};
@@ -159,7 +156,6 @@ struct wait_for_phy_response {
     {
         context.message       = event.message;
         context.retry_counter = 0;
-        context.retry_limit   = event.retry_limit;
     }
     // Re-entry is the retransmission: same message, same MessageID
     explicit wait_for_phy_response(tx_context& ctx) : context(ctx) { ++context.retry_counter; }
@@ -193,13 +189,10 @@ struct wait_for_hard_reset_complete {
 
 } // namespace state
 
-// PRL_Tx_Check_RetryCounter as a transition guard
-struct retries_left {
-    static bool check(state::wait_for_phy_response const& state)
-    {
-        return state.context.retry_counter < state.context.retry_limit;
-    }
-};
+// PRL_Tx_Check_RetryCounter as a transition guard: the table's
+// question, answered by the layer's client reporter - the limit
+// follows the negotiated revision, which the layer holds
+struct retries_left {};
 
 // The spec timer range of every timed state, checked against the table
 using prl_timer_ranges = mtl::typelist<
@@ -293,7 +286,7 @@ public:
         header.message_id = tx_counter_[index(message.sop)];
         header.revision   = revision_;
         message.header    = header.encode();
-        return sm_.process(prl::event::tx_request{message, retryLimit()});
+        return sm_.process(prl::event::tx_request{message});
     }
 
     bool transmitHardReset()
@@ -400,9 +393,17 @@ private:
     };
     // Reports the outcomes the state machine reaches on its own -
     // possibly from the serialized timer context. Each observation
-    // delivers its own type, so the notify hooks cannot collide
+    // delivers its own type, so the notify hooks cannot collide. Also
+    // answers the table's retry question from the layer's revision
     struct client_reporter : fsm::observing<client_reporter> {
         explicit client_reporter(ProtocolLayer& prl_ref) : prl(prl_ref) {}
+
+        // PRL_Tx_Check_RetryCounter: nRetryCount of the negotiated
+        // revision - two retries under PD3, three under PD2
+        bool check(prl::retries_left, prl::state::wait_for_phy_response const& state) const
+        {
+            return state.context.retry_counter < prl.retryLimit();
+        }
 
         // entering a state whose value is the failed SOP* is the
         // transmission error

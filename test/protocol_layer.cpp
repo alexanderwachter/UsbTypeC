@@ -230,5 +230,26 @@ int protocolLayerTests()
     check(timer.armed);
     prl.onAlert(usbc::alert_status::transmit_success);
 
+    // nRetryCount follows the negotiated revision (the table's
+    // retries_left question, answered by the layer): a partner at
+    // revision 2.0 brings the link down to it, and a request without
+    // GoodCRC now retries three times instead of two
+    usbc::pd_message rev2{.sop = usbc::sop_type::sop, .payload_size = 0};
+    rev2.header = usbc::pd_header{.message_type = 0x03,
+                                  .revision     = usbc::pd_revision::rev_2_0,
+                                  .message_id   = 6}
+                      .encode();
+    tcpc.injectMessage(rev2);
+    prl.onAlert(*tcpc.readAlert());
+    check(prl.revision() == usbc::pd_revision::rev_2_0);
+    check(prl.transmit(makeRequest()));
+    auto const attempts_before_retries = tcpc.transmit_count;
+    timer.expire();
+    timer.expire();
+    timer.expire(); // the third retry PD2 grants
+    check(tcpc.transmit_count == attempts_before_retries + 3 && timer.armed);
+    timer.expire(); // retries exhausted
+    check(!timer.armed && client.tx_error == 2);
+
     return failures;
 }
