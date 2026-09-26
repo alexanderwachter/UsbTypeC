@@ -22,8 +22,18 @@ layer's swap standby suspends detach detection while VBUS is
 legitimately absent, and its tPSSourceOff/tPSSourceOn timeouts restart
 connection resolution if the partner never completes. The joystick
 triggers the requests: SEL a PR_Swap, LEFT a DR_Swap; the partner's
-incoming requests are arbitrated by the injected observers'
-allowSwap hooks.
+incoming requests are the engine tables' questions, answered from the
+injected observers' allowSwap hooks.
+
+A role lock keeps the port sink-only at runtime - a nearly empty
+battery that must keep charging, say: inject an object answering
+`bool check(usbc::tc::drp::sourcing_allowed)` next to the swap
+policies. While it answers no, the port rests at Rd instead of
+toggling (asking again every slice, so lifting the lock resumes
+toggling within one), attaches as sink where a source-preferring port
+would try Rp, and rejects PR_Swaps to source; a port already sourcing
+keeps its contract until the application requests the swap. This
+sample injects none: the question's default answer is yes.
 
 ## Build
 

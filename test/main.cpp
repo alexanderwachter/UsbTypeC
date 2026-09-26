@@ -14,6 +14,7 @@ int typeCDrpTests();
 int typeCDrpTrySrcTests();
 int typeCDrpTrySnkTests();
 int typeCDrpSwapTests();
+int typeCDrpRoleLockTests();
 int pdDrpTests();
 int pdSinkFacadeTests();
 int pdSourceFacadeTests();
@@ -23,7 +24,7 @@ int policyEngineSourceTests();
 int main(int argc, const char* argv[]) {
     int const failures = tcpcTests() + protocolLayerTests() + typeCTests() + typeCSourceTests() +
                          typeCDrpTests() + typeCDrpTrySrcTests() + typeCDrpTrySnkTests() +
-                         typeCDrpSwapTests() + pdDrpTests() +
+                         typeCDrpSwapTests() + typeCDrpRoleLockTests() + pdDrpTests() +
                          pdSinkFacadeTests() + pdSourceFacadeTests() +
                          policyEngineTests() + policyEngineSourceTests();
     if (failures != 0) {

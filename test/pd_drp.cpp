@@ -115,6 +115,12 @@ struct swap_allow : fsm::observing<swap_allow> {
     bool allowSwap(usbc::data_role) { return true; }
 };
 
+// The role lock: the port is sink-only while it answers no
+struct sink_lock {
+    bool sourcing = true;
+    bool check(usbc::tc::drp::sourcing_allowed) const { return sourcing; }
+};
+
 // --- partner messages --------------------------------------------------------
 int next_id = 0;
 
@@ -180,7 +186,7 @@ int pdDrpTests()
     using Port = usbc::PdDrp<mock_tcpc, mock_vbus, manual_timer, usbc::PowerPolicy,
                              mock_sink_power, usbc::RequestPolicy, mock_supply,
                              mock_source_power, usbc::default_drp_timing,
-                             usbc::drp_preference::none, vconn_allow, swap_allow>;
+                             usbc::drp_preference::none, vconn_allow, swap_allow, sink_lock>;
 
     mock_tcpc tcpc;
     mock_vbus vbus;
@@ -192,11 +198,12 @@ int pdDrpTests()
     mock_source_power source_power;
     vconn_allow vconn_policy;
     swap_allow swap_policy;
+    sink_lock lock;
 
     Port port{tcpc,   vbus,          timers,       sink_capabilities,
               sink_policy, sink_power,    source_caps,  source_policy,
               supply,      source_power,  usbc::rp_value::p_1a5, vconn_policy,
-              swap_policy};
+              swap_policy,  lock};
 
     auto const ccAlert = [&] {
         tcpc.alerts |= usbc::alert_status::cc_status_changed;
@@ -356,6 +363,17 @@ int pdDrpTests()
     txSuccess();
     check(port.dataRole() == usbc::data_role::ufp);
     check(tcpc.header_info.data == usbc::data_role::ufp);
+
+    // the role lock vetoes swaps to source ahead of the swap policy:
+    // the partner's PR_Swap is rejected, our own request refused
+    lock.sourcing = false;
+    deliver(partnerControl(usbc::control_message_type::pr_swap, usbc::power_role::source,
+                           usbc::data_role::dfp));
+    check(transmittedControl(tcpc, usbc::control_message_type::reject));
+    txSuccess();
+    check(!port.swapPowerRole());
+    check(tcpc.sinking && port.powerRole() == usbc::power_role::sink);
+    lock.sourcing = true;
 
     // PR_Swap, our request (sink -> source): the agreement enters the
     // swap standby - draw stops, detach detection is suspended

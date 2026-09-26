@@ -38,6 +38,15 @@
  * attach may still complete, and a failed debounce leaves the phase
  * instead of re-arming it.
  *
+ * Role lock (port control, conformance-neutral): an injected object
+ * answering bool check(tc::drp::sourcing_allowed) keeps the port
+ * sink-only while it says no - the toggle stays at Rd (re-asking each
+ * slice, so lifting the lock resumes toggling within one), a
+ * source-preferring port attaches as sink instead of trying Rp, and
+ * swaps to source are vetoed ahead of the swap policies. The
+ * question's static default is yes: without such an object nothing
+ * changes.
+ *
  * Deviations from the spec, accepted knowingly: TryWait.SNK attaches
  * on VBUS with a single Rp in the context rather than debouncing the
  * Rp separately; AttachWait exit back to toggling uses tCCDebounce
@@ -434,6 +443,28 @@ private:
     std::atomic<bool> expired_{false};
 };
 
+// --- the role lock -----------------------------------------------------------
+
+// May the port take the source role now? The table's question at
+// every decision towards Rp - the toggle's Rp slice, Try.SRC where a
+// source-preferring port's sink flow would attach - and the facade's
+// for a swap to source. Its static default says yes; an application
+// object injected into the port answering bool check(sourcing_allowed)
+// overrides it, and while it says no the DRP behaves as a sink: it
+// rests at Rd re-asking every slice, attaches as sink, vetoes swaps
+// to source. A phase already running completes (a lock engaged
+// mid-debounce may still resolve to Attached.SRC once), a port
+// already sourcing keeps its contract - the application requests the
+// swap. Exactly one answering object per port (mtl's rule)
+struct sourcing_allowed {
+    static constexpr bool check() { return true; }
+};
+
+// Try.SRC combines the sink flow's attach conditions with that
+// answer; the facade's try_gate answers it, so the application object
+// never sees a state
+struct try_src_allowed {};
+
 // --- timer-range maps --------------------------------------------------------
 
 // Composed per preference like the flows they check; the shared attach
@@ -481,8 +512,13 @@ using try_snk_deadline_ranges = mtl::typelist<
 // source-preferring port
 template<drp_timing const& TIMING, typename SNK_ATTACH>
 using sink_flow = mtl::concat_t<
-    mtl::typelist<fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>,
-                                  fsm::to<unattached_src<TIMING>>>>,
+    mtl::typelist<
+        // the Rd slice is up: advertise Rp - unless the port is locked
+        // to the sink role, then another Rd slice (re-asking each time)
+        fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>,
+                        fsm::to<unattached_src<TIMING>>, fsm::guard<sourcing_allowed>>,
+        fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>,
+                        fsm::to<unattached_snk<TIMING>>>>,
     sink_attach_flow<unattached_snk<TIMING>, SNK_ATTACH>>;
 
 // Source-role flow; SRC_ATTACH is Attached.SRC, or Try.SNK for a
@@ -661,11 +697,22 @@ struct table_for
     static_assert(timingWithinSpec<TIMING>());
 };
 
+// Where the sink flow would attach, a source-preferring port tries Rp
+// first - unless locked to the sink role. Listed ahead of the shared
+// flow's attach rows: alternatives are tried in table order, so the
+// lock's no falls through to the plain sink attach
+template<drp_timing const& TIMING>
+using try_src_entry = mtl::typelist<
+    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
+                    fsm::to<try_src<TIMING>>, fsm::guard<try_src_allowed>>,
+    fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_present>,
+                    fsm::to<try_src<TIMING>>, fsm::guard<sourcing_allowed>>>;
+
 template<drp_timing const& TIMING>
 struct table_for<TIMING, drp_preference::source>
     : mtl::rebind_t<
-          mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
-                                         sink_flow<TIMING, try_src<TIMING>>,
+          mtl::linearize_t<mtl::typelist<entry_flow<TIMING>, try_src_entry<TIMING>,
+                                         sink_flow<TIMING, state::attached_snk>,
                                          source_flow<TIMING, state::attached_src>,
                                          try_src_flow<TIMING>, swap_flow<TIMING>,
                                          error_recovery_flow<unattached_snk<TIMING>>,
@@ -754,17 +801,19 @@ public:
     // driver, vbus watcher); attach results are observed on the
     // attached states' attachedInfo() with the role encoded in the
     // info type, an observer providing onPdAlert(alert_status)
-    // receives the alert bits this layer does not consume, and one
-    // providing allowSwap(power_role) is a swap policy
-    // deadline_timer drives the Try phases' hard walls (tDRPTry,
-    // tTryTimeout, tDRPTryWait) alongside the per-state timer; a
-    // preference-none port never arms it
+    // receives the alert bits this layer does not consume, one
+    // providing allowSwap(power_role) is a swap policy, and one
+    // answering check(tc::drp::sourcing_allowed) is the role lock
+    // (sink-only while it says no). deadline_timer drives the Try
+    // phases' hard walls (tDRPTry, tTryTimeout, tDRPTryWait)
+    // alongside the per-state timer; a preference-none port never
+    // arms it
     TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, TIMER& deadline_timer,
              rp_value advertisement, OBSERVERs&... observers)
         : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timer_(timer),
           try_deadline_(deadline_timer), deadline_timer_(try_deadline_), timed_(timer_),
           deadlined_(deadline_timer_), observers_(observers...),
-          sm_(timed_, deadlined_, hw_, vbus_, try_deadline_, observers...)
+          sm_(timed_, deadlined_, hw_, vbus_, try_deadline_, try_gate_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
@@ -847,10 +896,16 @@ public:
 
     // The arbitration alone, for a PD layer answering the partner's
     // swap request: every injected policy observer for the role kind
-    // is consulted with the role the port would take
+    // is consulted with the role the port would take - a swap to
+    // source first passes the role lock
     template<typename ROLE>
     bool swapAllowed(ROLE role)
     {
+        if constexpr (std::is_same_v<ROLE, power_role>) {
+            if (role == power_role::source && !sourcingAllowed()) {
+                return false;
+            }
+        }
         constexpr bool any_policy =
             (concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, ROLE> || ...);
         return any_policy && std::apply(
@@ -858,6 +913,15 @@ public:
                                      return (allowsSwap(observer, role) && ...);
                                  },
                                  observers_);
+    }
+
+    // The role lock's answer (tc::drp::sourcing_allowed): the injected
+    // object answering it decides, the question's static default (yes)
+    // stands without one - the same resolution the machine applies
+    bool sourcingAllowed()
+    {
+        return std::apply([](auto&... observer) { return (allowsSourcing(observer) && ...); },
+                          observers_);
     }
 
     // The attached pair's power role; nullopt while not attached (a
@@ -918,6 +982,30 @@ private:
         }
     }
 
+    static bool allowsSourcing(auto& observer)
+    {
+        if constexpr (fsm::concepts::answers_stateless_guard<std::remove_cvref_t<decltype(observer)>,
+                                                             tc::drp::sourcing_allowed>) {
+            return observer.check(tc::drp::sourcing_allowed{});
+        } else {
+            return true;
+        }
+    }
+
+    // Answers the table's try_src_allowed (source preference): Try.SRC
+    // where the sink flow would attach, unless the port is locked to
+    // the sink role - the sink flow's attach conditions and the lock's
+    // answer combined here, so the application object never sees a
+    // state
+    struct try_gate {
+        TypeCDrp& port;
+
+        bool check(tc::drp::try_src_allowed, tc::state::attach_wait_snk const& state)
+        {
+            return tc::attach_conditions_met::check(state) && port.sourcingAllowed();
+        }
+    };
+
     // the deadline timer's channel wraps the platform timer in the
     // expiry record answering try_expired; the record is in the pack
     using deadline_channel = fsm::QueuedTimer<tc::drp::try_deadline<TIMER>>;
@@ -931,10 +1019,12 @@ private:
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     fsm::deadlined<deadline_channel&> deadlined_;
     std::tuple<OBSERVERs&...> observers_;
+    try_gate try_gate_{*this};
     fsm::QueuedMachine<tc::drp::table_for_t<TIMING, PREFERENCE>, 4, fsm::inline_work,
                        fsm::no_lock, fsm::timed<fsm::QueuedTimer<TIMER>&>,
                        fsm::deadlined<deadline_channel&>, tc::drp_hw_driver<TCPC, VBUS>,
-                       tc::vbus_watcher<VBUS>, tc::drp::try_deadline<TIMER>, OBSERVERs...>
+                       tc::vbus_watcher<VBUS>, tc::drp::try_deadline<TIMER>, try_gate,
+                       OBSERVERs...>
         sm_;
 };
 

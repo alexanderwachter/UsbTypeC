@@ -146,6 +146,17 @@ static_assert(usbc::concepts::drp_swap_policy<mock_swap_policy, usbc::power_role
 static_assert(usbc::concepts::drp_swap_policy<mock_swap_policy, usbc::data_role>);
 static_assert(!usbc::concepts::drp_swap_policy<mock_drp_client, usbc::power_role>);
 
+// The role lock: answers the table's sourcing_allowed question
+struct mock_role_lock {
+    bool sourcing = true;
+    bool check(usbc::tc::drp::sourcing_allowed) const { return sourcing; }
+};
+static_assert(
+    fsm::concepts::answers_stateless_guard<mock_role_lock, usbc::tc::drp::sourcing_allowed>);
+static_assert(
+    !fsm::concepts::answers_stateless_guard<mock_swap_policy, usbc::tc::drp::sourcing_allowed>);
+static_assert(usbc::tc::drp::sourcing_allowed::check()); // the default without a lock
+
 } // namespace
 
 int typeCDrpTests()
@@ -587,6 +598,125 @@ int typeCDrpSwapTests()
         f.timer.expire(); // tPSSourceOff: no PS_RDY came
         check(!f.tcpc.sinking); // back in Attached.SNK, VBUS gone: detach
         check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.armed); // toggling again
+    }
+
+    return failures;
+}
+
+int typeCDrpRoleLockTests()
+{
+    constexpr auto& timing = usbc::default_drp_timing;
+
+    // locked: the toggle rests at Rd, re-asking every slice; unlocking
+    // resumes the Rp slice on the next expiry, and a source appearing
+    // while locked attaches as sink like any other
+    {
+        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
+                                   usbc::drp_preference::none, mock_drp_client, mock_role_lock>;
+        fixture f;
+        mock_role_lock lock{.sourcing = false};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client, lock};
+        tc.start();
+        check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.armed);
+        auto const starts = f.timer.starts;
+        f.timer.expire();
+        check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.armed); // another Rd slice
+        f.timer.expire();
+        check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.armed);
+        check(f.timer.starts == starts + 2);
+        lock.sourcing = true;
+        f.timer.expire();
+        check(f.tcpc.pull == usbc::cc_pull::rp); // the Rp slice resumes
+        lock.sourcing = false;
+        f.timer.expire(); // the Rp slice ends as ever
+        check(f.tcpc.pull == usbc::cc_pull::rd);
+
+        f.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        f.timer.expire(); // tCCDebounce
+        check(f.tcpc.sinking && f.client.attached_snk == 1);
+    }
+
+    // source preference, locked: where the port would try Rp it
+    // attaches as sink - Rp never presented, the phase wall never
+    // armed; unlocked, the same attach tries Rp
+    {
+        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
+                                   usbc::drp_preference::source, mock_drp_client,
+                                   mock_role_lock>;
+        fixture f;
+        mock_role_lock lock{.sourcing = false};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client, lock};
+        tc.start();
+        f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        f.timer.expire(); // tCCDebounce: Try.SRC would follow
+        check(f.tcpc.sinking && f.client.attached_snk == 1);
+        check(!f.deadline.armed && f.deadline.starts == 0);
+
+        f.vbus.setVoltage(0); // detach
+        check(f.client.detached == 1 && f.tcpc.pull == usbc::cc_pull::rd);
+        lock.sourcing = true;
+        f.ccAlert(); // the source is still there
+        f.vbus.setVoltage(5000);
+        f.timer.expire();
+        check(!f.tcpc.sinking && f.tcpc.pull == usbc::cc_pull::rp); // Try.SRC
+        check(f.deadline.armed && f.client.attached_snk == 1);
+    }
+
+    // ... and on the debounced path (Rp stable before VBUS arrives)
+    {
+        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
+                                   usbc::drp_preference::source, mock_drp_client,
+                                   mock_role_lock>;
+        fixture f;
+        mock_role_lock lock{.sourcing = false};
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client, lock};
+        tc.start();
+        f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.timer.expire(); // Rp stable, no VBUS yet
+        check(!f.tcpc.sinking && f.tcpc.pull == usbc::cc_pull::rd);
+        f.vbus.setVoltage(5000); // VBUS: Try.SRC would follow
+        check(f.tcpc.sinking && f.client.attached_snk == 1);
+        check(!f.deadline.armed);
+    }
+
+    // locked: a swap to source is vetoed before any policy is asked; a
+    // swap to sink is not the lock's business, nor is a running
+    // source contract
+    {
+        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
+                                   usbc::drp_preference::none, mock_drp_client,
+                                   mock_swap_policy, mock_role_lock>;
+        fixture f;
+        mock_swap_policy policy;
+        mock_role_lock lock;
+        drp tc{f.tcpc, f.vbus, f.timer, f.deadline, f.client, policy, lock};
+        tc.start();
+        f.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        f.timer.expire();
+        check(f.tcpc.sinking);
+
+        lock.sourcing = false;
+        check(!tc.swapAllowed(usbc::power_role::source));
+        check(!tc.beginSwapToSource() && policy.consulted == 0);
+        check(tc.swapAllowed(usbc::power_role::sink) && policy.consulted == 1);
+        check(f.tcpc.sinking && !f.tcpc.sourcing);
+
+        lock.sourcing = true;
+        check(tc.beginSwapToSource() && policy.consulted == 2);
+        check(tc.completeSwap());
+        check(f.tcpc.sourcing && f.client.attached_src == 1);
+        f.vbus.setVoltage(5000);
+
+        lock.sourcing = false; // engaged while sourcing: the role stands
+        check(f.tcpc.sourcing);
+        check(tc.beginSwapToSink() && policy.consulted == 3);
     }
 
     return failures;
