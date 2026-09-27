@@ -320,7 +320,8 @@ struct pe_src_transition_supply_ps_rdy {
 struct pe_src_ready {
     static constexpr power_level power          = power_level::explicit_contract;
     // the sink may initiate (SinkTxOk)
-    static constexpr auto annotations           = fsm::annotate(power, sink_tx::ok);
+    static constexpr auto annotations =
+        fsm::annotate(power, sink_tx::ok, ready_for_atomic_message_sequence{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -483,7 +484,7 @@ private:
 struct pe_src_dr_swap_change {
     using feature = dr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
+    static constexpr auto annotations           = fsm::annotate(power, swap_transient{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "flips the data role";
@@ -602,7 +603,8 @@ private:
 struct pe_src_vcs_partner_on {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, vconn_partner_on{});
+    static constexpr auto annotations =
+        fsm::annotate(power, vconn_partner_on{}, swap_transient{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -615,7 +617,8 @@ struct pe_src_vcs_partner_on {
 struct pe_src_vcs_ps_rdy_sent {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, vconn_ps_rdy_sent{});
+    static constexpr auto annotations =
+        fsm::annotate(power, vconn_ps_rdy_sent{}, swap_transient{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -1554,16 +1557,10 @@ private:
     // is advanced here (the spec chains them without further input)
     void advanceTransients()
     {
-        bool transient = false; // filtered states cannot be probed
-        if constexpr (dr_swap_capable) {
-            transient = sm_.template is<pe::state::pe_src_dr_swap_change>();
-        }
-        if constexpr (vconn_capable) {
-            transient = transient || sm_.template is<pe::state::pe_src_vcs_partner_on>() ||
-                        sm_.template is<pe::state::pe_src_vcs_ps_rdy_sent>();
-        }
-        if (transient) {
-            sm_.process(pe::event::swap_done{});
+        if constexpr (dr_swap_capable || vconn_capable) { // else no state is a transient
+            if (sm_.template annotation<pe::swap_transient>()) {
+                sm_.process(pe::event::swap_done{});
+            }
         }
     }
 
@@ -1694,7 +1691,8 @@ private:
     // rows on the *_swap_received events): the injected policy's
     // answer accepts, the catch-all refuses - Reject where the
     // feature exists, the non-DRP Not_Supported where it does not. A
-    // request outside Ready is discarded (an AMS is running)
+    // request outside Ready is discarded (another Atomic Message
+    // Sequence is running)
     template<bool CAPABLE>
     static constexpr control_message_type refusal =
         CAPABLE ? control_message_type::reject : control_message_type::not_supported;
@@ -1716,7 +1714,7 @@ private:
             }
             break;
         case bist::mode::test_data:
-            if (sm_.template is<pe::state::pe_src_ready>()) {
+            if (sm_.template annotation<pe::ready_for_atomic_message_sequence>()) {
                 setBistTestData(true);
             }
             break;

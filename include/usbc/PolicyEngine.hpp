@@ -254,12 +254,32 @@ struct without_disabled<LIST, true, true, true> : std::type_identity<LIST> {};
 template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
 using without_disabled_t = typename without_disabled<LIST, PR_SWAP, DR_SWAP, VCONN>::type;
 
-// Annotation tag: a due request parked by PD3 collision avoidance -
-// the engine re-initiates on SinkTxOk, and a gate entered while Ok
+// The Atomic Message Sequences (the spec's AMS: a request and its
+// replies, during which nothing else may start) an engine initiates
+// and may have to hold back under PD3 collision avoidance
+enum class atomic_message_sequence : std::uint8_t { request, power_role_swap, data_role_swap };
+
+// Annotation: a due request parked by PD3 collision avoidance - the
+// engine re-initiates on SinkTxOk, and a gate entered while Ok
 // already holds fires right away (the queued machine delivers the
-// retry after the gate's entry completes)
+// retry after the gate's entry completes). The element says which
+// sequence is waiting, so the engine fires the retry off the annotation
 struct retry_gated {
+    atomic_message_sequence sequence;
     constexpr bool operator==(retry_gated const&) const = default;
+};
+
+// Annotation tags the engines' facades query off the machine
+// (fsm::annotation<T>) instead of enumerating states: Ready - no
+// Atomic Message Sequence running, one may start (the spec allows
+// swaps only there, under the explicit contract) - and the transients
+// of the swap choreography that swap_done advances once their trigger
+// was processed (the spec chains them without further input)
+struct ready_for_atomic_message_sequence {
+    constexpr bool operator==(ready_for_atomic_message_sequence const&) const = default;
+};
+struct swap_transient {
+    constexpr bool operator==(swap_transient const&) const = default;
 };
 
 inline pd_message makeControlMessage(control_message_type type, power_role power, data_role data)

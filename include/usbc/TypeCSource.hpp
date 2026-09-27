@@ -139,7 +139,8 @@ struct attached_src : source_state {
     // sourcing: detach detection is CC-based, the comparator rests
     static constexpr vbus_level vbus_watch = vbus_level::unwatched;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::safe5v}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::safe5v}, vbus_watch,
+                      attached_role{power_role::source});
 
     // entered from the debounced wait on the vSafe0V event
     attached_src(event::vbus_reached_safe0v const&, port_context& ctx) : attached_src(ctx)

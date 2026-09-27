@@ -158,7 +158,8 @@ struct attach_wait_snk_debounced : sink_state {
 struct attached_snk : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::sink_disconnect;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::sink}, vbus_watch);
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::sink}, vbus_watch,
+                      attached_role{power_role::sink});
 
     explicit attached_snk(port_context& ctx)
         : sink_state(ctx), advertisement_(advertisementOf(ctx.cc))

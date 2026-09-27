@@ -359,7 +359,8 @@ struct pe_snk_transition_sink {
 
 struct pe_snk_ready {
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
+    static constexpr auto annotations =
+        fsm::annotate(power, ready_for_atomic_message_sequence{});
     static constexpr pd_status pd        = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -546,7 +547,7 @@ private:
 struct pe_snk_dr_swap_change {
     using feature = dr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
+    static constexpr auto annotations           = fsm::annotate(power, swap_transient{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "flips the data role";
@@ -658,7 +659,8 @@ private:
 struct pe_snk_vcs_partner_on {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, vconn_partner_on{});
+    static constexpr auto annotations =
+        fsm::annotate(power, vconn_partner_on{}, swap_transient{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -670,7 +672,8 @@ struct pe_snk_vcs_partner_on {
 struct pe_snk_vcs_ps_rdy_sent {
     using feature = vconn_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, vconn_ps_rdy_sent{});
+    static constexpr auto annotations =
+        fsm::annotate(power, vconn_ps_rdy_sent{}, swap_transient{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -763,7 +766,8 @@ struct pe_snk_pr_swap_wait {
 // source owns the schedule)
 struct pe_snk_request_gate {
     static constexpr power_level power          = power_level::contract_or_default;
-    static constexpr auto annotations           = fsm::annotate(retry_gated{});
+    static constexpr auto annotations =
+        fsm::annotate(retry_gated{atomic_message_sequence::request});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -774,7 +778,8 @@ struct pe_snk_request_gate {
 struct pe_snk_dr_swap_gate {
     using feature = dr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, retry_gated{});
+    static constexpr auto annotations =
+        fsm::annotate(power, retry_gated{atomic_message_sequence::data_role_swap});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -785,7 +790,8 @@ struct pe_snk_dr_swap_gate {
 struct pe_snk_pr_swap_gate {
     using feature = pr_swap_feature;
     static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, retry_gated{});
+    static constexpr auto annotations =
+        fsm::annotate(power, retry_gated{atomic_message_sequence::power_role_swap});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
@@ -1358,7 +1364,7 @@ public:
     {
         prl_.resetRevision();
         setBistTestData(false); // the test mode ends with the partner
-        pending_ams_ = pending_ams::none;
+        pending_sequence_.reset();
         sm_.process(pe::event::vbus_removed{});
         sm_.process(pe::event::started{});
     }
@@ -1377,11 +1383,11 @@ public:
         if constexpr (!pr_swap_capable) {
             return false; // the feature is compiled out
         } else {
-            if (!sm_.template is<pe::state::pe_snk_ready>()) {
+            if (!sm_.template annotation<pe::ready_for_atomic_message_sequence>()) {
                 return false;
             }
             if (!sinkTxAllows()) {
-                pending_ams_ = pending_ams::pr_swap;
+                pending_sequence_ = pe::atomic_message_sequence::power_role_swap;
                 return true;
             }
             return sm_.process(
@@ -1394,11 +1400,11 @@ public:
         if constexpr (!dr_swap_capable) {
             return false; // the feature is compiled out
         } else {
-            if (!sm_.template is<pe::state::pe_snk_ready>()) {
+            if (!sm_.template annotation<pe::ready_for_atomic_message_sequence>()) {
                 return false;
             }
             if (!sinkTxAllows()) {
-                pending_ams_ = pending_ams::dr_swap;
+                pending_sequence_ = pe::atomic_message_sequence::data_role_swap;
                 return true;
             }
             return sm_.process(
@@ -1538,43 +1544,38 @@ private:
         return !sm_.template context<pe::pe_context>().explicit_contract || sink_tx_ok_;
     }
 
-    // A retry that timed out under SinkTxNG waits in its gate state
+    // A retry that timed out under SinkTxNG waits in its gate state,
+    // whose annotation says which sequence (a gate of a compiled-out
+    // feature never exists, its event is refused at compile time)
     void fireGated()
     {
-        if (sm_.template is<pe::state::pe_snk_request_gate>()) {
-            sm_.process(pe::event::request_retry{});
-            return;
-        }
-        if constexpr (dr_swap_capable) { // else the state is filtered out
-            if (sm_.template is<pe::state::pe_snk_dr_swap_gate>()) {
-                sm_.process(
-                    pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
-                return;
-            }
-        }
-        if constexpr (pr_swap_capable) {
-            if (sm_.template is<pe::state::pe_snk_pr_swap_gate>()) {
-                sm_.process(
-                    pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
-            }
+        if (auto const gated = sm_.template annotation<pe::retry_gated>()) {
+            initiate(gated->sequence);
         }
     }
 
+    // A swap request parked under SinkTxNG fires once Ready under Ok
     void firePending()
     {
-        auto const pending = pending_ams_;
-        pending_ams_       = pending_ams::none;
-        if (!sm_.template is<pe::state::pe_snk_ready>()) {
-            return;
+        auto const pending = pending_sequence_;
+        pending_sequence_.reset();
+        if (pending && sm_.template annotation<pe::ready_for_atomic_message_sequence>()) {
+            initiate(*pending);
         }
-        switch (pending) {
-        case pending_ams::pr_swap:
+    }
+
+    void initiate(pe::atomic_message_sequence sequence)
+    {
+        switch (sequence) {
+        case pe::atomic_message_sequence::request:
+            sm_.process(pe::event::request_retry{});
+            break;
+        case pe::atomic_message_sequence::power_role_swap:
             sm_.process(pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
             break;
-        case pending_ams::dr_swap:
+        case pe::atomic_message_sequence::data_role_swap:
             sm_.process(pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
             break;
-        case pending_ams::none: break;
         }
     }
 
@@ -1582,16 +1583,10 @@ private:
     // is advanced here (the spec chains them without further input)
     void advanceTransients()
     {
-        bool transient = false; // filtered states cannot be probed
-        if constexpr (dr_swap_capable) {
-            transient = sm_.template is<pe::state::pe_snk_dr_swap_change>();
-        }
-        if constexpr (vconn_capable) {
-            transient = transient || sm_.template is<pe::state::pe_snk_vcs_partner_on>() ||
-                        sm_.template is<pe::state::pe_snk_vcs_ps_rdy_sent>();
-        }
-        if (transient) {
-            sm_.process(pe::event::swap_done{});
+        if constexpr (dr_swap_capable || vconn_capable) { // else no state is a transient
+            if (sm_.template annotation<pe::swap_transient>()) {
+                sm_.process(pe::event::swap_done{});
+            }
         }
     }
 
@@ -1688,7 +1683,8 @@ private:
     // rows on the *_swap_received events): the injected policy's
     // answer accepts, the catch-all refuses - Reject where the
     // feature exists, the non-DRP Not_Supported where it does not. A
-    // request outside Ready is discarded (an AMS is running)
+    // request outside Ready is discarded (another Atomic Message
+    // Sequence is running)
     template<bool CAPABLE>
     static constexpr control_message_type refusal =
         CAPABLE ? control_message_type::reject : control_message_type::not_supported;
@@ -1710,7 +1706,7 @@ private:
             }
             break;
         case bist::mode::test_data:
-            if (sm_.template is<pe::state::pe_snk_ready>()) {
+            if (sm_.template annotation<pe::ready_for_atomic_message_sequence>()) {
                 setBistTestData(true);
             }
             break;
@@ -1796,7 +1792,6 @@ private:
     std::span<sink_capability const> capabilities_;
     std::span<std::uint32_t const> source_capabilities_{}; // empty: not a DRP
     POLICY& policy_;
-    enum class pending_ams : std::uint8_t { none, pr_swap, dr_swap };
 
     // The optional features follow the injected policy: it answers the
     // table's swap questions or the feature's states are filtered from
@@ -1811,7 +1806,7 @@ private:
 
     bool bist_test_data_     = false;
     bool sink_tx_ok_         = true; // last Rp seen (SinkTxOk/NG)
-    pending_ams pending_ams_ = pending_ams::none;
+    std::optional<pe::atomic_message_sequence> pending_sequence_; // parked under SinkTxNG
     PrlPort port_{*this};
     ProtocolLayer<TCPC, TIMER> prl_; // also an observer of sm_
     fsm::QueuedTimer<TIMER> pe_timer_;

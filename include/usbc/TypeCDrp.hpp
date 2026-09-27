@@ -796,7 +796,7 @@ public:
     // stack's serialized context
     bool beginSwapToSource()
     {
-        if (!sm_.template is<tc::state::attached_snk>() || !swapAllowed(power_role::source)) {
+        if (powerRole() != power_role::sink || !swapAllowed(power_role::source)) {
             return false;
         }
         return sm_.process(tc::event::swap_to_source{});
@@ -804,7 +804,7 @@ public:
 
     bool beginSwapToSink()
     {
-        if (!sm_.template is<tc::state::attached_src>() || !swapAllowed(power_role::sink)) {
+        if (powerRole() != power_role::source || !swapAllowed(power_role::sink)) {
             return false;
         }
         return sm_.process(tc::event::swap_to_sink{});
@@ -883,27 +883,22 @@ public:
                           observers_);
     }
 
-    // The attached pair's power role; nullopt while not attached (a
-    // swap standby included)
+    // The attached pair's power role, as the Attached states annotate
+    // it; nullopt while not attached (a swap standby included)
     std::optional<power_role> powerRole() const
     {
-        if (sm_.template is<tc::state::attached_snk>()) {
-            return power_role::sink;
-        }
-        if (sm_.template is<tc::state::attached_src>()) {
-            return power_role::source;
+        if (auto const attached = sm_.template annotation<tc::attached_role>()) {
+            return attached->role;
         }
         return std::nullopt;
     }
 
-    // The attached pair's data role; nullopt while not attached
+    // The attached pair's data role, from the shared context; nullopt
+    // while not attached
     std::optional<data_role> dataRole() const
     {
-        if (auto const* attached = sm_.template getIf<tc::state::attached_snk>()) {
-            return attached->dataRole();
-        }
-        if (auto const* attached = sm_.template getIf<tc::state::attached_src>()) {
-            return attached->dataRole();
+        if (powerRole()) {
+            return sm_.template context<tc::port_context>().data;
         }
         return std::nullopt;
     }

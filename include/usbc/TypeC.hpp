@@ -96,6 +96,14 @@ struct cc_termination {
     constexpr bool operator==(cc_termination const&) const = default;
 };
 
+// The attached pair's power role, carried by the Attached states only:
+// the facades' powerRole() reads it off the machine (a swap standby or
+// a hard-reset window carries none - not attached in either role)
+struct attached_role {
+    power_role role;
+    constexpr bool operator==(attached_role const&) const = default;
+};
+
 // The switch positions of the VBUS power circuitry, mutually
 // exclusive by construction and named for the specification's VBUS
 // conditions where one is driven

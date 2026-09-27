@@ -79,6 +79,14 @@ struct vconn_switch {
     constexpr bool operator==(vconn_switch const&) const = default;
 };
 
+// The VCONN Source role (spec term) held: annotated on the states
+// holding it - an accepted swap away still counts, VCONN is on until
+// the hand-off - and read off the machine by the facade's
+// isVconnSource(). Turning the switch on is not holding the role yet
+struct source_role {
+    constexpr bool operator==(source_role const&) const = default;
+};
+
 namespace state {
 
 struct vconn_off {
@@ -90,7 +98,7 @@ struct vconn_off {
 
 // The VCONN Source (spec term): sourcing steadily until a swap
 struct vconn_source {
-    static constexpr auto annotations = fsm::annotate(vconn_switch{true});
+    static constexpr auto annotations = fsm::annotate(vconn_switch{true}, source_role{});
 };
 
 // PE_VCS_Turn_On_VCONN: the switch is on; the port announces it with
@@ -103,7 +111,7 @@ struct pe_vcs_turn_on_vconn {
 // PE_VCS_Wait_For_VCONN: we relinquish - still sourcing until the new
 // VCONN source's PS_RDY, due within tVCONNSourceTimeout
 struct pe_vcs_wait_for_vconn {
-    static constexpr auto annotations = fsm::annotate(vconn_switch{true});
+    static constexpr auto annotations = fsm::annotate(vconn_switch{true}, source_role{});
     static constexpr auto timeout     = t_source_timeout; // VCONNOnTimer
 };
 
@@ -112,7 +120,7 @@ struct pe_vcs_wait_for_vconn {
 // acknowledges; VCONN stays with us
 struct pe_vcs_timeout {
     static constexpr auto annotations =
-        fsm::annotate(vconn_switch{true}, pe::request_hard_reset{});
+        fsm::annotate(vconn_switch{true}, pe::request_hard_reset{}, source_role{});
 };
 
 } // namespace state
@@ -190,12 +198,12 @@ public:
     void psRdySent() { sm_.process(vconn::event::ps_rdy_sent{}); }
     void swapFailureHandled() { sm_.process(vconn::event::swap_failed_handled{}); }
 
-    // Whether this port is the VCONN source (an accepted swap away
-    // from giving it up still counts - VCONN is on until the hand-off)
+    // Whether this port holds the VCONN Source role, as the states
+    // annotate it (an accepted swap away from giving it up still
+    // counts - VCONN is on until the hand-off)
     bool isVconnSource() const
     {
-        return !sm_.template is<vconn::state::vconn_off>() &&
-               !sm_.template is<vconn::state::pe_vcs_turn_on_vconn>();
+        return sm_.template annotation<vconn::source_role>().has_value();
     }
 
 private:
