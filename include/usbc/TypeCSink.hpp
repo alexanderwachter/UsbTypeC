@@ -239,15 +239,15 @@ struct hard_reset_recover_snk : sink_state {
 
 } // namespace state
 
-struct attach_conditions_met {
-    static bool check(state::attach_wait_snk const& state)
-    {
-        return singleRp(state.context.cc) && state.context.vbus_present;
-    }
-};
-
+// Guards on the debounce outcome - the context's latest CC status and
+// VBUS report - as primitives the rows combine
 struct stable_rp {
     static bool check(state::attach_wait_snk const& state) { return singleRp(state.context.cc); }
+};
+
+// VBUS present per the context, in any state (the DRP's Try flows ask too)
+struct vbus_present_in_context {
+    static bool check(auto const& state) { return state.context.vbus_present; }
 };
 
 // The sink attach flow, shared with the DRP layer: UNATTACHED anchors
@@ -267,7 +267,7 @@ using sink_attach_flow = mtl::typelist<
     fsm::internal_transition<fsm::from<state::attach_wait_snk>, fsm::on<event::vbus_removed>>,
     // debounce complete: attach, keep waiting for VBUS, or detach
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<ATTACH>, fsm::guard<attach_conditions_met>>,
+                    fsm::to<ATTACH>, fsm::guard<stable_rp, vbus_present_in_context>>,
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
                     fsm::to<state::attach_wait_snk_debounced>, fsm::guard<stable_rp>>,
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,

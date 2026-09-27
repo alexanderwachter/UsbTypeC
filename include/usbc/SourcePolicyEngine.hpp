@@ -1013,8 +1013,7 @@ struct still_attached {
 struct src_hard_resets_left {
     static bool check(state::pe_src_send_capabilities const& state)
     {
-        return state.context.pd_connected &&
-               state.context.hard_resets <= spec::n_hard_reset_count;
+        return state.context.hard_resets <= spec::n_hard_reset_count;
     }
 };
 
@@ -1048,8 +1047,11 @@ using source_transitions = mtl::typelist<
                              fsm::on<pe::event::message_sent>>,
     fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<event::request>,
                     fsm::to<state::pe_src_negotiate_capability>>,
+    // no Request from a PD-capable sink: hard reset while the counter
+    // allows, then Error Recovery; a PD-incapable one goes to Discovery
     fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_hard_reset>, fsm::guard<src_hard_resets_left>>,
+                    fsm::to<state::pe_src_hard_reset>,
+                    fsm::guard<pd_was_connected, src_hard_resets_left>>,
     fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_src_error_recovery>, fsm::guard<pd_was_connected>>,
     fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>,

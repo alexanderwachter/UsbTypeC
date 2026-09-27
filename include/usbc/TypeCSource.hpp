@@ -185,18 +185,18 @@ struct unattached_wait_src : source_state {
 
 } // namespace state
 
-struct src_attach_conditions_met {
-    static bool check(state::attach_wait_src const& state)
-    {
-        return singleRd(state.context.cc) && state.context.vbus_safe0v;
-    }
-};
-
+// Guards on the debounce outcome - the context's latest CC status and
+// VBUS report - as primitives the rows combine
 struct src_stable_rd {
     static bool check(state::attach_wait_src const& state)
     {
         return singleRd(state.context.cc);
     }
+};
+
+// VBUS at vSafe0V per the context, in any state (the DRP's Try flows ask too)
+struct vbus_safe0v_in_context {
+    static bool check(auto const& state) { return state.context.vbus_safe0v; }
 };
 
 // Decides on the event's CC payload - the state's context still holds
@@ -227,7 +227,7 @@ using source_attach_flow = mtl::typelist<
                              fsm::on<event::vbus_left_safe0v>>,
     // debounce complete: attach, wait for vSafe0V, or back to unattached
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>,
-                    fsm::to<ATTACH>, fsm::guard<src_attach_conditions_met>>,
+                    fsm::to<ATTACH>, fsm::guard<src_stable_rd, vbus_safe0v_in_context>>,
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>,
                     fsm::to<state::attach_wait_src_debounced>, fsm::guard<src_stable_rd>>,
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>,

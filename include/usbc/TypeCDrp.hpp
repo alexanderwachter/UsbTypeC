@@ -367,33 +367,12 @@ struct rp_on_event {
     static bool check(auto const&, event::cc_changed const& event) { return singleRp(event.cc); }
 };
 
-struct rp_on_event_with_vbus {
-    static bool check(auto const& state, event::cc_changed const& event)
-    {
-        return singleRp(event.cc) && state.context.vbus_present;
-    }
-};
-
 struct rd_in_context {
     static bool check(auto const& state) { return singleRd(state.context.cc); }
 };
 
-struct rd_in_context_at_safe0v {
-    static bool check(auto const& state)
-    {
-        return singleRd(state.context.cc) && state.context.vbus_safe0v;
-    }
-};
-
 struct rp_in_context {
     static bool check(auto const& state) { return singleRp(state.context.cc); }
-};
-
-struct rp_in_context_with_vbus {
-    static bool check(auto const& state)
-    {
-        return singleRp(state.context.cc) && state.context.vbus_present;
-    }
 };
 
 // The phase deadline expired while this debounce ran (the role bases'
@@ -419,11 +398,6 @@ struct try_expired {
 struct sourcing_allowed {
     static constexpr bool check() { return true; }
 };
-
-// Try.SRC combines the sink flow's attach conditions with that
-// answer; the facade's try_gate answers it, so the application object
-// never sees a state
-struct try_src_allowed {};
 
 // --- timer-range maps --------------------------------------------------------
 
@@ -517,7 +491,8 @@ using try_src_flow = mtl::typelist<
                     fsm::to<try_src<TIMING>>>,
     // TryWait.SNK: the partner sourcing VBUS is the attach signal
     fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::cc_changed>,
-                    fsm::to<state::attached_snk>, fsm::guard<rp_on_event_with_vbus>>,
+                    fsm::to<state::attached_snk>,
+                    fsm::guard<rp_on_event, vbus_present_in_context>>,
     fsm::internal_transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::cc_changed>>,
     fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::vbus_present>,
                     fsm::to<state::attached_snk>, fsm::guard<rp_in_context>>,
@@ -563,7 +538,8 @@ using try_snk_flow = mtl::typelist<
     fsm::internal_transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<event::vbus_removed>>,
     fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<state::attached_snk>, fsm::guard<rp_in_context_with_vbus>>,
+                    fsm::to<state::attached_snk>,
+                    fsm::guard<rp_in_context, vbus_present_in_context>>,
     fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<fsm::timeout>,
                     fsm::to<try_wait_src<TIMING>>, fsm::guard<try_expired>>,
     fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<fsm::timeout>,
@@ -586,7 +562,8 @@ using try_snk_flow = mtl::typelist<
     fsm::internal_transition<fsm::from<try_wait_src_debounce<TIMING>>,
                              fsm::on<event::vbus_left_safe0v>>,
     fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<state::attached_src>, fsm::guard<rd_in_context_at_safe0v>>,
+                    fsm::to<state::attached_src>,
+                    fsm::guard<rd_in_context, vbus_safe0v_in_context>>,
     fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
                     fsm::to<try_wait_src_safe0v<TIMING>>, fsm::guard<rd_in_context>>,
     fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
@@ -664,7 +641,8 @@ struct table_for
 template<drp_timing const& TIMING>
 using try_src_entry = mtl::typelist<
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<try_src<TIMING>>, fsm::guard<try_src_allowed>>,
+                    fsm::to<try_src<TIMING>>,
+                    fsm::guard<stable_rp, vbus_present_in_context, sourcing_allowed>>,
     fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_present>,
                     fsm::to<try_src<TIMING>>, fsm::guard<sourcing_allowed>>>;
 
@@ -772,7 +750,7 @@ public:
              rp_value advertisement, OBSERVERs&... observers)
         : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timer_(timer),
           deadline_timer_(deadline_timer), timed_(timer_), deadlined_(deadline_timer_),
-          observers_(observers...), sm_(timed_, deadlined_, hw_, vbus_, try_gate_, observers...)
+          observers_(observers...), sm_(timed_, deadlined_, hw_, vbus_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
@@ -946,20 +924,6 @@ private:
         }
     }
 
-    // Answers the table's try_src_allowed (source preference): Try.SRC
-    // where the sink flow would attach, unless the port is locked to
-    // the sink role - the sink flow's attach conditions and the lock's
-    // answer combined here, so the application object never sees a
-    // state
-    struct try_gate {
-        TypeCDrp& port;
-
-        bool check(tc::drp::try_src_allowed, tc::state::attach_wait_snk const& state)
-        {
-            return tc::attach_conditions_met::check(state) && port.sourcingAllowed();
-        }
-    };
-
     TCPC& tcpc_;
     tc::drp_hw_driver<TCPC, VBUS> hw_;
     tc::vbus_watcher<VBUS> vbus_;
@@ -968,12 +932,10 @@ private:
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     fsm::deadlined<fsm::QueuedTimer<TIMER>&> deadlined_;
     std::tuple<OBSERVERs&...> observers_;
-    try_gate try_gate_{*this};
     fsm::QueuedMachine<tc::drp::table_for_t<TIMING, PREFERENCE>, 4, fsm::inline_work,
                        fsm::no_lock, fsm::timed<fsm::QueuedTimer<TIMER>&>,
                        fsm::deadlined<fsm::QueuedTimer<TIMER>&>,
-                       tc::drp_hw_driver<TCPC, VBUS>, tc::vbus_watcher<VBUS>, try_gate,
-                       OBSERVERs...>
+                       tc::drp_hw_driver<TCPC, VBUS>, tc::vbus_watcher<VBUS>, OBSERVERs...>
         sm_;
 };
 
