@@ -115,10 +115,9 @@ struct sink_state {
     {
         context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
     }
-    // a Try phase's wall falling mid-debounce (DRP only): recorded by
-    // the deadline timer itself (tc::drp::try_deadline), the debounce
-    // runs on
-    void handle(fsm::deadline const&) {}
+    // a Try phase's wall falling mid-debounce (DRP only): recorded for
+    // the debounce outcome to act on, the debounce itself runs on
+    void handle(fsm::deadline const&) { context.try_expired = true; }
 
     port_context& context;
 };

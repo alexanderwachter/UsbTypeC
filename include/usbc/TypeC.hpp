@@ -138,6 +138,10 @@ struct port_context {
     // Attached.SNK resumes the connection (plug and data role kept)
     // instead of resolving a fresh attach
     bool resuming = false;
+    // a Try phase deadline expired while a debounce was running: the
+    // debounce may still attach, but its failure exits the phase
+    // instead of re-arming it (DRP Try flows only)
+    bool try_expired = false;
 };
 
 // The one place tying a VBUS level to the events its reports become:
