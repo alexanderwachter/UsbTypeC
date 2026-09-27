@@ -163,6 +163,7 @@ struct wait_for_phy_response {
     // the message in flight, observed by the phy driver
     pd_message const& values() const { return context.message; }
 
+    using contexts = mtl::typelist<tx_context>;
     tx_context& context;
 };
 
@@ -176,6 +177,7 @@ struct transmission_error {
     // the failed message's SOP*, observed by the client reporter
     sop_type values() const { return context.message.sop; }
 
+    using contexts = mtl::typelist<tx_context>;
     tx_context& context;
 };
 

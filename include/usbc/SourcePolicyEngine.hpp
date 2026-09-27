@@ -190,6 +190,7 @@ struct pe_src_startup {
         "resets the protocol layer, restores default power";
 
     explicit pe_src_startup(src_context& ctx) : context(ctx) { context = {}; }
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -216,6 +217,7 @@ struct pe_src_send_capabilities {
     // the GoodCRC on the capabilities means a PD sink is present
     void handle(pe::event::message_sent const&) { context.pd_connected = true; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -227,6 +229,7 @@ struct pe_src_discovery {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_discovery(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -238,6 +241,7 @@ struct pe_src_disabled {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_disabled(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -252,6 +256,7 @@ struct pe_src_negotiate_capability {
     {
         context.hard_resets = 0; // spec: the sink responded
     }
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -271,6 +276,7 @@ struct pe_src_transition_supply {
 
     pd_message const& values() const { return context.reply; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -282,6 +288,7 @@ struct pe_src_transition_supply_delay {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_transition_supply_delay(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -297,6 +304,7 @@ struct pe_src_transition_supply_settle {
 
     supply_target values() const { return context.target; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -314,6 +322,7 @@ struct pe_src_transition_supply_ps_rdy {
 
     pd_message const& values() const { return context.reply; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -336,6 +345,7 @@ struct pe_src_ready {
         return {context.target.voltage, context.target.current};
     }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -353,6 +363,7 @@ struct pe_src_capability_response {
 
     pd_message const& values() const { return context.reply; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -372,6 +383,7 @@ struct pe_dr_src_give_sink_cap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 
 private:
@@ -401,6 +413,7 @@ struct pe_src_send_not_supported {
 
     pd_message const& values() const { return context.reply; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -420,6 +433,7 @@ struct pe_src_chunk_received {
     }
     explicit pe_src_chunk_received(src_context& ctx) : context(ctx) {}
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -449,6 +463,7 @@ struct pe_src_send_dr_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 
 private:
@@ -473,6 +488,7 @@ struct pe_src_accept_dr_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 
 private:
@@ -504,6 +520,7 @@ struct pe_src_dr_swap_change {
 
     data_role_changed values() const { return {context.data}; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -525,6 +542,7 @@ struct pe_src_vcs_send_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 
 private:
@@ -549,6 +567,7 @@ struct pe_src_vcs_accept {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 
 private:
@@ -573,6 +592,7 @@ struct pe_src_vcs_active {
     explicit pe_src_vcs_active(src_context& ctx) : context(ctx) {}
 
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -593,6 +613,7 @@ struct pe_src_vcs_send_ps_rdy {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 
 private:
@@ -611,6 +632,7 @@ struct pe_src_vcs_partner_on {
     explicit pe_src_vcs_partner_on(src_context& ctx) : context(ctx) {}
 
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -625,6 +647,7 @@ struct pe_src_vcs_ps_rdy_sent {
     explicit pe_src_vcs_ps_rdy_sent(src_context& ctx) : context(ctx) {}
 
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -640,6 +663,7 @@ struct pe_src_sink_tx_wait_pr {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_sink_tx_wait_pr(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -652,6 +676,7 @@ struct pe_src_sink_tx_wait_dr {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_sink_tx_wait_dr(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -678,6 +703,7 @@ struct pe_src_send_pr_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 
 private:
@@ -702,6 +728,7 @@ struct pe_src_accept_pr_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 
 private:
@@ -719,6 +746,7 @@ struct pe_src_dr_swap_wait {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_dr_swap_wait(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -731,6 +759,7 @@ struct pe_src_pr_swap_wait {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_pr_swap_wait(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -753,6 +782,7 @@ struct pe_src_swap_transition_to_off {
     }
     explicit pe_src_swap_transition_to_off(src_context& ctx) : context(ctx) {}
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -768,6 +798,7 @@ struct pe_src_swap_supply_off {
 
     static constexpr auto annotations = fsm::annotate(supply_target{0, 0});
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -783,6 +814,7 @@ struct pe_src_swap_assert_rd {
 
     static constexpr auto annotations = fsm::annotate(assert_new_role{power_role::sink});
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -806,6 +838,7 @@ struct pe_src_swap_source_on {
 
     static constexpr auto annotations = fsm::annotate(supply_target{v_safe_5v, i_default_current});
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -825,6 +858,7 @@ struct pe_src_swap_source_on_ps_rdy {
 
     pd_message const& values() const { return context.reply; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -842,6 +876,7 @@ struct pe_src_swap_source_start {
         context.caps_counter = 0; // the advertisement starts over
     }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -857,6 +892,7 @@ struct pe_src_bist_carrier {
     static constexpr std::string_view dot_action = "transmits the BIST carrier";
 
     explicit pe_src_bist_carrier(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -878,6 +914,7 @@ struct pe_src_soft_reset {
 
     pd_message const& values() const { return context.reply; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -898,6 +935,7 @@ struct pe_src_send_soft_reset {
 
     pd_message const& values() const { return context.reply; }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -912,6 +950,7 @@ struct pe_src_hard_reset {
     {
         ++context.hard_resets; // HardResetCounter
     }
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -938,6 +977,7 @@ struct pe_src_transition_to_default {
         context.target            = {};
     }
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -949,6 +989,7 @@ struct pe_src_recover {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_src_recover(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -962,6 +1003,7 @@ struct pe_src_restore_default {
     static constexpr std::string_view dot_action = restore_default_action::note;
 
     explicit pe_src_restore_default(src_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 
@@ -977,6 +1019,7 @@ struct pe_src_error_recovery {
 
     static constexpr auto annotations = fsm::annotate(request_error_recovery{});
 
+    using contexts = mtl::typelist<src_context>;
     src_context& context;
 };
 

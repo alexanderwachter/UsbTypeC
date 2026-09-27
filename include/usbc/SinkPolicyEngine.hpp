@@ -243,6 +243,7 @@ struct pe_snk_startup {
     {
         context = pe_context{.data = context.data, .hard_resets = context.hard_resets};
     }
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -253,6 +254,7 @@ struct pe_snk_discovery {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_discovery(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -263,6 +265,7 @@ struct pe_snk_wait_for_capabilities {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_wait_for_capabilities(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -276,6 +279,7 @@ struct pe_snk_wait_no_response {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_wait_no_response(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -290,6 +294,7 @@ struct pe_snk_error_recovery {
 
     explicit pe_snk_error_recovery(pe_context& ctx) : context(ctx) {}
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -304,6 +309,7 @@ struct pe_snk_evaluate_capability {
     {
         context.hard_resets = 0; // spec: reset on Source_Capabilities
     }
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -333,6 +339,7 @@ struct pe_snk_select_capability {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -354,6 +361,7 @@ struct pe_snk_transition_sink {
 
     standby_limit values() const { return {context.request.voltage}; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -371,6 +379,7 @@ struct pe_snk_ready {
         return {context.request.voltage, context.request.operating_current};
     }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -388,6 +397,7 @@ struct pe_snk_give_sink_cap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -406,6 +416,7 @@ struct pe_snk_bist_carrier {
     static constexpr std::string_view dot_action = "transmits the BIST carrier";
 
     explicit pe_snk_bist_carrier(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -419,6 +430,7 @@ struct pe_snk_request_wait {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_request_wait(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -438,6 +450,7 @@ struct pe_dr_snk_give_source_cap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -465,6 +478,7 @@ struct pe_snk_send_not_supported {
 
     pd_message const& values() const { return context.reply; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -483,6 +497,7 @@ struct pe_snk_chunk_received {
     }
     explicit pe_snk_chunk_received(pe_context& ctx) : context(ctx) {}
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -512,6 +527,7 @@ struct pe_snk_send_dr_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -536,6 +552,7 @@ struct pe_snk_accept_dr_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -564,6 +581,7 @@ struct pe_snk_dr_swap_change {
 
     data_role_changed values() const { return {context.data}; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -585,6 +603,7 @@ struct pe_snk_vcs_send_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -609,6 +628,7 @@ struct pe_snk_vcs_accept {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -629,6 +649,7 @@ struct pe_snk_vcs_active {
     pe_snk_vcs_active(event::message_sent const&, pe_context& ctx) : pe_snk_vcs_active(ctx) {}
     explicit pe_snk_vcs_active(pe_context& ctx) : context(ctx) {}
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -649,6 +670,7 @@ struct pe_snk_vcs_send_ps_rdy {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -666,6 +688,7 @@ struct pe_snk_vcs_partner_on {
 
     explicit pe_snk_vcs_partner_on(pe_context& ctx) : context(ctx) {}
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -679,6 +702,7 @@ struct pe_snk_vcs_ps_rdy_sent {
 
     explicit pe_snk_vcs_ps_rdy_sent(pe_context& ctx) : context(ctx) {}
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -705,6 +729,7 @@ struct pe_snk_send_pr_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -729,6 +754,7 @@ struct pe_snk_accept_pr_swap {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -746,6 +772,7 @@ struct pe_snk_dr_swap_wait {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_dr_swap_wait(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -758,6 +785,7 @@ struct pe_snk_pr_swap_wait {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_pr_swap_wait(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -772,6 +800,7 @@ struct pe_snk_request_gate {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_request_gate(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -784,6 +813,7 @@ struct pe_snk_dr_swap_gate {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_dr_swap_gate(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -796,6 +826,7 @@ struct pe_snk_pr_swap_gate {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     explicit pe_snk_pr_swap_gate(pe_context& ctx) : context(ctx) {}
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -825,6 +856,7 @@ struct pe_snk_swap_transition_to_off {
     static constexpr auto annotations =
         fsm::annotate(standby_limit{v_safe_5v}, enter_swap_standby{power_role::source});
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -841,6 +873,7 @@ struct pe_snk_swap_assert_rp {
 
     explicit pe_snk_swap_assert_rp(pe_context& ctx) : context(ctx) {}
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -866,6 +899,7 @@ struct pe_snk_swap_wait_source_on {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -884,6 +918,7 @@ struct pe_snk_swap_source_on_seen {
 
     static constexpr auto annotations = fsm::annotate(swap_completed{});
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -904,6 +939,7 @@ struct pe_snk_soft_reset {
 
     pd_message const& values() const { return message_; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 
 private:
@@ -928,6 +964,7 @@ struct pe_snk_send_soft_reset {
 
     pd_message const& values() const { return context.reply; }
 
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -942,6 +979,7 @@ struct pe_snk_hard_reset {
     {
         ++context.hard_resets; // HardResetCounter
     }
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 
@@ -965,6 +1003,7 @@ struct pe_snk_transition_to_default {
 
     // the source legitimately cycles VBUS now: the connection layer
     // must hold the attach instead of reading it as a detach
+    using contexts = mtl::typelist<pe_context>;
     pe_context& context;
 };
 

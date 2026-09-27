@@ -94,6 +94,7 @@ struct source_state {
     // the debounce outcome to act on, the debounce itself runs on
     void handle(fsm::deadline const&) { context.try_expired = true; }
 
+    using contexts = mtl::typelist<port_context>;
     port_context& context;
 };
 
