@@ -181,14 +181,22 @@ inline constexpr auto t_dr_swap_wait  = std::chrono::milliseconds{150}; // tDRSw
 
 inline constexpr milliamp i_snk_stdby = spec::i_snk_stdby; // at any voltage
 
-struct pe_context {
-    contract_request pending{};  // proposed by the last Request
-    contract_request request{};  // accepted by the source
-    pd_message reply{};          // pending Not_Supported answer
+// Machine-owned context, split by lifetime so a reset is an assignment
+// of the part that ends. The connection lives from attach to detach:
+// a hard reset changes neither the data role nor its own counter, and
+// a power role swap is no reset at all (6.7.1)
+struct pe_connection {
+    data_role data           = data_role::ufp; // flipped by an agreed DR_Swap
+    std::uint8_t hard_resets = 0;              // HardResetCounter
+};
+
+// One negotiation's worth: gone with every reset within the connection
+struct pe_negotiation {
+    contract_request pending{};   // proposed by the last Request
+    contract_request request{};   // accepted by the source
+    pd_message reply{};           // pending Not_Supported answer
     pd_message request_message{}; // the last Request, for the Wait retry
     bool explicit_contract = false;
-    data_role data = data_role::ufp;  // flipped by an agreed DR_Swap
-    std::uint8_t hard_resets = 0;     // HardResetCounter
 };
 
 // The observation the sink's standby transition reports
@@ -232,19 +240,23 @@ struct pe_snk_startup {
     static constexpr std::string_view dot_action =
         "resets the protocol layer, restores default power";
 
-    // detach forgets everything; a reset within the connection keeps
-    // the data role (a hard reset does not change it) and the
-    // HardResetCounter
-    pe_snk_startup(event::vbus_removed const&, pe_context& ctx) : context(ctx)
+    // detach forgets everything; a reset within the connection ends the
+    // negotiation only
+    pe_snk_startup(event::vbus_removed const&, pe_connection& connection,
+                   pe_negotiation& negotiation)
+        : connection(connection), negotiation(negotiation)
     {
-        context = {};
+        this->connection  = {};
+        this->negotiation = {};
     }
-    explicit pe_snk_startup(pe_context& ctx) : context(ctx)
+    explicit pe_snk_startup(pe_connection& connection, pe_negotiation& negotiation)
+        : connection(connection), negotiation(negotiation)
     {
-        context = pe_context{.data = context.data, .hard_resets = context.hard_resets};
+        this->negotiation = {};
     }
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection, pe_negotiation>;
+    pe_connection& connection;
+    pe_negotiation& negotiation;
 };
 
 // Waits for the Type-C layer to report VBUS
@@ -253,9 +265,9 @@ struct pe_snk_discovery {
     static constexpr pd_status pd               = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    explicit pe_snk_discovery(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    explicit pe_snk_discovery(pe_connection& connection) : connection(connection) {}
+    using contexts = mtl::typelist<pe_connection>; // the guard reads the counter
+    pe_connection& connection;
 };
 
 struct pe_snk_wait_for_capabilities {
@@ -263,10 +275,6 @@ struct pe_snk_wait_for_capabilities {
     static constexpr power_level power          = power_level::default_power;
     static constexpr pd_status pd               = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_wait_for_capabilities(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // PE_SNK_Wait_for_Capabilities after a hard reset: the governing
@@ -278,9 +286,9 @@ struct pe_snk_wait_no_response {
     static constexpr pd_status pd               = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    explicit pe_snk_wait_no_response(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    explicit pe_snk_wait_no_response(pe_connection& connection) : connection(connection) {}
+    using contexts = mtl::typelist<pe_connection>; // the guard reads the counter
+    pe_connection& connection;
 };
 
 // nHardResetCount exhausted with no response: the port-level
@@ -291,11 +299,6 @@ struct pe_snk_error_recovery {
     static constexpr power_level power          = power_level::default_power;
     static constexpr pd_status pd               = pd_status::not_connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_error_recovery(pe_context& ctx) : context(ctx) {}
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // The engine evaluates through the injected policy and advances with
@@ -305,12 +308,12 @@ struct pe_snk_evaluate_capability {
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    explicit pe_snk_evaluate_capability(pe_context& ctx) : context(ctx)
+    explicit pe_snk_evaluate_capability(pe_connection& connection) : connection(connection)
     {
-        context.hard_resets = 0; // spec: reset on Source_Capabilities
+        connection.hard_resets = 0; // spec: reset on Source_Capabilities
     }
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection>;
+    pe_connection& connection;
 };
 
 struct pe_snk_select_capability {
@@ -321,26 +324,27 @@ struct pe_snk_select_capability {
 
     // the proposal stays pending: only an Accept promotes it, so a
     // Reject cannot leak the proposed terms into the active contract
-    pe_snk_select_capability(event::capabilities_evaluated const& event, pe_context& ctx)
-        : context(ctx), message_(event.message)
+    pe_snk_select_capability(event::capabilities_evaluated const& event,
+                             pe_negotiation& negotiation)
+        : negotiation(negotiation), message_(event.message)
     {
-        context.pending         = event.terms;
-        context.request_message = event.message; // kept for the Wait retry
+        negotiation.pending         = event.terms;
+        negotiation.request_message = event.message; // kept for the Wait retry
     }
     // re-entry from the SinkRequestTimer: the same Request again
-    pe_snk_select_capability(event::request_retry const&, pe_context& ctx)
-        : pe_snk_select_capability(ctx)
+    pe_snk_select_capability(event::request_retry const&, pe_negotiation& negotiation)
+        : pe_snk_select_capability(negotiation)
     {
     }
-    explicit pe_snk_select_capability(pe_context& ctx)
-        : context(ctx), message_(ctx.request_message)
+    explicit pe_snk_select_capability(pe_negotiation& negotiation)
+        : negotiation(negotiation), message_(negotiation.request_message)
     {
     }
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_negotiation>;
+    pe_negotiation& negotiation;
 
 private:
     pd_message message_{};
@@ -353,16 +357,17 @@ struct pe_snk_transition_sink {
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
     // entered on Accept: the pending proposal becomes the contract
-    pe_snk_transition_sink(event::accept const&, pe_context& ctx) : context(ctx)
+    pe_snk_transition_sink(event::accept const&, pe_negotiation& negotiation)
+        : negotiation(negotiation)
     {
-        context.request = context.pending;
+        negotiation.request = negotiation.pending;
     }
-    explicit pe_snk_transition_sink(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_transition_sink(pe_negotiation& negotiation) : negotiation(negotiation) {}
 
-    standby_limit values() const { return {context.request.voltage}; }
+    standby_limit values() const { return {negotiation.request.voltage}; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_negotiation>;
+    pe_negotiation& negotiation;
 };
 
 struct pe_snk_ready {
@@ -372,15 +377,18 @@ struct pe_snk_ready {
     static constexpr pd_status pd        = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    explicit pe_snk_ready(pe_context& ctx) : context(ctx) { context.explicit_contract = true; }
+    explicit pe_snk_ready(pe_negotiation& negotiation) : negotiation(negotiation)
+    {
+        negotiation.explicit_contract = true;
+    }
 
     active_contract values() const
     {
-        return {context.request.voltage, context.request.operating_current};
+        return {negotiation.request.voltage, negotiation.request.operating_current};
     }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_negotiation>;
+    pe_negotiation& negotiation;
 };
 
 struct pe_snk_give_sink_cap {
@@ -389,16 +397,10 @@ struct pe_snk_give_sink_cap {
     static constexpr pd_status pd        = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    pe_snk_give_sink_cap(event::send_sink_caps const& event, pe_context& ctx)
-        : context(ctx), message_(event.message)
-    {
-    }
-    explicit pe_snk_give_sink_cap(pe_context& ctx) : context(ctx) {}
+    pe_snk_give_sink_cap() = default;
+    explicit pe_snk_give_sink_cap(event::send_sink_caps const& event) : message_(event.message) {}
 
     pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 
 private:
     pd_message message_{};
@@ -414,10 +416,6 @@ struct pe_snk_bist_carrier {
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "transmits the BIST carrier";
-
-    explicit pe_snk_bist_carrier(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // The spec's Ready-with-SinkRequestTimer after a Wait answer to our
@@ -428,10 +426,6 @@ struct pe_snk_request_wait {
     static constexpr power_level power          = power_level::contract_or_default;
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_request_wait(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // PE_DR_SNK_Give_Source_Cap: a DRP answers Get_Source_Cap with its
@@ -442,16 +436,13 @@ struct pe_dr_snk_give_source_cap {
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    pe_dr_snk_give_source_cap(event::send_source_caps const& event, pe_context& ctx)
-        : context(ctx), message_(event.message)
+    pe_dr_snk_give_source_cap() = default;
+    explicit pe_dr_snk_give_source_cap(event::send_source_caps const& event)
+        : message_(event.message)
     {
     }
-    explicit pe_dr_snk_give_source_cap(pe_context& ctx) : context(ctx) {}
 
     pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 
 private:
     pd_message message_{};
@@ -465,21 +456,29 @@ struct pe_snk_send_not_supported {
     static constexpr pd_status pd        = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    pe_snk_send_not_supported(event::unsupported const& event, pe_context& ctx) : context(ctx)
+    pe_snk_send_not_supported(event::unsupported const& event, pe_connection& connection,
+                              pe_negotiation& negotiation)
+        : connection(connection), negotiation(negotiation)
     {
-        context.reply = event.reply;
+        negotiation.reply = event.reply;
     }
     // a swap request the table's question refused (or nobody answers)
-    pe_snk_send_not_supported(event::swap_request const& event, pe_context& ctx) : context(ctx)
+    pe_snk_send_not_supported(event::swap_request const& event, pe_connection& connection,
+                              pe_negotiation& negotiation)
+        : connection(connection), negotiation(negotiation)
     {
-        context.reply = makeControlMessage(event.refusal, power_role::sink, ctx.data);
+        negotiation.reply = makeControlMessage(event.refusal, power_role::sink, connection.data);
     }
-    explicit pe_snk_send_not_supported(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_send_not_supported(pe_connection& connection, pe_negotiation& negotiation)
+        : connection(connection), negotiation(negotiation)
+    {
+    }
 
-    pd_message const& values() const { return context.reply; }
+    pd_message const& values() const { return negotiation.reply; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection, pe_negotiation>;
+    pe_connection& connection;
+    pe_negotiation& negotiation;
 };
 
 // PE_SNK_Chunk_Received: a non-chunking device lets the sender run
@@ -491,14 +490,15 @@ struct pe_snk_chunk_received {
     static constexpr pd_status pd        = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    pe_snk_chunk_received(event::chunked_message const& event, pe_context& ctx) : context(ctx)
+    pe_snk_chunk_received(event::chunked_message const& event, pe_negotiation& negotiation)
+        : negotiation(negotiation)
     {
-        context.reply = event.reply;
+        negotiation.reply = event.reply;
     }
-    explicit pe_snk_chunk_received(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_chunk_received(pe_negotiation& negotiation) : negotiation(negotiation) {}
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_negotiation>;
+    pe_negotiation& negotiation;
 };
 
 // --- role swap messaging (PE_DRS / PE_PRS, sink side) ------------------------
@@ -514,21 +514,21 @@ struct pe_snk_send_dr_swap {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends DR_Swap";
 
-    pe_snk_send_dr_swap(event::send_dr_swap const& event, pe_context& ctx)
-        : context(ctx), message_(event.message)
+    pe_snk_send_dr_swap(event::send_dr_swap const& event, pe_connection& connection)
+        : connection(connection), message_(event.message)
     {
     }
     // re-entry from the tDRSwapWait retry rebuilds the request
-    explicit pe_snk_send_dr_swap(pe_context& ctx)
-        : context(ctx), message_(makeControlMessage(control_message_type::dr_swap,
-                                                    power_role::sink, ctx.data))
+    explicit pe_snk_send_dr_swap(pe_connection& connection)
+        : connection(connection), message_(makeControlMessage(control_message_type::dr_swap,
+                                                              power_role::sink, connection.data))
     {
     }
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection>;
+    pe_connection& connection;
 
 private:
     pd_message message_{};
@@ -543,17 +543,17 @@ struct pe_snk_accept_dr_swap {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
 
-    pe_snk_accept_dr_swap(event::dr_swap_received const&, pe_context& ctx)
-        : context(ctx), message_(makeControlMessage(control_message_type::accept,
-                                                    power_role::sink, ctx.data))
+    pe_snk_accept_dr_swap(event::dr_swap_received const&, pe_connection& connection)
+        : connection(connection), message_(makeControlMessage(control_message_type::accept,
+                                                              power_role::sink, connection.data))
     {
     }
-    explicit pe_snk_accept_dr_swap(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_accept_dr_swap(pe_connection& connection) : connection(connection) {}
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection>;
+    pe_connection& connection;
 
 private:
     pd_message message_{};
@@ -569,20 +569,23 @@ struct pe_snk_dr_swap_change {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "flips the data role";
 
-    pe_snk_dr_swap_change(event::accept const&, pe_context& ctx) : pe_snk_dr_swap_change(ctx) {}
-    pe_snk_dr_swap_change(event::message_sent const&, pe_context& ctx)
-        : pe_snk_dr_swap_change(ctx)
+    pe_snk_dr_swap_change(event::accept const&, pe_connection& connection)
+        : pe_snk_dr_swap_change(connection)
     {
     }
-    explicit pe_snk_dr_swap_change(pe_context& ctx) : context(ctx)
+    pe_snk_dr_swap_change(event::message_sent const&, pe_connection& connection)
+        : pe_snk_dr_swap_change(connection)
     {
-        context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
+    }
+    explicit pe_snk_dr_swap_change(pe_connection& connection) : connection(connection)
+    {
+        connection.data = connection.data == data_role::ufp ? data_role::dfp : data_role::ufp;
     }
 
-    data_role_changed values() const { return {context.data}; }
+    data_role_changed values() const { return {connection.data}; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection>;
+    pe_connection& connection;
 };
 
 // PE_VCS_Send_Swap: our VCONN_Swap is out
@@ -595,16 +598,12 @@ struct pe_snk_vcs_send_swap {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends VCONN_Swap";
 
-    pe_snk_vcs_send_swap(event::send_vconn_swap const& event, pe_context& ctx)
-        : context(ctx), message_(event.message)
+    pe_snk_vcs_send_swap() = default;
+    explicit pe_snk_vcs_send_swap(event::send_vconn_swap const& event) : message_(event.message)
     {
     }
-    explicit pe_snk_vcs_send_swap(pe_context& ctx) : context(ctx) {}
 
     pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 
 private:
     pd_message message_{};
@@ -619,17 +618,17 @@ struct pe_snk_vcs_accept {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
 
-    pe_snk_vcs_accept(event::vconn_swap_received const&, pe_context& ctx)
-        : context(ctx), message_(makeControlMessage(control_message_type::accept,
-                                                    power_role::sink, ctx.data))
+    pe_snk_vcs_accept(event::vconn_swap_received const&, pe_connection& connection)
+        : connection(connection), message_(makeControlMessage(control_message_type::accept,
+                                                              power_role::sink, connection.data))
     {
     }
-    explicit pe_snk_vcs_accept(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_vcs_accept(pe_connection& connection) : connection(connection) {}
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection>;
+    pe_connection& connection;
 
 private:
     pd_message message_{};
@@ -644,13 +643,6 @@ struct pe_snk_vcs_active {
     static constexpr auto annotations           = fsm::annotate(power, vconn_swap_agreed{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    pe_snk_vcs_active(event::accept const&, pe_context& ctx) : pe_snk_vcs_active(ctx) {}
-    pe_snk_vcs_active(event::message_sent const&, pe_context& ctx) : pe_snk_vcs_active(ctx) {}
-    explicit pe_snk_vcs_active(pe_context& ctx) : context(ctx) {}
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // PE_VCS_Send_PS_RDY: the vconn machine turned the switch on
@@ -662,16 +654,13 @@ struct pe_snk_vcs_send_ps_rdy {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PS_RDY";
 
-    pe_snk_vcs_send_ps_rdy(event::send_vconn_ps_rdy const& event, pe_context& ctx)
-        : context(ctx), message_(event.message)
+    pe_snk_vcs_send_ps_rdy() = default;
+    explicit pe_snk_vcs_send_ps_rdy(event::send_vconn_ps_rdy const& event)
+        : message_(event.message)
     {
     }
-    explicit pe_snk_vcs_send_ps_rdy(pe_context& ctx) : context(ctx) {}
 
     pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 
 private:
     pd_message message_{};
@@ -685,11 +674,6 @@ struct pe_snk_vcs_partner_on {
         fsm::annotate(power, vconn_partner_on{}, swap_transient{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_vcs_partner_on(pe_context& ctx) : context(ctx) {}
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 struct pe_snk_vcs_ps_rdy_sent {
@@ -699,11 +683,6 @@ struct pe_snk_vcs_ps_rdy_sent {
         fsm::annotate(power, vconn_ps_rdy_sent{}, swap_transient{});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_vcs_ps_rdy_sent(pe_context& ctx) : context(ctx) {}
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // PE_PRS_SNK_SRC_Send_Swap: our PR_Swap is out
@@ -716,21 +695,21 @@ struct pe_snk_send_pr_swap {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PR_Swap";
 
-    pe_snk_send_pr_swap(event::send_pr_swap const& event, pe_context& ctx)
-        : context(ctx), message_(event.message)
+    pe_snk_send_pr_swap(event::send_pr_swap const& event, pe_connection& connection)
+        : connection(connection), message_(event.message)
     {
     }
     // re-entry from the tPRSwapWait retry rebuilds the request
-    explicit pe_snk_send_pr_swap(pe_context& ctx)
-        : context(ctx), message_(makeControlMessage(control_message_type::pr_swap,
-                                                    power_role::sink, ctx.data))
+    explicit pe_snk_send_pr_swap(pe_connection& connection)
+        : connection(connection), message_(makeControlMessage(control_message_type::pr_swap,
+                                                              power_role::sink, connection.data))
     {
     }
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection>;
+    pe_connection& connection;
 
 private:
     pd_message message_{};
@@ -745,17 +724,17 @@ struct pe_snk_accept_pr_swap {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
 
-    pe_snk_accept_pr_swap(event::pr_swap_received const&, pe_context& ctx)
-        : context(ctx), message_(makeControlMessage(control_message_type::accept,
-                                                    power_role::sink, ctx.data))
+    pe_snk_accept_pr_swap(event::pr_swap_received const&, pe_connection& connection)
+        : connection(connection), message_(makeControlMessage(control_message_type::accept,
+                                                              power_role::sink, connection.data))
     {
     }
-    explicit pe_snk_accept_pr_swap(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_accept_pr_swap(pe_connection& connection) : connection(connection) {}
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection>;
+    pe_connection& connection;
 
 private:
     pd_message message_{};
@@ -770,10 +749,6 @@ struct pe_snk_dr_swap_wait {
     static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_dr_swap_wait(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 struct pe_snk_pr_swap_wait {
@@ -783,10 +758,6 @@ struct pe_snk_pr_swap_wait {
     static constexpr auto annotations           = fsm::annotate(power);
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_pr_swap_wait(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // The retry is due but PD3 collision avoidance gates it: the engine
@@ -798,10 +769,6 @@ struct pe_snk_request_gate {
         fsm::annotate(retry_gated{atomic_message_sequence::request});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_request_gate(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 struct pe_snk_dr_swap_gate {
@@ -811,10 +778,6 @@ struct pe_snk_dr_swap_gate {
         fsm::annotate(power, retry_gated{atomic_message_sequence::data_role_swap});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_dr_swap_gate(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 struct pe_snk_pr_swap_gate {
@@ -824,10 +787,6 @@ struct pe_snk_pr_swap_gate {
         fsm::annotate(power, retry_gated{atomic_message_sequence::power_role_swap});
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    explicit pe_snk_pr_swap_gate(pe_context& ctx) : context(ctx) {}
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // PE_PRS_SNK_SRC_Transition_to_off: draw drops to standby while the
@@ -841,23 +800,10 @@ struct pe_snk_swap_transition_to_off {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "stops drawing, awaits the source's PS_RDY";
 
-    pe_snk_swap_transition_to_off(event::accept const&, pe_context& ctx)
-        : pe_snk_swap_transition_to_off(ctx)
-    {
-    }
-    pe_snk_swap_transition_to_off(event::message_sent const&, pe_context& ctx)
-        : pe_snk_swap_transition_to_off(ctx)
-    {
-    }
-    explicit pe_snk_swap_transition_to_off(pe_context& ctx) : context(ctx) {}
-
     // the standby draw for the power side, the standby entry for the
     // port - both compile-time facts of this state
     static constexpr auto annotations =
         fsm::annotate(standby_limit{v_safe_5v}, enter_swap_standby{power_role::source});
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // PE_PRS_SNK_SRC_Assert_Rp: the old source is off - the port flips its
@@ -870,11 +816,6 @@ struct pe_snk_swap_assert_rp {
 
     static constexpr auto annotations =
         fsm::annotate(assert_new_role{power_role::source});
-
-    explicit pe_snk_swap_assert_rp(pe_context& ctx) : context(ctx) {}
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // PE_PRS_SRC_SNK_Wait_Source_on, this engine's half: the port was the
@@ -888,19 +829,20 @@ struct pe_snk_swap_wait_source_on {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PS_RDY, awaits the new source's";
 
-    pe_snk_swap_wait_source_on(event::swap_wait_source_on const& event, pe_context& ctx)
-        : context(ctx)
+    pe_snk_swap_wait_source_on(event::swap_wait_source_on const& event,
+                               pe_connection& connection)
+        : connection(connection)
     {
-        context.data = event.role; // a power swap preserves the data role
+        connection.data = event.role; // a power swap preserves the data role
         message_ = makeControlMessage(control_message_type::ps_rdy, power_role::sink,
-                                      context.data);
+                                      connection.data);
     }
-    explicit pe_snk_swap_wait_source_on(pe_context& ctx) : context(ctx) {}
+    explicit pe_snk_swap_wait_source_on(pe_connection& connection) : connection(connection) {}
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection>;
+    pe_connection& connection;
 
 private:
     pd_message message_{};
@@ -914,12 +856,7 @@ struct pe_snk_swap_source_on_seen {
     static constexpr pd_status pd               = pd_status::connected;
     static constexpr std::string_view dot_note  = specNote(power, pd);
 
-    explicit pe_snk_swap_source_on_seen(pe_context& ctx) : context(ctx) {}
-
     static constexpr auto annotations = fsm::annotate(swap_completed{});
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 };
 
 // Accepts a received Soft_Reset; the reporter resets the protocol
@@ -931,16 +868,12 @@ struct pe_snk_soft_reset {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = prl::reset_action::note;
 
-    pe_snk_soft_reset(event::soft_reset_received const& event, pe_context& ctx)
-        : context(ctx), message_(event.accept)
+    pe_snk_soft_reset() = default;
+    explicit pe_snk_soft_reset(event::soft_reset_received const& event) : message_(event.accept)
     {
     }
-    explicit pe_snk_soft_reset(pe_context& ctx) : context(ctx) {}
 
     pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
 
 private:
     pd_message message_{};
@@ -956,16 +889,18 @@ struct pe_snk_send_soft_reset {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = prl::reset_action::note;
 
-    explicit pe_snk_send_soft_reset(pe_context& ctx) : context(ctx)
+    explicit pe_snk_send_soft_reset(pe_connection& connection, pe_negotiation& negotiation)
+        : connection(connection), negotiation(negotiation)
     {
-        context.reply = makeControlMessage(control_message_type::soft_reset, power_role::sink,
-                                           context.data);
+        negotiation.reply = makeControlMessage(control_message_type::soft_reset,
+                                               power_role::sink, connection.data);
     }
 
-    pd_message const& values() const { return context.reply; }
+    pd_message const& values() const { return negotiation.reply; }
 
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection, pe_negotiation>;
+    pe_connection& connection;
+    pe_negotiation& negotiation;
 };
 
 struct pe_snk_hard_reset {
@@ -975,12 +910,12 @@ struct pe_snk_hard_reset {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = prl::hard_reset_action::note;
 
-    explicit pe_snk_hard_reset(pe_context& ctx) : context(ctx)
+    explicit pe_snk_hard_reset(pe_connection& connection) : connection(connection)
     {
-        ++context.hard_resets; // HardResetCounter
+        ++connection.hard_resets; // HardResetCounter
     }
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_connection>;
+    pe_connection& connection;
 };
 
 // PE_SNK_Transition_to_default: back to vSafe5V defaults; the engine
@@ -995,16 +930,14 @@ struct pe_snk_transition_to_default {
     static constexpr std::string_view dot_note  = specNote(power, pd);
     static constexpr std::string_view dot_action = restore_default_action::note;
 
-    explicit pe_snk_transition_to_default(pe_context& ctx) : context(ctx)
+    // the connection persists, the negotiation ends
+    explicit pe_snk_transition_to_default(pe_negotiation& negotiation) : negotiation(negotiation)
     {
-        // the connection persists: keep the data role and the counter
-        context = pe_context{.data = context.data, .hard_resets = context.hard_resets};
+        this->negotiation = {};
     }
 
-    // the source legitimately cycles VBUS now: the connection layer
-    // must hold the attach instead of reading it as a detach
-    using contexts = mtl::typelist<pe_context>;
-    pe_context& context;
+    using contexts = mtl::typelist<pe_negotiation>;
+    pe_negotiation& negotiation;
 };
 
 } // namespace state
@@ -1012,7 +945,7 @@ struct pe_snk_transition_to_default {
 struct has_explicit_contract {
     static bool check(state::pe_snk_select_capability const& state)
     {
-        return state.context.explicit_contract;
+        return state.negotiation.explicit_contract;
     }
 };
 
@@ -1021,14 +954,14 @@ struct has_explicit_contract {
 struct no_hard_reset_yet {
     static bool check(state::pe_snk_discovery const& state)
     {
-        return state.context.hard_resets == 0;
+        return state.connection.hard_resets == 0;
     }
 };
 
 struct hard_resets_left {
     static bool check(state::pe_snk_wait_no_response const& state)
     {
-        return state.context.hard_resets <= spec::n_hard_reset_count;
+        return state.connection.hard_resets <= spec::n_hard_reset_count;
     }
 };
 
@@ -1541,7 +1474,7 @@ private:
         void onRevision(pd_revision revision)
         {
             pe.tcpc_.setMessageHeaderInfo(
-                {power_role::sink, pe.sm_.template context<pe::pe_context>().data, revision});
+                {power_role::sink, pe.sm_.template context<pe::pe_connection>().data, revision});
         }
         void onTxDone()
         {
@@ -1580,7 +1513,7 @@ private:
         if (prl_.revision() != pd_revision::rev_3_x) {
             return true;
         }
-        return !sm_.template context<pe::pe_context>().explicit_contract || sink_tx_ok_;
+        return !sm_.template context<pe::pe_negotiation>().explicit_contract || sink_tx_ok_;
     }
 
     // A retry that timed out under SinkTxNG waits in its gate state,
@@ -1632,7 +1565,7 @@ private:
     std::uint16_t makeHeader(std::uint8_t message_type, std::uint8_t data_objects) const
     {
         return pd_header{.message_type     = message_type,
-                         .port_data_role   = sm_.template context<pe::pe_context>().data,
+                         .port_data_role   = sm_.template context<pe::pe_connection>().data,
                          .revision         = pd_revision::rev_3_x,
                          .port_power_role  = power_role::sink,
                          .num_data_objects = data_objects}
@@ -1734,8 +1667,8 @@ private:
     // or detach while the TCPC keeps answering GoodCRC
     void enterBist(std::uint32_t bdo)
     {
-        auto const& context = sm_.template context<pe::pe_context>();
-        if (!context.explicit_contract || context.request.voltage != pe::v_safe_5v) {
+        auto const& negotiation = sm_.template context<pe::pe_negotiation>();
+        if (!negotiation.explicit_contract || negotiation.request.voltage != pe::v_safe_5v) {
             return;
         }
         switch (bist::modeOf(bdo)) {
