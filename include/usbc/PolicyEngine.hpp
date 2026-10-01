@@ -236,51 +236,31 @@ struct send_sink_capabilities {
 
 } // namespace event
 
-// The optional features, as tags - the fsm library's feature mechanism:
-// a state declares the feature it belongs to (`using feature =
-// pe::..._feature;`), and an injected observer declaring the same tag
-// (`using enables = ...;` - one tag, or an mtl::typelist of them)
-// switches the feature on (fsm::observer_enables_v). A disabled
-// feature's states - and every table entry touching them, timer-range
-// map entries included - are removed at compile time
-// (fsm::remove_features_t); the enabling observer must satisfy the
-// feature's contract (checked where it is detected)
-struct pr_swap_feature {};  // contract: allowSwap(power_role)
-struct dr_swap_feature {};  // contract: allowSwap(data_role)
-struct vconn_feature {};    // contract: concepts::vconn_port
-
 // The tables' arbitration questions - fsm::guard tags without a static
 // check, answered by the policy injected into the engine's machine:
 // bool check(pe::pr_swap_allowed) - may this port take the other
 // power role? - and likewise the other data role and the VCONN source
-// role. A table asking a question nobody answers does not compile, so
-// a policy answering is exactly what brings the feature's states in
+// role
 struct pr_swap_allowed {};
 struct dr_swap_allowed {};
 struct vconn_swap_allowed {};
 
-// The disabled features of a configuration as one tag list, so
-// disabling costs a single filter pass over a table or map (chained
-// per-feature passes measured multiples of the instantiations)
-template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
-using disabled_features_t = mtl::concat_t<
-    mtl::concat_t<std::conditional_t<PR_SWAP, mtl::typelist<>, mtl::typelist<pr_swap_feature>>,
-                  std::conditional_t<DR_SWAP, mtl::typelist<>, mtl::typelist<dr_swap_feature>>>,
-    std::conditional_t<VCONN, mtl::typelist<>, mtl::typelist<vconn_feature>>>;
-
-// Lazy by design: the everything-enabled specialization returns the
-// list untouched without ever naming the filter (a conditional_t alias
-// would evaluate the filter branch either way). One trait for the
-// transition lists and the timer-range maps: the filter knows both
-template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
-struct without_disabled
-    : std::type_identity<
-          fsm::remove_features_t<LIST, disabled_features_t<PR_SWAP, DR_SWAP, VCONN>>> {};
-template<typename LIST>
-struct without_disabled<LIST, true, true, true> : std::type_identity<LIST> {};
-
-template<typename LIST, bool PR_SWAP, bool DR_SWAP, bool VCONN>
-using without_disabled_t = typename without_disabled<LIST, PR_SWAP, DR_SWAP, VCONN>::type;
+// The optional features, as tags - the fsm library's feature mechanism:
+// a state declares the feature it belongs to (`using feature =
+// pe::..._feature;`), and the tag names the question that enables it:
+// a policy answering it is exactly what brings the feature's states
+// in, and the machine leaves a disabled feature's states - and every
+// entry touching them - out at compile time. The answering policy must
+// satisfy the feature's contract (checked where it is detected)
+struct pr_swap_feature { // contract: allowSwap(power_role)
+    using enabled_by = pr_swap_allowed;
+};
+struct dr_swap_feature { // contract: allowSwap(data_role)
+    using enabled_by = dr_swap_allowed;
+};
+struct vconn_feature { // contract: concepts::vconn_port
+    using enabled_by = vconn_swap_allowed;
+};
 
 // The Atomic Message Sequences (the spec's AMS: a request and its
 // replies, during which nothing else may start) an engine initiates
@@ -911,16 +891,14 @@ protected:
         tcpc_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
     }
 
-    // The optional features follow the injected policy: it answers the
-    // table's swap questions or the feature's states are filtered from
-    // the table (the facade's proxies answer exactly when an injected
-    // observer enables the feature by tag)
-    static constexpr bool pr_swap_capable =
-        fsm::concepts::answers_stateless_guard<POLICY, pr_swap_allowed>;
-    static constexpr bool dr_swap_capable =
-        fsm::concepts::answers_stateless_guard<POLICY, dr_swap_allowed>;
-    static constexpr bool vconn_capable =
-        fsm::concepts::answers_stateless_guard<POLICY, vconn_swap_allowed>;
+    // The optional features follow the injected policy: the machine
+    // keeps a feature's states exactly when the policy answers the
+    // feature's question (the facade's proxies answer exactly when an
+    // injected observer enables the feature by tag); the engine's own
+    // branches ask the library the same thing
+    static constexpr bool pr_swap_capable = fsm::feature_enabled_v<pr_swap_feature, POLICY>;
+    static constexpr bool dr_swap_capable = fsm::feature_enabled_v<dr_swap_feature, POLICY>;
+    static constexpr bool vconn_capable   = fsm::feature_enabled_v<vconn_feature, POLICY>;
 
     // The partner's swap request is the table's question (the Ready
     // rows on the *_swap_received events): the injected policy's

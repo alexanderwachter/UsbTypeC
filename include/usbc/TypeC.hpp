@@ -154,15 +154,6 @@ struct vbus_power {
     constexpr bool operator==(vbus_power const&) const = default;
 };
 
-// Compile-time probe consuming exactly one annotation type: the
-// drivers' validate() checks completeness per element with it - one
-// all_states_notified over several accepted types would pass a state
-// that carries only one of them
-template<typename T>
-struct annotation_probe : fsm::observing<annotation_probe<T>> {
-    void notifyEntry(T const&) {}
-};
-
 // Machine-owned contexts of the connection layer, split by lifetime;
 // a state declares only the ones it touches.
 
@@ -211,34 +202,24 @@ constexpr bool metMeansPresent(vbus_level level)
     return level == vbus_level::safe5v;
 }
 
-// A watching state must consume the event family its armed level
-// makes the driver deliver - a missing transition would silently drop
-// a report (a lost detach at worst)
-template<typename TABLE>
-struct watch_family_handled {
-    template<typename STATE, bool WATCHING = requires { STATE::vbus_watch; }>
-    struct pred
-        : std::bool_constant<
-              STATE::vbus_watch == vbus_level::unwatched // no reports, nothing implied
-                  ? true
-                  : familyOf(STATE::vbus_watch) == vbus_family::discharge
-                        ? (fsm::handles_event_v<TABLE, STATE, event::vbus_reached_safe0v> &&
-                           fsm::handles_event_v<TABLE, STATE, event::vbus_left_safe0v>)
-                        : (fsm::handles_event_v<TABLE, STATE, event::vbus_present> &&
-                           fsm::handles_event_v<TABLE, STATE, event::vbus_removed>)> {};
+// The events a state owes for the VBUS level it watches: both reports
+// of its level's family - a missing transition would silently drop a
+// report (a lost detach at worst). A state without the member, or
+// with monitoring off, owes nothing; fsm::all_states_handle is the
+// table-wide proof
+template<typename STATE>
+struct required_vbus_events : std::type_identity<mtl::typelist<>> {};
 
-    // a state without the member cannot arm anything and implies nothing
-    template<typename STATE>
-    struct pred<STATE, false> : std::true_type {};
-};
+template<typename STATE>
+    requires requires { STATE::vbus_watch; } && (STATE::vbus_watch != vbus_level::unwatched)
+struct required_vbus_events<STATE>
+    : std::conditional<familyOf(STATE::vbus_watch) == vbus_family::discharge,
+                       mtl::typelist<event::vbus_reached_safe0v, event::vbus_left_safe0v>,
+                       mtl::typelist<event::vbus_present, event::vbus_removed>> {};
 
 template<typename TABLE>
-struct watch_events_consistent
-    : std::bool_constant<mtl::all_of_v<typename TABLE::states,
-                                       watch_family_handled<TABLE>::template pred>> {};
-
-template<typename TABLE>
-inline constexpr bool watch_events_consistent_v = watch_events_consistent<TABLE>::value;
+inline constexpr bool watch_events_consistent_v =
+    fsm::all_states_handle_v<TABLE, required_vbus_events>;
 
 // Arms the vbus driver with each state's watched level; the class maps
 // the callback's meaning through the level it armed last
@@ -258,7 +239,7 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(fsm::all_states_notified_v<annotation_probe<vbus_level>, TABLE>,
+        static_assert(fsm::all_states_carry_v<TABLE, vbus_level>,
                       "vbus_watcher: every state must annotate its vbus_watch level "
                       "(vbus_level::unwatched switches monitoring off)");
         static_assert(watch_events_consistent_v<TABLE>,

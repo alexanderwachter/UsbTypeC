@@ -80,17 +80,28 @@ static_assert(
 // --- optional features (PR_Swap, DR_Swap, VCONN), plus each feature alone
 // --- so no single filter breaks reachability -----------------------------
 
+// A variant is the table the engine's machine runs with a policy
+// enabling exactly these features: a switch observer stands in for it
+template<bool PR, bool DR, bool VCONN>
+using features = fsm::feature_switch<fsm::enabled<pe::pr_swap_feature, PR>,
+                                     fsm::enabled<pe::dr_swap_feature, DR>,
+                                     fsm::enabled<pe::vconn_feature, VCONN>>;
+
+template<typename TABLE, typename TIMER_RANGES, bool PR, bool DR, bool VCONN>
+inline constexpr bool variant_ok =
+    fsm::timeouts_within_bounds_v<
+        fsm::enabled_table_t<TABLE, mtl::typelist<features<PR, DR, VCONN>>>,
+        fsm::remove_disabled_features_t<TIMER_RANGES, features<PR, DR, VCONN>>> &&
+    fsm::all_states_reachable_v<
+        fsm::enabled_table_t<TABLE, mtl::typelist<features<PR, DR, VCONN>>>>;
+
 template<bool PR, bool DR, bool VCONN>
 inline constexpr bool sink_variant_ok =
-    fsm::timeouts_within_bounds_v<pe::sink_table_for<PR, DR, VCONN>,
-                                  pe::sink_timer_ranges_for<PR, DR, VCONN>> &&
-    fsm::all_states_reachable_v<pe::sink_table_for<PR, DR, VCONN>>;
+    variant_ok<pe::sink_table, pe::sink_timer_ranges, PR, DR, VCONN>;
 
 template<bool PR, bool DR, bool VCONN>
 inline constexpr bool source_variant_ok =
-    fsm::timeouts_within_bounds_v<pe::source_table_for<PR, DR, VCONN>,
-                                  pe::source_timer_ranges_for<PR, DR, VCONN>> &&
-    fsm::all_states_reachable_v<pe::source_table_for<PR, DR, VCONN>>;
+    variant_ok<pe::source_table, pe::source_timer_ranges, PR, DR, VCONN>;
 
 static_assert(sink_variant_ok<true, true, true>);
 static_assert(sink_variant_ok<false, false, false>);

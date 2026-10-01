@@ -165,7 +165,7 @@ private:
     // The optional features, detected by tag over the injected pack
     template<typename TAG>
     static constexpr bool feature_enabled =
-        (fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, TAG> || ...);
+        fsm::feature_enabled_v<TAG, std::remove_cvref_t<OBSERVERs>...>;
 
     static constexpr bool pr_swap_enabled = feature_enabled<pe::pr_swap_feature>;
     static constexpr bool dr_swap_enabled = feature_enabled<pe::dr_swap_feature>;
@@ -201,20 +201,12 @@ private:
         bool allowSwap(vconn_source_role) { return false; }
     };
 
-    template<typename T>
-    struct is_vconn_enabler
-        : std::bool_constant<fsm::observer_enables_v<T, pe::vconn_feature>> {};
-
-    // Lazy: the filtered pack is only fronted when the feature exists
-    template<bool ENABLED, typename = void>
-    struct vconn_port_type : std::type_identity<no_vconn_port> {};
-    template<typename DUMMY>
-    struct vconn_port_type<true, DUMMY>
-        : std::type_identity<
-              mtl::front_t<mtl::filter_t<mtl::typelist<std::remove_cvref_t<OBSERVERs>...>,
-                                         is_vconn_enabler>>> {};
-
-    using vconn_port_t = typename vconn_port_type<vconn_enabled>::type;
+    // The vconn-enabling observer is the port; the stand-in without one
+    using vconn_enabler_t =
+        fsm::feature_enabler_t<pe::vconn_feature,
+                               mtl::typelist<std::remove_cvref_t<OBSERVERs>...>>;
+    using vconn_port_t = std::conditional_t<std::is_same_v<vconn_enabler_t, mtl::nil_type>,
+                                            no_vconn_port, vconn_enabler_t>;
 
     // The first vconn-enabling observer of the pack, or the stand-in
     auto& pickVconnPort() { return dummy_vconn_port_; }

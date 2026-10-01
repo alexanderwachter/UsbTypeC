@@ -323,9 +323,9 @@ struct src_hw_driver : fsm::observing<src_hw_driver<TCPC, VBUS>> {
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(fsm::all_states_notified_v<annotation_probe<cc_termination>, TABLE>,
+        static_assert(fsm::all_states_carry_v<TABLE, cc_termination>,
                       "src_hw_driver: every state must annotate its CC termination");
-        static_assert(fsm::all_states_notified_v<annotation_probe<vbus_power>, TABLE>,
+        static_assert(fsm::all_states_carry_v<TABLE, vbus_power>,
                       "src_hw_driver: every state must annotate its VBUS power path");
     }
 

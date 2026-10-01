@@ -787,19 +787,12 @@ using sink_transitions = mtl::typelist<
     fsm::transition<fsm::from<state::pe_snk_transition_to_default>,
                     fsm::on<event::default_level_reached>, fsm::to<state::pe_snk_startup>>>;
 
-// The engine's table with every disabled optional feature filtered
-// out (a feature is enabled when the injected policy carries its
-// arbitration hook). A named struct, not an alias: the short name
-// replaces the fully spelled table type in every mangled symbol -
-// megabytes per object file, measured
-template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
-struct sink_table_for
-    : mtl::rebind_t<without_disabled_t<sink_transitions, PR_SWAP, DR_SWAP, VCONN>,
-                    fsm::transition_table> {};
-
-template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
-using sink_timer_ranges_for =
-    without_disabled_t<sink_timer_ranges, PR_SWAP, DR_SWAP, VCONN>;
+// The engine's table, every optional feature included: the machine
+// leaves out the features its policy does not answer for. A named
+// struct, not an alias: the short name replaces the fully spelled
+// table type in every mangled symbol - megabytes per object file,
+// measured
+struct sink_table : mtl::rebind_t<sink_transitions, fsm::transition_table> {};
 
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them
@@ -1145,9 +1138,8 @@ private:
     std::optional<pe::atomic_message_sequence> pending_sequence_; // parked under SinkTxNG
     gate_watch gates_{*this};
     // the policy rides in the pack to answer the table's questions
-    fsm::QueuedMachine<pe::sink_table_for<base::pr_swap_capable, base::dr_swap_capable,
-                                          base::vconn_capable>,
-                       4, fsm::inline_work, fsm::no_lock, fsm::timed<fsm::QueuedTimer<TIMER>&>,
+    fsm::QueuedMachine<pe::sink_table, 4, fsm::inline_work, fsm::no_lock,
+                       fsm::timed<fsm::QueuedTimer<TIMER>&>,
                        ProtocolLayer<TCPC, TIMER>, gate_watch, POLICY, OBSERVERs...>
         sm_;
 };

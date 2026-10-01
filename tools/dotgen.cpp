@@ -49,8 +49,8 @@ int main(int argc, char* argv[])
         directory, "tc_drp_try_src");
     write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::sink>>(
         directory, "tc_drp_try_snk");
-    write<usbc::pe::sink_table_for<true, true, true>>(directory, "pe_sink");
-    write<usbc::pe::source_table_for<true, true, true>>(directory, "pe_source");
+    write<usbc::pe::sink_table>(directory, "pe_sink");
+    write<usbc::pe::source_table>(directory, "pe_source");
 
     return 0;
 }

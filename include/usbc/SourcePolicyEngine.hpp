@@ -849,19 +849,12 @@ using source_transitions = mtl::typelist<
                     fsm::to<state::pe_src_send_capabilities>, fsm::guard<still_attached>>,
     fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>,
                     fsm::to<state::pe_src_startup>>>;
-// The engine's table with every disabled optional feature filtered
-// out (a feature is enabled when the injected policy carries its
-// arbitration hook). A named struct, not an alias: the short name
-// replaces the fully spelled table type in every mangled symbol -
-// megabytes per object file, measured
-template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
-struct source_table_for
-    : mtl::rebind_t<without_disabled_t<source_transitions, PR_SWAP, DR_SWAP, VCONN>,
-                    fsm::transition_table> {};
-
-template<bool PR_SWAP, bool DR_SWAP, bool VCONN>
-using source_timer_ranges_for =
-    without_disabled_t<source_timer_ranges, PR_SWAP, DR_SWAP, VCONN>;
+// The engine's table, every optional feature included: the machine
+// leaves out the features its policy does not answer for. A named
+// struct, not an alias: the short name replaces the fully spelled
+// table type in every mangled symbol - megabytes per object file,
+// measured
+struct source_table : mtl::rebind_t<source_transitions, fsm::transition_table> {};
 
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them
@@ -1107,9 +1100,8 @@ private:
     SUPPLY& supply_;
     ActionDriver action_driver_{*this};
     // the policy rides in the pack to answer the table's questions
-    fsm::QueuedMachine<pe::source_table_for<base::pr_swap_capable, base::dr_swap_capable,
-                                            base::vconn_capable>,
-                       4, fsm::inline_work, fsm::no_lock, fsm::timed<fsm::QueuedTimer<TIMER>&>,
+    fsm::QueuedMachine<pe::source_table, 4, fsm::inline_work, fsm::no_lock,
+                       fsm::timed<fsm::QueuedTimer<TIMER>&>,
                        ProtocolLayer<TCPC, TIMER>, ActionDriver, POLICY, OBSERVERs...>
         sm_;
 };
