@@ -18,6 +18,12 @@ enum class power_role : std::uint8_t { sink = 0, source = 1 };
 
 enum class data_role : std::uint8_t { ufp = 0, dfp = 1 };
 
+// A DR_Swap flips the data role in place
+constexpr data_role otherDataRole(data_role role)
+{
+    return role == data_role::ufp ? data_role::dfp : data_role::ufp;
+}
+
 enum class pd_revision : std::uint8_t { rev_1_0 = 0, rev_2_0 = 1, rev_3_x = 2 };
 
 // Contiguous zero-based values; used as per-SOP* array index
@@ -81,5 +87,25 @@ struct pd_message {
     std::uint8_t payload_size{}; // bytes used in payload
     std::array<std::uint8_t, max_payload_size> payload{};
 };
+
+// The payload's 32-bit data objects, little-endian on the wire
+constexpr void appendDataObject(pd_message& message, std::uint32_t object)
+{
+    auto const offset           = message.payload_size;
+    message.payload[offset + 0] = static_cast<std::uint8_t>(object);
+    message.payload[offset + 1] = static_cast<std::uint8_t>(object >> 8u);
+    message.payload[offset + 2] = static_cast<std::uint8_t>(object >> 16u);
+    message.payload[offset + 3] = static_cast<std::uint8_t>(object >> 24u);
+    message.payload_size += 4;
+}
+
+constexpr std::uint32_t dataObjectAt(pd_message const& message, std::uint8_t index)
+{
+    auto const offset = static_cast<std::size_t>(index) * 4;
+    return static_cast<std::uint32_t>(message.payload[offset + 0]) |
+           (static_cast<std::uint32_t>(message.payload[offset + 1]) << 8u) |
+           (static_cast<std::uint32_t>(message.payload[offset + 2]) << 16u) |
+           (static_cast<std::uint32_t>(message.payload[offset + 3]) << 24u);
+}
 
 } // namespace usbc

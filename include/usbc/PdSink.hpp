@@ -28,6 +28,7 @@
 #include <usbc/TypeCSink.hpp>
 
 #include <mtl/StateMachine.hpp>
+#include <mtl/Typelist.hpp>
 
 #include <cstdint>
 #include <span>
@@ -92,64 +93,36 @@ private:
 
     using SinkEngine = SinkPolicyEngine<TCPC, TIMER, POLICY, POWER, port_watch>;
 
-    // The port's internal wiring in the connection machine: feeds the
-    // engine the attach, the detach, the CC status (PD3 collision
-    // avoidance), and the PD alerts - and keeps it live through the
-    // hard-reset window's legitimate VBUS cycle
-    struct router {
-        PdSink& port;
-        bool active = false;
+    // The port's internal wiring in the connection machine, observing
+    // the states' declared facts: the PD connection's exit is the one
+    // real detach (its tag spans the hard-reset window, so the
+    // legitimate VBUS cycle is none), every entry of Attached.SNK -
+    // fresh, or VBUS back after the window - reaches the engine as the
+    // partner value, and the CC status (PD3 collision avoidance) and
+    // the PD alerts are forwarded from the driver frontend
+    struct router : fsm::observing<router> {
+        explicit router(PdSink& port_ref) : port(port_ref) {}
 
-        // the entry needs the state entered only: one body per state
-        template<typename STATE, typename MACHINE>
-        void onEnter(MACHINE& machine)
+        using observes = mtl::typelist<tc::pd_connection, tc::attached_partner>;
+
+        // the one real detach: the window timing out included
+        void notifyExit(tc::pd_connection) { port.engine_.vbusRemoved(); }
+
+        // Attached.SNK entered: seed the collision-avoidance view of
+        // the source's Rp, then the engine learns VBUS is present
+        void notifyEntry(tc::attached_partner const& partner)
         {
-            if constexpr (std::is_same_v<STATE, tc::state::attached_snk>) {
-                // seed the collision-avoidance view of the source's Rp
-                port.engine_.sinkTxChanged(
-                    tc::sinkTxOk(machine.template getIf<STATE>()->context.cc));
-                active = true;
-                port.engine_.vbusPresent(); // fresh attach, or VBUS back
-            }
+            port.engine_.sinkTxChanged(tc::sinkTxOk(partner.cc));
+            port.engine_.vbusPresent();
         }
 
-        // the exit depends on where the machine goes: the edge form
-        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onExitFrom(MACHINE&)
-        {
-            // the hard-reset window keeps the engine live: it still
-            // awaits the source's capabilities; every other exit of
-            // the attached group is a real detach
-            if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_snk>) {
-                if constexpr (!std::is_same_v<NEW_STATE, tc::state::hard_reset_snk>) {
-                    detach();
-                }
-            } else if constexpr (std::is_same_v<OLD_STATE, tc::state::hard_reset_snk>) {
-                if constexpr (!std::is_same_v<NEW_STATE, tc::state::hard_reset_recover_snk>) {
-                    detach(); // window timed out: dead port
-                }
-            } else if constexpr (std::is_same_v<OLD_STATE, tc::state::hard_reset_recover_snk>) {
-                if constexpr (!std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
-                    detach(); // window timed out: dead port
-                }
-            }
-        }
-
-        void onCcStatus(cc_status cc)
-        {
-            if (active) {
-                port.engine_.sinkTxChanged(tc::sinkTxOk(cc));
-            }
-        }
+        // the engine's view of the source's Rp; it acts on it only
+        // through its Ready-state annotations, so no attach gate here
+        void onCcStatus(cc_status cc) { port.engine_.sinkTxChanged(tc::sinkTxOk(cc)); }
 
         void onPdAlert(alert_status alerts) { port.engine_.onAlert(alerts); }
 
-    private:
-        void detach()
-        {
-            active = false;
-            port.engine_.vbusRemoved();
-        }
+        PdSink& port;
     };
 
     using Sink = TypeCSink<TCPC, VBUS, TIMER, router, OBSERVERs...>;

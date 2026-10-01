@@ -77,41 +77,42 @@ struct error_recovery_src {
     static constexpr auto timeout     = t_error_recovery;
 };
 
-// Common context plus the internal-transition handlers keeping it
+// The sensed line plus the internal-transition handlers keeping it
 // current without disturbing a running debounce
 struct source_state {
-    explicit source_state(port_context& ctx) : context(ctx) {}
+    explicit source_state(line_status& line_ref) : line(line_ref) {}
 
-    void handle(event::cc_changed const& event) { context.cc = event.cc; }
-    void handle(event::vbus_reached_safe0v const&) { context.vbus_safe0v = true; }
-    void handle(event::vbus_left_safe0v const&) { context.vbus_safe0v = false; }
-    // a DR_Swap flips the data role in place (DRP only)
-    void handle(event::swap_data_role const&)
-    {
-        context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
-    }
-    // a Try phase's wall falling mid-debounce (DRP only): recorded for
-    // the debounce outcome to act on, the debounce itself runs on
-    void handle(fsm::deadline const&) { context.try_expired = true; }
+    void handle(event::cc_changed const& event) { line.cc = event.cc; }
+    void handle(event::vbus_reached_safe0v const&) { line.vbus_safe0v = true; }
+    void handle(event::vbus_left_safe0v const&) { line.vbus_safe0v = false; }
 
-    using contexts = mtl::typelist<port_context>;
-    port_context& context;
+    using contexts = mtl::typelist<line_status>;
+    line_status& line;
 };
 
+// The resting state resets the connection's attachment: the next
+// attach resolves afresh
 struct unattached_src : source_state {
     // resting: nothing measured - AttachWait re-arms vSafe0V on entry,
-    // and the driver's arm-report refreshes the context latch there
+    // and the driver's arm-report refreshes the line's latch there
     static constexpr vbus_level vbus_watch = vbus_level::unwatched;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
 
     // entering on the discharge-complete event records what it means -
     // a transition does not run the internal handlers
-    unattached_src(event::vbus_reached_safe0v const&, port_context& ctx) : source_state(ctx)
+    unattached_src(event::vbus_reached_safe0v const&, line_status& line_ref,
+                   attachment& attached)
+        : unattached_src(line_ref, attached)
     {
-        context.vbus_safe0v = true;
+        line.vbus_safe0v = true;
     }
-    using source_state::source_state;
+    unattached_src(line_status& line_ref, attachment& attached) : source_state(line_ref)
+    {
+        attached = {};
+    }
+
+    using contexts = mtl::typelist<line_status, attachment>;
 };
 
 struct attach_wait_src : source_state {
@@ -120,9 +121,9 @@ struct attach_wait_src : source_state {
         fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
-    attach_wait_src(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
+    attach_wait_src(event::cc_changed const& event, line_status& line_ref) : source_state(line_ref)
     {
-        context.cc = event.cc;
+        line.cc = event.cc;
     }
     using source_state::source_state;
 };
@@ -141,34 +142,59 @@ struct attached_src : source_state {
     static constexpr vbus_level vbus_watch = vbus_level::unwatched;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::safe5v}, vbus_watch,
-                      attached_role{power_role::source});
+                      attached_role{power_role::source}, pd_connection{});
 
     // entered from the debounced wait on the vSafe0V event
-    attached_src(event::vbus_reached_safe0v const&, port_context& ctx) : attached_src(ctx)
+    attached_src(event::vbus_reached_safe0v const&, line_status& line_ref,
+                 attachment& attached_ref)
+        : attached_src(line_ref, attached_ref)
     {
-        context.vbus_safe0v = true;
+        line.vbus_safe0v = true;
     }
     // entered from a PD-directed role swap's standby (the DRP layer),
-    // completed or aborted: the plug stays put - the orientation is
-    // already in the context
-    attached_src(event::swap_complete const&, port_context& ctx) : source_state(ctx) {}
-    attached_src(event::swap_abort const&, port_context& ctx) : source_state(ctx) {}
-    explicit attached_src(port_context& ctx) : source_state(ctx)
+    // completed or aborted: the plug stays put - the attachment is
+    // already resolved
+    attached_src(event::swap_complete const&, line_status& line_ref, attachment& attached_ref)
+        : source_state(line_ref), attached(attached_ref),
+          origin_(attach_origin::completed_power_role_swap)
     {
-        context.orientation = srcOrientationOf(context.cc);
-        context.data        = data_role::dfp; // the source attaches as DFP
+    }
+    attached_src(event::swap_abort const&, line_status& line_ref, attachment& attached_ref)
+        : source_state(line_ref), attached(attached_ref)
+    {
+    }
+    // a fresh attach resolves the plug from the line and takes the
+    // source's default data role
+    attached_src(line_status& line_ref, attachment& attached_ref)
+        : source_state(line_ref), attached(attached_ref)
+    {
+        attached = {.orientation = srcOrientationOf(line.cc), .data = data_role::dfp,
+                    .resolved    = true};
     }
 
-    plug_orientation orientation() const { return context.orientation; }
-    data_role dataRole() const { return context.data; }
-    // the attach result, observed as the state's instance value (a
-    // source reports the orientation only)
-    // the attach report and the CC polarity: clients consume the
-    // orientation, the hw driver applies the polarity
+    using source_state::handle;
+    // a DR_Swap flips the data role in place (DRP only)
+    void handle(event::swap_data_role const&) { attached.data = otherDataRole(attached.data); }
+
+    plug_orientation orientation() const { return attached.orientation; }
+    data_role dataRole() const { return attached.data; }
+    // the attach report, the CC polarity and the partner, observed as
+    // instance values: clients consume the orientation (a source
+    // reports no more), the hw driver applies the polarity, the PD
+    // layer above acts on the partner (what brought the port here,
+    // data role, the cable's Ra)
     auto values() const
     {
-        return fsm::annotate(context.orientation, polarity{context.orientation});
+        return fsm::annotate(attached.orientation, polarity{.orientation = attached.orientation},
+                             attached_partner{.origin = origin_, .data = attached.data,
+                                              .cc     = line.cc});
     }
+
+    using contexts = mtl::typelist<line_status, attachment>;
+    attachment& attached;
+
+private:
+    attach_origin origin_ = attach_origin::fresh_attach;
 };
 
 // Discharges VBUS to vSafe0V before presenting Rp for a new attach
@@ -177,27 +203,25 @@ struct unattached_wait_src : source_state {
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::safe0v}, vbus_watch);
 
-    unattached_wait_src(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
+    unattached_wait_src(event::cc_changed const& event, line_status& line_ref)
+        : source_state(line_ref)
     {
-        context.cc = event.cc;
+        line.cc = event.cc;
     }
     using source_state::source_state;
 };
 
 } // namespace state
 
-// Guards on the debounce outcome - the context's latest CC status and
+// Guards on the debounce outcome - the line's latest CC status and
 // VBUS report - as primitives the rows combine
 struct src_stable_rd {
-    static bool check(state::attach_wait_src const& state)
-    {
-        return singleRd(state.context.cc);
-    }
+    static bool check(state::attach_wait_src const& state) { return singleRd(state.line.cc); }
 };
 
-// VBUS at vSafe0V per the context, in any state (the DRP's Try flows ask too)
+// VBUS at vSafe0V per the line, in any state (the DRP's Try flows ask too)
 struct vbus_safe0v_in_context {
-    static bool check(auto const& state) { return state.context.vbus_safe0v; }
+    static bool check(auto const& state) { return state.line.vbus_safe0v; }
 };
 
 // Decides on the event's CC payload - the state's context still holds

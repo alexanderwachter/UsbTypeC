@@ -102,33 +102,32 @@ struct error_recovery {
     static constexpr auto timeout     = t_error_recovery;
 };
 
-// Common context plus the internal-transition handlers keeping it
+// The sensed line plus the internal-transition handlers keeping it
 // current without disturbing a running debounce
 struct sink_state {
-    explicit sink_state(port_context& ctx) : context(ctx) {}
+    explicit sink_state(line_status& line_ref) : line(line_ref) {}
 
-    void handle(event::cc_changed const& event) { context.cc = event.cc; }
-    void handle(event::vbus_present const&) { context.vbus_present = true; }
-    void handle(event::vbus_removed const&) { context.vbus_present = false; }
-    // a DR_Swap flips the data role in place (DRP only)
-    void handle(event::swap_data_role const&)
-    {
-        context.data = context.data == data_role::ufp ? data_role::dfp : data_role::ufp;
-    }
-    // a Try phase's wall falling mid-debounce (DRP only): recorded for
-    // the debounce outcome to act on, the debounce itself runs on
-    void handle(fsm::deadline const&) { context.try_expired = true; }
+    void handle(event::cc_changed const& event) { line.cc = event.cc; }
+    void handle(event::vbus_present const&) { line.vbus_present = true; }
+    void handle(event::vbus_removed const&) { line.vbus_present = false; }
 
-    using contexts = mtl::typelist<port_context>;
-    port_context& context;
+    using contexts = mtl::typelist<line_status>;
+    line_status& line;
 };
 
+// The resting state resets the connection's attachment: the next
+// attach resolves afresh
 struct unattached_snk : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
 
-    using sink_state::sink_state;
+    unattached_snk(line_status& line_ref, attachment& attached) : sink_state(line_ref)
+    {
+        attached = {};
+    }
+
+    using contexts = mtl::typelist<line_status, attachment>;
 };
 
 struct attach_wait_snk : sink_state {
@@ -137,14 +136,11 @@ struct attach_wait_snk : sink_state {
         fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
 
-    // every fresh attach passes through here: a stale hard-reset
-    // window flag must not leak into it
-    attach_wait_snk(event::cc_changed const& event, port_context& ctx) : sink_state(ctx)
+    attach_wait_snk(event::cc_changed const& event, line_status& line_ref) : sink_state(line_ref)
     {
-        context.cc       = event.cc;
-        context.resuming = false;
+        line.cc = event.cc;
     }
-    explicit attach_wait_snk(port_context& ctx) : sink_state(ctx) { context.resuming = false; }
+    using sink_state::sink_state;
 };
 
 // AttachWait.SNK with a stable single Rp, waiting for VBUS
@@ -160,79 +156,104 @@ struct attached_snk : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::sink_disconnect;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::sink}, vbus_watch,
-                      attached_role{power_role::sink});
+                      attached_role{power_role::sink}, pd_connection{});
 
-    explicit attached_snk(port_context& ctx)
-        : sink_state(ctx), advertisement_(advertisementOf(ctx.cc))
+    // the debounce timed out with VBUS already present: a fresh attach
+    attached_snk(line_status& line_ref, attachment& attached_ref)
+        : sink_state(line_ref), attached(attached_ref)
     {
-        context.orientation = orientationOf(context.cc);
-        context.data        = data_role::ufp; // the sink attaches as UFP
-        context.resuming    = false;
+        attachFresh();
     }
-    // entered on the VBUS report: a fresh attach (the debounced wait,
-    // the DRP's TryWait.SNK) resolves plug and data role; VBUS
-    // returning after a hard reset resumes the connection unchanged
-    attached_snk(event::vbus_present const&, port_context& ctx)
-        : sink_state(ctx), advertisement_(advertisementOf(ctx.cc))
+    // entered on the VBUS report: a fresh attach (the debounced wait)
+    // resolves plug and data role; VBUS returning after a hard reset
+    // resumes the connection unchanged
+    attached_snk(event::vbus_present const&, line_status& line_ref, attachment& attached_ref)
+        : sink_state(line_ref), attached(attached_ref)
     {
-        if (!context.resuming) {
-            context.orientation = orientationOf(context.cc);
-            context.data        = data_role::ufp;
+        if (attached.resolved) {
+            origin_        = attach_origin::resumed_after_hard_reset;
+            advertisement_ = advertisementOf(line.cc);
+        } else {
+            attachFresh();
         }
-        context.resuming = false;
     }
     // entered on a CC event (the DRP's TryWait.SNK attach): the payload
-    // must land in the context before the orientation is derived
-    attached_snk(event::cc_changed const& event, port_context& ctx)
-        : attached_snk((ctx.cc = event.cc, ctx))
+    // lands on the line before the attach is resolved from it
+    attached_snk(event::cc_changed const& event, line_status& line_ref, attachment& attached_ref)
+        : sink_state(line_ref), attached(attached_ref)
     {
+        line.cc = event.cc;
+        attachFresh();
     }
     // entered from a PD-directed role swap's standby (the DRP layer),
-    // completed or aborted: the plug stays put - the orientation is
-    // already in the context - and the current draw is governed by the
-    // PD contract, not the Rp advertisement
-    attached_snk(event::swap_complete const&, port_context& ctx)
-        : sink_state(ctx), advertisement_(rp_value::usb_default)
+    // completed or aborted: the plug stays put - the attachment is
+    // already resolved - and the current draw is governed by the PD
+    // contract, not the Rp advertisement
+    attached_snk(event::swap_complete const&, line_status& line_ref, attachment& attached_ref)
+        : sink_state(line_ref), attached(attached_ref),
+          origin_(attach_origin::completed_power_role_swap)
     {
     }
-    attached_snk(event::swap_abort const&, port_context& ctx)
-        : sink_state(ctx), advertisement_(rp_value::usb_default)
+    attached_snk(event::swap_abort const&, line_status& line_ref, attachment& attached_ref)
+        : sink_state(line_ref), attached(attached_ref)
     {
     }
 
-    plug_orientation orientation() const { return context.orientation; }
-    data_role dataRole() const { return context.data; }
-    // the attach result and the CC polarity, observed as instance
-    // values: the hw driver applies the polarity, the port layers
-    // and loggers consume the attach info
+    using sink_state::handle;
+    // a DR_Swap flips the data role in place (DRP only)
+    void handle(event::swap_data_role const&) { attached.data = otherDataRole(attached.data); }
+
+    plug_orientation orientation() const { return attached.orientation; }
+    data_role dataRole() const { return attached.data; }
+    // the attach result, the CC polarity and the partner, observed as
+    // instance values: the hw driver applies the polarity, the clients
+    // and loggers consume the attach info, the PD layer above acts on
+    // the partner (what brought the port here, data role, the
+    // source's Rp)
     auto values() const
     {
-        return fsm::annotate(attach_info{context.orientation, advertisement_},
-                             polarity{context.orientation});
+        return fsm::annotate(
+            attach_info{.orientation = attached.orientation, .advertisement = advertisement_},
+            polarity{.orientation = attached.orientation},
+            attached_partner{.origin = origin_, .data = attached.data, .cc = line.cc});
     }
 
+    using contexts = mtl::typelist<line_status, attachment>;
+    attachment& attached;
+
 private:
-    rp_value advertisement_;
+    // a fresh attach resolves the plug from the line and takes the
+    // sink's default data role
+    void attachFresh()
+    {
+        attached = {.orientation = orientationOf(line.cc), .data = data_role::ufp,
+                    .resolved    = true};
+        advertisement_ = advertisementOf(line.cc);
+    }
+
+    rp_value advertisement_ = rp_value::usb_default;
+    attach_origin origin_   = attach_origin::fresh_attach;
 };
 
 // The hard-reset window, first phase: the source legitimately drops
 // VBUS to vSafe0V - not a detach. Rd stays presented, the sink path
-// is off. The policy engine's NoResponseTimer owns the give-up; the
-// timeout here only terminates a dead port
+// is off, the PD connection holds (the engine awaits the source's
+// capabilities). The policy engine's NoResponseTimer owns the give-up;
+// the timeout here only terminates a dead port
 struct hard_reset_snk : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
-    static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch, pd_connection{});
     static constexpr auto timeout     = t_hard_reset_window;
 
-    explicit hard_reset_snk(port_context& ctx) : sink_state(ctx) { context.resuming = true; }
+    using sink_state::sink_state;
 };
 
 // ... second phase: VBUS is down, its return resumes Attached.SNK
 struct hard_reset_recover_snk : sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
-    static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch, pd_connection{});
     static constexpr auto timeout     = t_hard_reset_window;
 
     using sink_state::sink_state;
@@ -240,15 +261,15 @@ struct hard_reset_recover_snk : sink_state {
 
 } // namespace state
 
-// Guards on the debounce outcome - the context's latest CC status and
+// Guards on the debounce outcome - the line's latest CC status and
 // VBUS report - as primitives the rows combine
 struct stable_rp {
-    static bool check(state::attach_wait_snk const& state) { return singleRp(state.context.cc); }
+    static bool check(state::attach_wait_snk const& state) { return singleRp(state.line.cc); }
 };
 
-// VBUS present per the context, in any state (the DRP's Try flows ask too)
+// VBUS present per the line, in any state (the DRP's Try flows ask too)
 struct vbus_present_in_context {
-    static bool check(auto const& state) { return state.context.vbus_present; }
+    static bool check(auto const& state) { return state.line.vbus_present; }
 };
 
 // The sink attach flow, shared with the DRP layer: UNATTACHED anchors

@@ -27,6 +27,7 @@
 #include <usbc/TypeCSource.hpp>
 
 #include <mtl/StateMachine.hpp>
+#include <mtl/Typelist.hpp>
 
 #include <cstdint>
 #include <span>
@@ -98,30 +99,21 @@ private:
 
     using SourceEngine = SourcePolicyEngine<TCPC, TIMER, POLICY, SUPPLY, POWER, port_watch>;
 
-    // The port's internal wiring in the connection machine: activates
-    // the engine on attach, resets it on detach, and routes the PD
-    // alerts
-    struct router {
-        PdSource& port;
+    // The port's internal wiring in the connection machine, observing
+    // the states' declared facts: the PD connection brackets the
+    // engine's life, the PD alerts are forwarded from the driver
+    // frontend
+    struct router : fsm::observing<router> {
+        explicit router(PdSource& port_ref) : port(port_ref) {}
 
-        // hooks of one state: the edge does not matter here
-        template<typename STATE, typename MACHINE>
-        void onEnter(MACHINE&)
-        {
-            if constexpr (std::is_same_v<STATE, tc::state::attached_src>) {
-                port.engine_.attached();
-            }
-        }
+        using observes = mtl::typelist<tc::pd_connection>;
 
-        template<typename STATE, typename MACHINE>
-        void onExit(MACHINE&)
-        {
-            if constexpr (std::is_same_v<STATE, tc::state::attached_src>) {
-                port.engine_.detached();
-            }
-        }
+        void notifyEntry(tc::pd_connection) { port.engine_.attached(); }
+        void notifyExit(tc::pd_connection) { port.engine_.detached(); }
 
         void onPdAlert(alert_status alerts) { port.engine_.onAlert(alerts); }
+
+        PdSource& port;
     };
 
     using Source = TypeCSource<TCPC, VBUS, TIMER, router, OBSERVERs...>;

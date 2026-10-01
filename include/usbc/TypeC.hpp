@@ -104,6 +104,38 @@ struct attached_role {
     constexpr bool operator==(attached_role const&) const = default;
 };
 
+// The connection to the partner, carried by every state in which the
+// PD layer's negotiation persists: the Attached states and the windows
+// holding an attach on the PD layer's word (the sink's hard-reset
+// window while VBUS legitimately cycles, the DRP's power-swap
+// standbys). A port's engines live exactly as long as the tag: its
+// entry is the connection's start, its exit the one real detach - the
+// moves inside the group are change-suppressed
+struct pd_connection {
+    constexpr bool operator==(pd_connection const&) const = default;
+};
+
+// What brought the port into an Attached state - the state knows from
+// its constructor: a fresh attach, VBUS returning after the sink's
+// hard-reset window (plug and roles kept), or the completion of a
+// PD-directed power role swap (the engine already live mid-swap)
+enum class attach_origin : std::uint8_t {
+    fresh_attach,
+    resumed_after_hard_reset,
+    completed_power_role_swap,
+};
+
+// The partner as the attach resolved it, an instance value of the
+// Attached states delivered on every entry: what brought the port
+// here, the data role this port holds and the CC status the attach
+// rests on - a sink reads the source's Rp from it (SinkTxOk/SinkTxNG,
+// PD3 collision avoidance), a source whether the cable presents Ra
+struct attached_partner {
+    attach_origin origin;
+    data_role data;
+    cc_status cc;
+};
+
 // The switch positions of the VBUS power circuitry, mutually
 // exclusive by construction and named for the specification's VBUS
 // conditions where one is driven
@@ -131,25 +163,35 @@ struct annotation_probe : fsm::observing<annotation_probe<T>> {
     void notifyEntry(T const&) {}
 };
 
-// Machine-owned context shared by every connection-layer state, across
-// both roles: the latest CC status (interpreted through the presented
-// pull), the vbus conditions, and the resolved plug orientation and
-// data role - kept here so they survive a role swap (a power swap
-// leaves the data role alone, per the PD spec)
-struct port_context {
-    cc_status cc{cc_state::snk_open, cc_state::snk_open};
+// Machine-owned contexts of the connection layer, split by lifetime;
+// a state declares only the ones it touches.
+
+// The sensed line, for the port's whole life: the latest CC status
+// (interpreted through the presented pull) and the VBUS reports. Every
+// state keeps it current through its internal-transition handlers,
+// the debounce guards read it
+struct line_status {
+    cc_status cc      = {.cc1 = cc_state::snk_open, .cc2 = cc_state::snk_open};
     bool vbus_present = false;
     bool vbus_safe0v  = false;
+};
+
+// One connection's attachment: the plug orientation and data role a
+// fresh attach resolves, kept across a hard-reset window and a power
+// role swap (a power swap leaves the data role alone, per the PD
+// spec). The Unattached anchors reset it; `resolved` tells Attached.SNK
+// whether VBUS returning resumes the connection or attaches afresh
+struct attachment {
     plug_orientation orientation = plug_orientation::cc1;
     data_role data               = data_role::ufp;
-    // set while the hard-reset window holds the attach: re-entering
-    // Attached.SNK resumes the connection (plug and data role kept)
-    // instead of resolving a fresh attach
-    bool resuming = false;
-    // a Try phase deadline expired while a debounce was running: the
-    // debounce may still attach, but its failure exits the phase
-    // instead of re-arming it (DRP Try flows only)
-    bool try_expired = false;
+    bool resolved                = false;
+};
+
+// One DRP Try phase's budget: the phase deadline expired while a
+// debounce was running - the debounce may still attach, but its
+// failure exits the phase instead of re-arming it
+struct try_phase {
+    bool expired = false;
 };
 
 // The one place tying a VBUS level to the events its reports become:

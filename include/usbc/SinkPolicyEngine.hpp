@@ -42,7 +42,8 @@
  *
  * Integration: the engine drives a pd_transport driver through its own
  * ProtocolLayer - itself an observer of the engine's machine, executing
- * the states' prl_action commands and txMessage() transmissions - and
+ * the states' prl::reset_action annotations and transmitting the
+ * pd_message a state publishes through values() - and
  * runs from construction on, resting in PE_SNK_Discovery until VBUS is
  * reported. The application injects its own observers into the machine;
  * the power side is one of them: derive from SinkPower (CRTP) and
@@ -176,26 +177,15 @@ inline constexpr auto t_sink_wait_cap = std::chrono::milliseconds{465}; // tSink
 inline constexpr auto t_ps_transition = std::chrono::milliseconds{500}; // tPSTransition
 inline constexpr auto t_no_response   = std::chrono::milliseconds{5000}; // tNoResponse
 inline constexpr auto t_sink_request  = std::chrono::milliseconds{150}; // tSinkRequest
-inline constexpr auto t_pr_swap_wait  = std::chrono::milliseconds{150}; // tPRSwapWait
-inline constexpr auto t_dr_swap_wait  = std::chrono::milliseconds{150}; // tDRSwapWait
 
 inline constexpr milliamp i_snk_stdby = spec::i_snk_stdby; // at any voltage
 
-// Machine-owned context, split by lifetime so a reset is an assignment
-// of the part that ends. The connection lives from attach to detach:
-// a hard reset changes neither the data role nor its own counter, and
-// a power role swap is no reset at all (6.7.1)
-struct pe_connection {
-    data_role data           = data_role::ufp; // flipped by an agreed DR_Swap
-    std::uint8_t hard_resets = 0;              // HardResetCounter
-};
-
-// One negotiation's worth: gone with every reset within the connection
+// Machine-owned context, the sink's negotiation: one negotiation's
+// worth, gone with every reset within the connection (the connection
+// itself is the shared pe_connection)
 struct pe_negotiation {
-    contract_request pending{};   // proposed by the last Request
-    contract_request request{};   // accepted by the source
-    pd_message reply{};           // pending Not_Supported answer
-    pd_message request_message{}; // the last Request, for the Wait retry
+    contract_request pending{}; // proposed by the last Request
+    contract_request request{}; // accepted by the source
     bool explicit_contract = false;
 };
 
@@ -211,12 +201,8 @@ struct started {};
 struct vbus_present {};
 struct vbus_removed {};
 struct source_capabilities {};
-struct capabilities_evaluated {
-    pd_message message;
+struct capabilities_evaluated { // the policy's pick; the state builds the Request
     contract_request terms;
-};
-struct send_sink_caps {
-    pd_message message;
 };
 struct send_source_caps { // a DRP asked for its source-role caps
     pd_message message;
@@ -240,13 +226,13 @@ struct pe_snk_startup {
     static constexpr std::string_view dot_action =
         "resets the protocol layer, restores default power";
 
-    // detach forgets everything; a reset within the connection ends the
-    // negotiation only
+    // detach forgets everything (the next partner meets a UFP); a reset
+    // within the connection ends the negotiation only
     pe_snk_startup(event::vbus_removed const&, pe_connection& connection,
                    pe_negotiation& negotiation)
         : connection(connection), negotiation(negotiation)
     {
-        this->connection  = {};
+        this->connection  = {.data = defaultDataRole(power_role::sink)};
         this->negotiation = {};
     }
     explicit pe_snk_startup(pe_connection& connection, pe_negotiation& negotiation)
@@ -291,16 +277,6 @@ struct pe_snk_wait_no_response {
     pe_connection& connection;
 };
 
-// nHardResetCount exhausted with no response: the port-level
-// integration commands Type-C Error Recovery, whose teardown resets
-// this engine
-struct pe_snk_error_recovery {
-    static constexpr auto annotations           = fsm::annotate(request_error_recovery{});
-    static constexpr power_level power          = power_level::default_power;
-    static constexpr pd_status pd               = pd_status::not_connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-};
-
 // The engine evaluates through the injected policy and advances with
 // capabilities_evaluated
 struct pe_snk_evaluate_capability {
@@ -325,28 +301,40 @@ struct pe_snk_select_capability {
     // the proposal stays pending: only an Accept promotes it, so a
     // Reject cannot leak the proposed terms into the active contract
     pe_snk_select_capability(event::capabilities_evaluated const& event,
-                             pe_negotiation& negotiation)
-        : negotiation(negotiation), message_(event.message)
+                             pe_connection& connection_ref, pe_negotiation& negotiation_ref)
+        : connection(connection_ref), negotiation(negotiation_ref)
     {
-        negotiation.pending         = event.terms;
-        negotiation.request_message = event.message; // kept for the Wait retry
+        negotiation.pending = event.terms;
+        message_            = requestMessage();
     }
     // re-entry from the SinkRequestTimer: the same Request again
-    pe_snk_select_capability(event::request_retry const&, pe_negotiation& negotiation)
-        : pe_snk_select_capability(negotiation)
+    pe_snk_select_capability(event::request_retry const&, pe_connection& connection_ref,
+                             pe_negotiation& negotiation_ref)
+        : pe_snk_select_capability(connection_ref, negotiation_ref)
     {
     }
-    explicit pe_snk_select_capability(pe_negotiation& negotiation)
-        : negotiation(negotiation), message_(negotiation.request_message)
+    pe_snk_select_capability(pe_connection& connection_ref, pe_negotiation& negotiation_ref)
+        : connection(connection_ref), negotiation(negotiation_ref), message_(requestMessage())
     {
     }
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_negotiation>;
+    using contexts = mtl::typelist<pe_connection, pe_negotiation>;
+    pe_connection& connection;
     pe_negotiation& negotiation;
 
 private:
+    // the Request for the pending terms: one RDO
+    pd_message requestMessage() const
+    {
+        auto const& terms = negotiation.pending;
+        std::array<std::uint32_t, 1> const objects{pdo::makeFixedRequest(
+            terms.position, terms.operating_current, terms.maximum_current, terms.mismatch)};
+        return makeDataMessage(data_message_type::request, power_role::sink, connection.data,
+                               objects);
+    }
+
     pd_message message_{};
 };
 
@@ -391,33 +379,6 @@ struct pe_snk_ready {
     pe_negotiation& negotiation;
 };
 
-struct pe_snk_give_sink_cap {
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd        = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    pe_snk_give_sink_cap() = default;
-    explicit pe_snk_give_sink_cap(event::send_sink_caps const& event) : message_(event.message) {}
-
-    pd_message const& values() const { return message_; }
-
-private:
-    pd_message message_{};
-};
-
-// PE_SNK_BIST_Carrier_Mode: the tester's carrier runs for
-// tBISTContMode (the engine commanded the TCPC on entry), then normal
-// operation resumes
-struct pe_snk_bist_carrier {
-    static constexpr auto timeout = t_bist_cont_mode; // BISTContModeTimer
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = "transmits the BIST carrier";
-};
-
 // The spec's Ready-with-SinkRequestTimer after a Wait answer to our
 // Request: the same Request goes out again after tSinkRequest; new
 // capabilities from the source preempt the retry
@@ -448,317 +409,7 @@ private:
     pd_message message_{};
 };
 
-// PE_SNK_Send_Not_Supported: answers a message the sink does not
-// support, then returns to Ready
-struct pe_snk_send_not_supported {
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd        = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    pe_snk_send_not_supported(event::unsupported const& event, pe_connection& connection,
-                              pe_negotiation& negotiation)
-        : connection(connection), negotiation(negotiation)
-    {
-        negotiation.reply = event.reply;
-    }
-    // a swap request the table's question refused (or nobody answers)
-    pe_snk_send_not_supported(event::swap_request const& event, pe_connection& connection,
-                              pe_negotiation& negotiation)
-        : connection(connection), negotiation(negotiation)
-    {
-        negotiation.reply = makeControlMessage(event.refusal, power_role::sink, connection.data);
-    }
-    explicit pe_snk_send_not_supported(pe_connection& connection, pe_negotiation& negotiation)
-        : connection(connection), negotiation(negotiation)
-    {
-    }
-
-    pd_message const& values() const { return negotiation.reply; }
-
-    using contexts = mtl::typelist<pe_connection, pe_negotiation>;
-    pe_connection& connection;
-    pe_negotiation& negotiation;
-};
-
-// PE_SNK_Chunk_Received: a non-chunking device lets the sender run
-// into its chunking timeout before answering Not_Supported
-struct pe_snk_chunk_received {
-    static constexpr auto timeout = t_chunking_not_supported; // ChunkingNotSupportedTimer
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd        = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-
-    pe_snk_chunk_received(event::chunked_message const& event, pe_negotiation& negotiation)
-        : negotiation(negotiation)
-    {
-        negotiation.reply = event.reply;
-    }
-    explicit pe_snk_chunk_received(pe_negotiation& negotiation) : negotiation(negotiation) {}
-
-    using contexts = mtl::typelist<pe_negotiation>;
-    pe_negotiation& negotiation;
-};
-
-// --- role swap messaging (PE_DRS / PE_PRS, sink side) ------------------------
-
-// PE_DRS_UFP_DFP/DFP_UFP_Send_Swap: our DR_Swap is out; no answer
-// within tSenderResponse means the partner ignored it - stay Ready
-struct pe_snk_send_dr_swap {
-    using feature = dr_swap_feature;
-    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends DR_Swap";
-
-    pe_snk_send_dr_swap(event::send_dr_swap const& event, pe_connection& connection)
-        : connection(connection), message_(event.message)
-    {
-    }
-    // re-entry from the tDRSwapWait retry rebuilds the request
-    explicit pe_snk_send_dr_swap(pe_connection& connection)
-        : connection(connection), message_(makeControlMessage(control_message_type::dr_swap,
-                                                              power_role::sink, connection.data))
-    {
-    }
-
-    pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_connection>;
-    pe_connection& connection;
-
-private:
-    pd_message message_{};
-};
-
-// PE_DRS_*_Accept_Swap: the partner's DR_Swap passed the arbitration
-struct pe_snk_accept_dr_swap {
-    using feature = dr_swap_feature;
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends Accept";
-
-    pe_snk_accept_dr_swap(event::dr_swap_received const&, pe_connection& connection)
-        : connection(connection), message_(makeControlMessage(control_message_type::accept,
-                                                              power_role::sink, connection.data))
-    {
-    }
-    explicit pe_snk_accept_dr_swap(pe_connection& connection) : connection(connection) {}
-
-    pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_connection>;
-    pe_connection& connection;
-
-private:
-    pd_message message_{};
-};
-
-// PE_DRS_*_Change_to_*: the agreed swap flips the data role; the
-// report lets the port update the TCPC header and the Type-C context
-struct pe_snk_dr_swap_change {
-    using feature = dr_swap_feature;
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, swap_transient{});
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = "flips the data role";
-
-    pe_snk_dr_swap_change(event::accept const&, pe_connection& connection)
-        : pe_snk_dr_swap_change(connection)
-    {
-    }
-    pe_snk_dr_swap_change(event::message_sent const&, pe_connection& connection)
-        : pe_snk_dr_swap_change(connection)
-    {
-    }
-    explicit pe_snk_dr_swap_change(pe_connection& connection) : connection(connection)
-    {
-        connection.data = connection.data == data_role::ufp ? data_role::dfp : data_role::ufp;
-    }
-
-    data_role_changed values() const { return {connection.data}; }
-
-    using contexts = mtl::typelist<pe_connection>;
-    pe_connection& connection;
-};
-
-// PE_VCS_Send_Swap: our VCONN_Swap is out
-struct pe_snk_vcs_send_swap {
-    using feature = vconn_feature;
-    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends VCONN_Swap";
-
-    pe_snk_vcs_send_swap() = default;
-    explicit pe_snk_vcs_send_swap(event::send_vconn_swap const& event) : message_(event.message)
-    {
-    }
-
-    pd_message const& values() const { return message_; }
-
-private:
-    pd_message message_{};
-};
-
-// PE_VCS_Accept_Swap: the partner's VCONN_Swap passed the arbitration
-struct pe_snk_vcs_accept {
-    using feature = vconn_feature;
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends Accept";
-
-    pe_snk_vcs_accept(event::vconn_swap_received const&, pe_connection& connection)
-        : connection(connection), message_(makeControlMessage(control_message_type::accept,
-                                                              power_role::sink, connection.data))
-    {
-    }
-    explicit pe_snk_vcs_accept(pe_connection& connection) : connection(connection) {}
-
-    pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_connection>;
-    pe_connection& connection;
-
-private:
-    pd_message message_{};
-};
-
-// The agreed swap's message anchor (glue, not a spec state): the
-// vconn machine choreographs the hand-off; this engine relays the
-// PS_RDY traffic and stays here until its side is done
-struct pe_snk_vcs_active {
-    using feature = vconn_feature;
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, vconn_swap_agreed{});
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-};
-
-// PE_VCS_Send_PS_RDY: the vconn machine turned the switch on
-struct pe_snk_vcs_send_ps_rdy {
-    using feature = vconn_feature;
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends PS_RDY";
-
-    pe_snk_vcs_send_ps_rdy() = default;
-    explicit pe_snk_vcs_send_ps_rdy(event::send_vconn_ps_rdy const& event)
-        : message_(event.message)
-    {
-    }
-
-    pd_message const& values() const { return message_; }
-
-private:
-    pd_message message_{};
-};
-
-// Transients reporting the hand-off progress to the vconn machine
-struct pe_snk_vcs_partner_on {
-    using feature = vconn_feature;
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations =
-        fsm::annotate(power, vconn_partner_on{}, swap_transient{});
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-};
-
-struct pe_snk_vcs_ps_rdy_sent {
-    using feature = vconn_feature;
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations =
-        fsm::annotate(power, vconn_ps_rdy_sent{}, swap_transient{});
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-};
-
-// PE_PRS_SNK_SRC_Send_Swap: our PR_Swap is out
-struct pe_snk_send_pr_swap {
-    using feature = pr_swap_feature;
-    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends PR_Swap";
-
-    pe_snk_send_pr_swap(event::send_pr_swap const& event, pe_connection& connection)
-        : connection(connection), message_(event.message)
-    {
-    }
-    // re-entry from the tPRSwapWait retry rebuilds the request
-    explicit pe_snk_send_pr_swap(pe_connection& connection)
-        : connection(connection), message_(makeControlMessage(control_message_type::pr_swap,
-                                                              power_role::sink, connection.data))
-    {
-    }
-
-    pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_connection>;
-    pe_connection& connection;
-
-private:
-    pd_message message_{};
-};
-
-// PE_PRS_SNK_SRC_Accept_Swap: the partner's PR_Swap passed arbitration
-struct pe_snk_accept_pr_swap {
-    using feature = pr_swap_feature;
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends Accept";
-
-    pe_snk_accept_pr_swap(event::pr_swap_received const&, pe_connection& connection)
-        : connection(connection), message_(makeControlMessage(control_message_type::accept,
-                                                              power_role::sink, connection.data))
-    {
-    }
-    explicit pe_snk_accept_pr_swap(pe_connection& connection) : connection(connection) {}
-
-    pd_message const& values() const { return message_; }
-
-    using contexts = mtl::typelist<pe_connection>;
-    pe_connection& connection;
-
-private:
-    pd_message message_{};
-};
-
-// The partner answered Wait: the swap request is retried after the
-// spec's pause (still Ready, spec-wise)
-struct pe_snk_dr_swap_wait {
-    using feature = dr_swap_feature;
-    static constexpr auto timeout = t_dr_swap_wait; // tDRSwapWait
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-};
-
-struct pe_snk_pr_swap_wait {
-    using feature = pr_swap_feature;
-    static constexpr auto timeout = t_pr_swap_wait; // tPRSwapWait
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-};
+// --- PR_Swap, sink side (PE_PRS_SNK_SRC_*) ------------------------------------
 
 // The retry is due but PD3 collision avoidance gates it: the engine
 // re-initiates once the source's Rp says SinkTxOk (no timeout - the
@@ -859,65 +510,6 @@ struct pe_snk_swap_source_on_seen {
     static constexpr auto annotations = fsm::annotate(swap_completed{});
 };
 
-// Accepts a received Soft_Reset; the reporter resets the protocol
-// layer before the sender transmits the Accept
-struct pe_snk_soft_reset {
-    static constexpr auto annotations           = fsm::annotate(prl::reset_action{});
-    static constexpr power_level power          = power_level::contract_or_default;
-    static constexpr pd_status pd        = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = prl::reset_action::note;
-
-    pe_snk_soft_reset() = default;
-    explicit pe_snk_soft_reset(event::soft_reset_received const& event) : message_(event.accept)
-    {
-    }
-
-    pd_message const& values() const { return message_; }
-
-private:
-    pd_message message_{};
-};
-
-// PE_SNK_Send_Soft_Reset: protocol errors first try a soft reset; the
-// protocol layer is reset before the Soft_Reset goes out
-struct pe_snk_send_soft_reset {
-    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr auto annotations           = fsm::annotate(prl::reset_action{});
-    static constexpr power_level power          = power_level::contract_or_default;
-    static constexpr pd_status pd        = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = prl::reset_action::note;
-
-    explicit pe_snk_send_soft_reset(pe_connection& connection, pe_negotiation& negotiation)
-        : connection(connection), negotiation(negotiation)
-    {
-        negotiation.reply = makeControlMessage(control_message_type::soft_reset,
-                                               power_role::sink, connection.data);
-    }
-
-    pd_message const& values() const { return negotiation.reply; }
-
-    using contexts = mtl::typelist<pe_connection, pe_negotiation>;
-    pe_connection& connection;
-    pe_negotiation& negotiation;
-};
-
-struct pe_snk_hard_reset {
-    static constexpr auto annotations           = fsm::annotate(prl::hard_reset_action{});
-    static constexpr power_level power          = power_level::contract_or_default;
-    static constexpr pd_status pd               = pd_status::connected_or_not_connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
-    static constexpr std::string_view dot_action = prl::hard_reset_action::note;
-
-    explicit pe_snk_hard_reset(pe_connection& connection) : connection(connection)
-    {
-        ++connection.hard_resets; // HardResetCounter
-    }
-    using contexts = mtl::typelist<pe_connection>;
-    pe_connection& connection;
-};
-
 // PE_SNK_Transition_to_default: back to vSafe5V defaults; the engine
 // then advances through Startup and Discovery
 struct pe_snk_transition_to_default {
@@ -940,14 +532,31 @@ struct pe_snk_transition_to_default {
     pe_negotiation& negotiation;
 };
 
-} // namespace state
+// The states shared with the source engine (PolicyEngine.hpp), under
+// the spec's sink-side names where it has them
+using pe_snk_error_recovery     = pe_error_recovery;
+using pe_snk_give_sink_cap      = pe_give_sink_cap;
+using pe_snk_bist_carrier       = pe_bist_carrier;
+using pe_snk_send_not_supported = pe_send_not_supported<power_role::sink>;
+using pe_snk_chunk_received     = pe_chunk_received;
+using pe_snk_send_dr_swap       = pe_drs_send_swap<power_role::sink>;
+using pe_snk_accept_dr_swap     = pe_drs_accept_swap<power_role::sink>;
+using pe_snk_dr_swap_change     = pe_drs_change_data_role;
+using pe_snk_vcs_send_swap      = pe_vcs_send_swap<power_role::sink>;
+using pe_snk_vcs_accept         = pe_vcs_accept_swap<power_role::sink>;
+using pe_snk_vcs_active         = pe_vcs_active;
+using pe_snk_vcs_send_ps_rdy    = pe_vcs_send_ps_rdy<power_role::sink>;
+using pe_snk_vcs_partner_on     = pe_vcs_partner_on;
+using pe_snk_vcs_ps_rdy_sent    = pe_vcs_ps_rdy_sent;
+using pe_snk_send_pr_swap       = pe_prs_send_swap<power_role::sink>;
+using pe_snk_accept_pr_swap     = pe_prs_accept_swap<power_role::sink>;
+using pe_snk_dr_swap_wait       = pe_dr_swap_wait;
+using pe_snk_pr_swap_wait       = pe_pr_swap_wait;
+using pe_snk_soft_reset         = pe_soft_reset<power_role::sink>;
+using pe_snk_send_soft_reset    = pe_send_soft_reset<power_role::sink>;
+using pe_snk_hard_reset         = pe_hard_reset;
 
-struct has_explicit_contract {
-    static bool check(state::pe_snk_select_capability const& state)
-    {
-        return state.negotiation.explicit_contract;
-    }
-};
+} // namespace state
 
 // Which capability wait applies: SinkWaitCapTimer before the first
 // hard reset, NoResponseTimer afterwards
@@ -955,13 +564,6 @@ struct no_hard_reset_yet {
     static bool check(state::pe_snk_discovery const& state)
     {
         return state.connection.hard_resets == 0;
-    }
-};
-
-struct hard_resets_left {
-    static bool check(state::pe_snk_wait_no_response const& state)
-    {
-        return state.connection.hard_resets <= spec::n_hard_reset_count;
     }
 };
 
@@ -1014,7 +616,7 @@ using sink_transitions = mtl::typelist<
     fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::accept>,
                     fsm::to<state::pe_snk_transition_sink>>,
     fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::reject>,
-                    fsm::to<state::pe_snk_ready>, fsm::guard<has_explicit_contract>>,
+                    fsm::to<state::pe_snk_ready>, fsm::guard<explicit_contract_holds>>,
     fsm::transition<fsm::from<state::pe_snk_select_capability>, fsm::on<event::reject>,
                     fsm::to<state::pe_snk_wait_for_capabilities>>,
     // Wait: retry the same Request after tSinkRequest; fresh
@@ -1037,7 +639,7 @@ using sink_transitions = mtl::typelist<
                     fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_transition_sink>, fsm::on<fsm::timeout>,
                     fsm::to<state::pe_snk_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_sink_caps>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_sink_capabilities>,
                     fsm::to<state::pe_snk_give_sink_cap>>,
     fsm::transition<fsm::from<state::pe_snk_give_sink_cap>, fsm::on<event::message_sent>,
                     fsm::to<state::pe_snk_ready>>,
@@ -1202,47 +804,14 @@ using sink_timer_ranges_for =
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them
 
-// The member observers behind SinkPower (POWER is SinkPower<DERIVED>);
-// injected together as one fsm::ObserverGroup
-
-// Stores the runtime values the states report: the contract terms on
-// Ready entry, and the standby limit applied during the transition
+// The sink's third power observer next to the shared contract_store
+// and power_effects: the standby limit applied during the transition
+// (PE_SNK_Transition_Sink draws iSnkStdby until PS_RDY)
 template<typename POWER>
-struct contract_store : fsm::observing<contract_store<POWER>> {
-    explicit contract_store(POWER& power_ref) : power(power_ref) {}
+struct standby_driver : fsm::observing<standby_driver<POWER>> {
+    explicit standby_driver(POWER& power_ref) : power(power_ref) {}
 
-    template<typename TABLE>
-    static constexpr void validate()
-    {
-        static_assert(concepts::sink_power_client<typename POWER::derived_type>,
-                      "SinkPower: the derived class must provide setLimit(millivolt, "
-                      "milliamp), onContract(millivolt, milliamp), onContractLost()");
-    }
-
-    void notifyEntry(standby_limit limit)
-    {
-        power.derived().setLimit(limit.voltage, i_snk_stdby);
-    }
-    // store only - power_effects acts on the power annotation edge
-    void notifyEntry(active_contract contract) { power.contract_ = contract; }
-
-    POWER& power;
-};
-
-// The power effects, delivered from the states' annotation sets by
-// overload: the stored contract is applied exactly when the power
-// element appears or changes (only Explicit Contract states carry it,
-// so bounces between Ready and its service states stay suppressed and
-// the engines' wildcard transitions stay shareable), and vSafe5V
-// defaults are restored on the states carrying the restore action.
-// One observer for both - the set lifts the one-observation limit
-// that used to split it
-template<typename POWER>
-struct power_effects : fsm::observing<power_effects<POWER>> {
-    explicit power_effects(POWER& power_ref) : power(power_ref) {}
-
-    void notifyEntry(power_level) { power.applyContract(); }
-    void notifyEntry(restore_default_action) { power.restoreDefaults(); }
+    void notifyEntry(standby_limit limit) { power.derived().setLimit(limit.voltage, i_snk_stdby); }
 
     POWER& power;
 };
@@ -1264,20 +833,28 @@ struct power_effects : fsm::observing<power_effects<POWER>> {
 // when a contract was actually in place
 template<typename DERIVED>
 class SinkPower : public fsm::ObserverGroup<pe::contract_store<SinkPower<DERIVED>>,
+                                            pe::standby_driver<SinkPower<DERIVED>>,
                                             pe::power_effects<SinkPower<DERIVED>>> {
 public:
-    using derived_type = DERIVED;
-
     // store before the effects: the contract terms must be fresh when
     // the power annotation edge fires on the same entry
     SinkPower()
-        : fsm::ObserverGroup<pe::contract_store<SinkPower>, pe::power_effects<SinkPower>>(
-              store_, effects_)
+        : fsm::ObserverGroup<pe::contract_store<SinkPower>, pe::standby_driver<SinkPower>,
+                             pe::power_effects<SinkPower>>(store_, standby_, effects_)
     {
+    }
+
+    // checked once the machine is built, when DERIVED is complete
+    static constexpr void validateClient()
+    {
+        static_assert(concepts::sink_power_client<DERIVED>,
+                      "SinkPower: the derived class must provide setLimit(millivolt, "
+                      "milliamp), onContract(millivolt, milliamp), onContractLost()");
     }
 
 private:
     friend pe::contract_store<SinkPower>;
+    friend pe::standby_driver<SinkPower>;
     friend pe::power_effects<SinkPower>;
 
     DERIVED& derived() { return static_cast<DERIVED&>(*this); }
@@ -1299,6 +876,7 @@ private:
     }
 
     pe::contract_store<SinkPower> store_{*this};
+    pe::standby_driver<SinkPower> standby_{*this};
     pe::power_effects<SinkPower> effects_{*this};
     pe::active_contract contract_{};
     bool contract_active_ = false;
@@ -1306,24 +884,23 @@ private:
 
 template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER, concepts::sink_policy POLICY,
          typename... OBSERVERs>
-class SinkPolicyEngine {
+class SinkPolicyEngine
+    : public pe::PolicyEngineBase<SinkPolicyEngine<TCPC, TIMER, POLICY, OBSERVERs...>,
+                                  power_role::sink, TCPC, TIMER, POLICY> {
+    using base = pe::PolicyEngineBase<SinkPolicyEngine, power_role::sink, TCPC, TIMER, POLICY>;
+    friend base;
+
 public:
     // The observers are injected into the engine's machine after the
     // protocol layer; a SinkPower-derived one supplies the power side
     SinkPolicyEngine(TCPC& tcpc, TIMER& prl_timer, TIMER& pe_timer,
                      std::span<sink_capability const> capabilities, POLICY& policy,
                      OBSERVERs&... observers)
-        : tcpc_(tcpc),
-          capabilities_(capabilities),
+        : base(tcpc, prl_timer, pe_timer),
           policy_(policy),
-          prl_(tcpc, prl_timer, port_),
-          pe_timer_(pe_timer),
-          timed_(pe_timer_),
-          sm_(timed_, prl_, gates_, policy_, observers...)
+          sm_(this->timed_, this->prl_, gates_, policy_, observers...)
     {
-        tcpc_.setMessageHeaderInfo(
-            {power_role::sink, data_role::ufp, pd_revision::rev_3_x});
-        tcpc_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
+        this->sink_capabilities_ = capabilities;
         sm_.process(pe::event::started{}); // rest in Discovery until VBUS
     }
 
@@ -1334,15 +911,12 @@ public:
     // the next partner negotiates its own revision
     void vbusRemoved()
     {
-        prl_.resetRevision();
-        setBistTestData(false); // the test mode ends with the partner
+        this->prl_.resetRevision();
+        this->setBistTestData(false); // the test mode ends with the partner
         pending_sequence_.reset();
         sm_.process(pe::event::vbus_removed{});
         sm_.process(pe::event::started{});
     }
-
-    // Feed the TCPC's PD alerts (message/transmit/hard reset bits)
-    void onAlert(alert_status alerts) { prl_.onAlert(alerts); }
 
     // --- DRP integration: PD-negotiated role swaps ---------------------------
 
@@ -1352,54 +926,21 @@ public:
     // when the source's Rp says SinkTxOk
     bool requestPowerSwap()
     {
-        if constexpr (!pr_swap_capable) {
+        if constexpr (!base::pr_swap_capable) {
             return false; // the feature is compiled out
         } else {
-            if (!sm_.template annotation<pe::ready_for_atomic_message_sequence>()) {
-                return false;
-            }
-            if (!sinkTxAllows()) {
-                pending_sequence_ = pe::atomic_message_sequence::power_role_swap;
-                return true;
-            }
-            return sm_.process(
-                pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
+            return request(pe::atomic_message_sequence::power_role_swap);
         }
     }
 
     bool requestDataSwap()
     {
-        if constexpr (!dr_swap_capable) {
+        if constexpr (!base::dr_swap_capable) {
             return false; // the feature is compiled out
         } else {
-            if (!sm_.template annotation<pe::ready_for_atomic_message_sequence>()) {
-                return false;
-            }
-            if (!sinkTxAllows()) {
-                pending_sequence_ = pe::atomic_message_sequence::data_role_swap;
-                return true;
-            }
-            return sm_.process(
-                pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
+            return request(pe::atomic_message_sequence::data_role_swap);
         }
     }
-
-    // VCONN_Swap, driven by the vconn machine through the facade:
-    // request the swap, transmit our PS_RDY once the switch is on,
-    // and escalate a failed hand-off
-    bool requestVconnSwap()
-    {
-        return sm_.process(
-            pe::event::send_vconn_swap{makeControl(control_message_type::vconn_swap)});
-    }
-
-    bool sendVconnPsRdy()
-    {
-        return sm_.process(
-            pe::event::send_vconn_ps_rdy{makeControl(control_message_type::ps_rdy)});
-    }
-
-    bool hardReset() { return sm_.process(pe::event::hard_reset_request{}); }
 
     // PD3 collision avoidance: the source's Rp signals whether the
     // sink may initiate an AMS (SinkTxOk = 3.0 A, SinkTxNG = 1.5 A).
@@ -1423,20 +964,16 @@ public:
     void startSwapWaitSourceOn(data_role role, pd_revision revision,
                                prl::message_id_state const& ids)
     {
-        prl_.seedRevision(revision);
-        prl_.seedMessageIds(ids);
+        this->prl_.seedRevision(revision);
+        this->prl_.seedMessageIds(ids);
         sm_.process(pe::event::swap_wait_source_on{role});
     }
-
-    // The protocol layer's per-partner state, read at the handover
-    pd_revision negotiatedRevision() const { return prl_.revision(); }
-    prl::message_id_state messageIds() const { return prl_.messageIds(); }
 
     // A DRP announces its source-role capabilities: Get_Source_Cap is
     // answered with them instead of Not_Supported
     void provideSourceCapabilities(std::span<std::uint32_t const> capabilities)
     {
-        source_capabilities_ = capabilities;
+        this->source_capabilities_ = capabilities;
     }
 
     // The swap completed into Attached.SNK: resume the sink flow (the
@@ -1453,64 +990,76 @@ private:
     // and the queued machine delivers the retry after the gate's
     // entry completes (the parked case fires from sinkTxChanged)
     struct gate_watch : fsm::observing<gate_watch> {
-        explicit gate_watch(SinkPolicyEngine& pe_ref) : pe(pe_ref) {}
+        explicit gate_watch(SinkPolicyEngine& engine_ref) : engine(engine_ref) {}
 
         void notifyEntry(pe::retry_gated)
         {
-            if (pe.sinkTxAllows()) {
-                pe.fireGated();
+            if (engine.sinkTxAllows()) {
+                engine.fireGated();
             }
         }
 
-        SinkPolicyEngine& pe;
+        SinkPolicyEngine& engine;
     };
 
-    // The protocol layer's client, forwarding into the engine
-    struct PrlPort {
-        SinkPolicyEngine& pe;
+    // --- the base's hooks ---------------------------------------------------
 
-        void onMessage(pd_message const& message) { pe.dispatch(message); }
-        // adopted revision: the TCPC's GoodCRC header must follow
-        void onRevision(pd_revision revision)
-        {
-            pe.tcpc_.setMessageHeaderInfo(
-                {power_role::sink, pe.sm_.template context<pe::pe_connection>().data, revision});
+    // The sink's own messages: Source_Capabilities to evaluate, and
+    // Get_Source_Cap answered by a DRP with its source-role list
+    bool dispatchRole(pd_header const& header, pd_message const& message)
+    {
+        if (isData(header, data_message_type::source_capabilities)) {
+            evaluate(message, header.num_data_objects);
+            return true;
         }
-        void onTxDone()
-        {
-            pe.sm_.process(pe::event::message_sent{});
-            pe.advanceTransients();
+        if (isControl(header, control_message_type::get_source_cap)) {
+            sendSourceCapabilities();
+            return true;
         }
-        void onTxDiscarded() {} // the preempting message drives the engine
-        void onTxError() { pe.sm_.process(pe::event::protocol_error{}); }
-        void onHardReset()
-        {
-            pe.setBistTestData(false); // a hard reset ends the test mode
-            pe.sm_.process(pe::event::hard_reset_received{});
-            pe.restart();
+        return false;
+    }
+
+    // the contract's voltage while an explicit contract holds (BIST is
+    // honored at vSafe5V only)
+    std::optional<millivolt> contractVoltage() const
+    {
+        auto const& negotiation = sm_.template context<pe::pe_negotiation>();
+        if (!negotiation.explicit_contract) {
+            return std::nullopt;
         }
-        void onHardResetSent()
-        {
-            pe.setBistTestData(false);
-            pe.sm_.process(pe::event::hard_reset_complete{});
-            pe.restart();
-        }
-    };
+        return negotiation.request.voltage;
+    }
 
     // Advances the transient spec states after a hard reset:
     // Transition_to_default -> Startup -> Discovery, where the engine
     // waits for the Type-C layer to report the returning VBUS
-    void restart()
+    void afterHardReset()
     {
         sm_.process(pe::event::default_level_reached{});
         sm_.process(pe::event::started{});
+    }
+
+    // --- collision avoidance --------------------------------------------------
+
+    // A swap request from Ready: sent now, or parked until SinkTxOk
+    bool request(pe::atomic_message_sequence sequence)
+    {
+        if (!sm_.template annotation<pe::ready_for_atomic_message_sequence>()) {
+            return false;
+        }
+        if (!sinkTxAllows()) {
+            pending_sequence_ = sequence;
+            return true;
+        }
+        initiate(sequence);
+        return true;
     }
 
     // Collision avoidance applies under PD3 with an explicit contract;
     // otherwise the sink initiates freely
     bool sinkTxAllows() const
     {
-        if (prl_.revision() != pd_revision::rev_3_x) {
+        if (this->prl_.revision() != pd_revision::rev_3_x) {
             return true;
         }
         return !sm_.template context<pe::pe_negotiation>().explicit_contract || sink_tx_ok_;
@@ -1543,156 +1092,15 @@ private:
             sm_.process(pe::event::request_retry{});
             break;
         case pe::atomic_message_sequence::power_role_swap:
-            sm_.process(pe::event::send_pr_swap{makeControl(control_message_type::pr_swap)});
+            sm_.process(pe::event::send_pr_swap{});
             break;
         case pe::atomic_message_sequence::data_role_swap:
-            sm_.process(pe::event::send_dr_swap{makeControl(control_message_type::dr_swap)});
+            sm_.process(pe::event::send_dr_swap{});
             break;
         }
     }
 
-    // A transient state left standing after its trigger was processed
-    // is advanced here (the spec chains them without further input)
-    void advanceTransients()
-    {
-        if constexpr (dr_swap_capable || vconn_capable) { // else no state is a transient
-            if (sm_.template annotation<pe::swap_transient>()) {
-                sm_.process(pe::event::swap_done{});
-            }
-        }
-    }
-
-    std::uint16_t makeHeader(std::uint8_t message_type, std::uint8_t data_objects) const
-    {
-        return pd_header{.message_type     = message_type,
-                         .port_data_role   = sm_.template context<pe::pe_connection>().data,
-                         .revision         = pd_revision::rev_3_x,
-                         .port_power_role  = power_role::sink,
-                         .num_data_objects = data_objects}
-            .encode();
-    }
-
-    pd_message makeControl(control_message_type type) const
-    {
-        return {.sop = sop_type::sop, .header = makeHeader(static_cast<std::uint8_t>(type), 0)};
-    }
-
-    static void putObject(pd_message& message, std::uint32_t object)
-    {
-        auto const offset = message.payload_size;
-        message.payload[offset + 0] = static_cast<std::uint8_t>(object);
-        message.payload[offset + 1] = static_cast<std::uint8_t>(object >> 8u);
-        message.payload[offset + 2] = static_cast<std::uint8_t>(object >> 16u);
-        message.payload[offset + 3] = static_cast<std::uint8_t>(object >> 24u);
-        message.payload_size += 4;
-    }
-
-    static std::uint32_t getObject(pd_message const& message, std::uint8_t index)
-    {
-        auto const offset = static_cast<std::size_t>(index) * 4;
-        return static_cast<std::uint32_t>(message.payload[offset + 0]) |
-               (static_cast<std::uint32_t>(message.payload[offset + 1]) << 8u) |
-               (static_cast<std::uint32_t>(message.payload[offset + 2]) << 16u) |
-               (static_cast<std::uint32_t>(message.payload[offset + 3]) << 24u);
-    }
-
-    void dispatch(pd_message const& message)
-    {
-        if (bist_test_data_) {
-            return; // BIST test data mode: deaf until hard reset/detach
-        }
-        auto const header = pd_header::decode(message.header);
-        if (header.extended) {
-            auto const extended = extended_header::decode(
-                static_cast<std::uint16_t>(message.payload[0]) |
-                (static_cast<std::uint16_t>(message.payload[1]) << 8u));
-            if (extended.chunked) {
-                sm_.process(pe::event::chunked_message{
-                    makeControl(control_message_type::not_supported)});
-            } else {
-                sm_.process(pe::event::unsupported{
-                    makeControl(control_message_type::not_supported)});
-            }
-            return;
-        }
-        if (isData(header, data_message_type::source_capabilities)) {
-            evaluate(message, header.num_data_objects);
-        } else if (isData(header, data_message_type::bist)) {
-            if (header.num_data_objects >= 1) {
-                enterBist(getObject(message, 0));
-            }
-        } else if (isControl(header, control_message_type::accept)) {
-            sm_.process(pe::event::accept{});
-            advanceTransients();
-        } else if (isControl(header, control_message_type::reject)) {
-            sm_.process(pe::event::reject{});
-        } else if (isControl(header, control_message_type::wait)) {
-            sm_.process(pe::event::wait{});
-        } else if (isControl(header, control_message_type::ps_rdy)) {
-            sm_.process(pe::event::ps_rdy{});
-            advanceTransients(); // a VCONN hand-off completion
-        } else if (isControl(header, control_message_type::dr_swap)) {
-            sm_.process(pe::event::dr_swap_received{{refusal<dr_swap_capable>}});
-        } else if (isControl(header, control_message_type::pr_swap)) {
-            sm_.process(pe::event::pr_swap_received{{refusal<pr_swap_capable>}});
-        } else if (isControl(header, control_message_type::vconn_swap)) {
-            sm_.process(pe::event::vconn_swap_received{{refusal<vconn_capable>}});
-        } else if (isControl(header, control_message_type::get_sink_cap)) {
-            sendSinkCapabilities();
-        } else if (isControl(header, control_message_type::get_source_cap)) {
-            sendSourceCapabilities();
-        } else if (isControl(header, control_message_type::soft_reset)) {
-            sm_.process(pe::event::soft_reset_received{
-                makeControl(control_message_type::accept)});
-        } else if (!isControl(header, control_message_type::good_crc) &&
-                   !isControl(header, control_message_type::ping)) {
-            // answered from Ready only; ignored while negotiating
-            sm_.process(pe::event::unsupported{makeControl(control_message_type::not_supported)});
-        }
-    }
-
-    // The partner's swap request is the table's question (the Ready
-    // rows on the *_swap_received events): the injected policy's
-    // answer accepts, the catch-all refuses - Reject where the
-    // feature exists, the non-DRP Not_Supported where it does not. A
-    // request outside Ready is discarded (another Atomic Message
-    // Sequence is running)
-    template<bool CAPABLE>
-    static constexpr control_message_type refusal =
-        CAPABLE ? control_message_type::reject : control_message_type::not_supported;
-
-    // BIST entry, honored only under an explicit vSafe5V contract
-    // (spec): Carrier Mode 2 transmits the test carrier for
-    // tBISTContMode; Test Data silences the engine until a hard reset
-    // or detach while the TCPC keeps answering GoodCRC
-    void enterBist(std::uint32_t bdo)
-    {
-        auto const& negotiation = sm_.template context<pe::pe_negotiation>();
-        if (!negotiation.explicit_contract || negotiation.request.voltage != pe::v_safe_5v) {
-            return;
-        }
-        switch (bist::modeOf(bdo)) {
-        case bist::mode::carrier_mode_2:
-            if (sm_.process(pe::event::bist_carrier{})) {
-                tcpc_.transmit(transmit_signal::bist_carrier_mode_2);
-            }
-            break;
-        case bist::mode::test_data:
-            if (sm_.template annotation<pe::ready_for_atomic_message_sequence>()) {
-                setBistTestData(true);
-            }
-            break;
-        default: break; // other modes are not supported
-        }
-    }
-
-    void setBistTestData(bool enable)
-    {
-        bist_test_data_ = enable;
-        if constexpr (requires { tcpc_.setBistTestData(enable); }) {
-            tcpc_.setBistTestData(enable); // hardware may discard for us
-        }
-    }
+    // --- the sink's messages ------------------------------------------------
 
     // PE_SNK_Evaluate_Capability: ask the policy, fall back to the
     // first PDO with the Capability Mismatch flag
@@ -1704,11 +1112,11 @@ private:
         std::array<std::uint32_t, 7> objects{};
         auto const n = std::min<std::uint8_t>(count, objects.size());
         for (std::uint8_t index = 0; index < n; ++index) {
-            objects[index] = getObject(message, index);
+            objects[index] = dataObjectAt(message, index);
         }
         auto const offered = std::span<std::uint32_t const>{objects.data(), n};
 
-        auto terms = policy_.select(offered, capabilities_);
+        auto terms = policy_.select(offered, this->sink_capabilities_);
         if (!terms && n > 0) {
             terms = contract_request{.position          = 1,
                                      .voltage           = pdo::fixedVoltage(objects[0]),
@@ -1716,79 +1124,31 @@ private:
                                      .maximum_current   = pdo::fixedMaxCurrent(objects[0]),
                                      .mismatch          = true};
         }
-        if (!terms) {
-            return;
+        if (terms) {
+            sm_.process(pe::event::capabilities_evaluated{.terms = *terms});
         }
-
-        pd_message request{.sop    = sop_type::sop,
-                           .header = makeHeader(
-                               static_cast<std::uint8_t>(data_message_type::request), 1)};
-        putObject(request, pdo::makeFixedRequest(terms->position, terms->operating_current,
-                                                 terms->maximum_current, terms->mismatch));
-        sm_.process(pe::event::capabilities_evaluated{request, *terms});
-    }
-
-    void sendSinkCapabilities()
-    {
-        auto const n = std::min<std::size_t>(capabilities_.size(), 7);
-        pd_message caps{.sop    = sop_type::sop,
-                        .header = makeHeader(
-                            static_cast<std::uint8_t>(data_message_type::sink_capabilities),
-                            static_cast<std::uint8_t>(n))};
-        for (std::size_t index = 0; index < n; ++index) {
-            putObject(caps, pdo::makeFixedSink(capabilities_[index].voltage,
-                                               capabilities_[index].current));
-        }
-        sm_.process(pe::event::send_sink_caps{caps});
     }
 
     // PE_DR_SNK_Give_Source_Cap; a sink-only port answers Not_Supported
     void sendSourceCapabilities()
     {
-        if (source_capabilities_.empty()) {
-            sm_.process(pe::event::unsupported{makeControl(control_message_type::not_supported)});
+        if (this->source_capabilities_.empty()) {
+            sm_.process(pe::event::unsupported{});
             return;
         }
-        auto const n = std::min<std::size_t>(source_capabilities_.size(), 7);
-        pd_message caps{
-            .sop    = sop_type::sop,
-            .header = makeHeader(static_cast<std::uint8_t>(data_message_type::source_capabilities),
-                                 static_cast<std::uint8_t>(n))};
-        for (std::size_t index = 0; index < n; ++index) {
-            putObject(caps, source_capabilities_[index]);
-        }
-        sm_.process(pe::event::send_source_caps{caps});
+        sm_.process(pe::event::send_source_caps{pe::makeSourceCapabilitiesMessage(
+            power_role::sink, this->dataRole(), this->source_capabilities_)});
     }
 
-    TCPC& tcpc_;
-    std::span<sink_capability const> capabilities_;
-    std::span<std::uint32_t const> source_capabilities_{}; // empty: not a DRP
     POLICY& policy_;
-
-    // The optional features follow the injected policy: it answers the
-    // table's swap questions or the feature's states are filtered from
-    // the table (the facade's proxies answer exactly when an injected
-    // observer enables the feature by tag)
-    static constexpr bool pr_swap_capable =
-        fsm::concepts::answers_stateless_guard<POLICY, pe::pr_swap_allowed>;
-    static constexpr bool dr_swap_capable =
-        fsm::concepts::answers_stateless_guard<POLICY, pe::dr_swap_allowed>;
-    static constexpr bool vconn_capable =
-        fsm::concepts::answers_stateless_guard<POLICY, pe::vconn_swap_allowed>;
-
-    bool bist_test_data_     = false;
-    bool sink_tx_ok_         = true; // last Rp seen (SinkTxOk/NG)
+    bool sink_tx_ok_ = true; // last Rp seen (SinkTxOk/NG)
     std::optional<pe::atomic_message_sequence> pending_sequence_; // parked under SinkTxNG
-    PrlPort port_{*this};
-    ProtocolLayer<TCPC, TIMER> prl_; // also an observer of sm_
-    fsm::QueuedTimer<TIMER> pe_timer_;
-    fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     gate_watch gates_{*this};
     // the policy rides in the pack to answer the table's questions
-    fsm::QueuedMachine<pe::sink_table_for<pr_swap_capable, dr_swap_capable, vconn_capable>, 4,
-                       fsm::inline_work, fsm::no_lock,
-                       fsm::timed<fsm::QueuedTimer<TIMER>&>, ProtocolLayer<TCPC, TIMER>,
-                       gate_watch, POLICY, OBSERVERs...>
+    fsm::QueuedMachine<pe::sink_table_for<base::pr_swap_capable, base::dr_swap_capable,
+                                          base::vconn_capable>,
+                       4, fsm::inline_work, fsm::no_lock, fsm::timed<fsm::QueuedTimer<TIMER>&>,
+                       ProtocolLayer<TCPC, TIMER>, gate_watch, POLICY, OBSERVERs...>
         sm_;
 };
 

@@ -92,7 +92,7 @@ public:
           source_engine_(tcpc, timers.source_prl, timers.source_pe, source_capabilities,
                          source_policy_, supply, source_power, watch_),
           vconn_(pickVconnPort(observers...), timers.vconn, watch_),
-          router_{tcpc, sink_engine_, source_engine_, *this},
+          router_(tcpc, sink_engine_, source_engine_, *this),
           drp_(tcpc, vbus, timers.tc, timers.tc_deadline, advertisement, router_,
                observers...)
     {
@@ -361,12 +361,26 @@ private:
     using SourceEngine = SourcePolicyEngine<TCPC, TIMER, source_policy_proxy, SUPPLY,
                                             SOURCE_POWER, swap_watch>;
 
-    // The port's internal wiring: activates the engine the resolved
-    // role needs, routes the PD alerts to it, and keeps the message
-    // header's roles current. Library plumbing may look at the machine:
-    // the raw hooks read the attached state's data role from the shared
-    // context, which a power swap preserves and a fresh attach defaults
-    struct router {
+    // The port's internal wiring, observing the connection machine's
+    // declared facts: the PD connection brackets the engines' life (its
+    // tag spans the hard-reset window and the swap standbys, so neither
+    // is a detach), the attached role names the engine the resolved
+    // role needs, the swap standby hands the engines over, and every
+    // entry of an Attached state - fresh, resumed, or completing a swap
+    // - reaches the live engine as the partner value (data role for
+    // the message header, the CC status for collision avoidance and
+    // the cable's Ra). The PD alerts and CC reports are forwarded from
+    // the driver frontend
+    struct router : fsm::observing<router> {
+        router(TCPC& tcpc_ref, SinkEngine& sink_engine, SourceEngine& source_engine,
+               PdDrp& port_ref)
+            : tcpc(tcpc_ref), snk(sink_engine), src(source_engine), port(port_ref)
+        {
+        }
+
+        using observes = mtl::typelist<tc::pd_connection, tc::attached_role,
+                                       tc::drp::swap_standby, tc::attached_partner>;
+
         TCPC& tcpc;
         SinkEngine& snk;
         SourceEngine& src;
@@ -374,104 +388,77 @@ private:
 
         enum class active_role { none, sink, source };
         active_role active = active_role::none;
-        data_role data     = data_role::ufp; // for the header between hooks
-        // carried across the engine handover of a power role swap: the
-        // negotiated revision and the MessageID lifecycle hold for the
-        // connection (a swap is no reset trigger, 6.7.1) - captured
-        // before the retiring engine's teardown resets its layer
-        pd_revision swap_revision = pd_revision::rev_3_x;
-        prl::message_id_state swap_ids{};
+        data_role data     = data_role::ufp; // the message header's data role
 
-        // Both hooks depend on the edge (a swap standby or a hard-reset
-        // window versus a real detach): the edge forms
-        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onEnterFrom(MACHINE& machine)
+        // the one real detach: the live engine resets, VCONN goes down
+        void notifyExit(tc::pd_connection)
         {
-            if constexpr (std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
-                data = machine.template getIf<NEW_STATE>()->dataRole();
-                header(power_role::sink);
-                // seed the PD3 collision-avoidance view of the
-                // source's Rp; CC alerts keep it current from here
-                snk.sinkTxChanged(sinkTxOk(machine.template getIf<NEW_STATE>()->context.cc));
-                if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_snk>) {
-                    snk.finishSwap(); // already active mid PR_Swap
-                } else if constexpr (std::is_same_v<OLD_STATE,
-                                                    tc::state::hard_reset_recover_snk>) {
-                    snk.vbusPresent(); // already active: VBUS is back
-                } else {
-                    active = active_role::sink;
-                    snk.vbusPresent();
-                }
-            } else if constexpr (std::is_same_v<NEW_STATE, tc::state::attached_src>) {
-                data = machine.template getIf<NEW_STATE>()->dataRole();
-                header(power_role::source);
-                if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_src>) {
-                    swap_revision = snk.negotiatedRevision();
-                    swap_ids      = snk.messageIds();
-                    snk.vbusRemoved(); // the sink engine's half is done
-                    active = active_role::source;
-                    src.attachedAfterSwap(data, swap_revision, swap_ids); // continue the swap
-                } else {
-                    active = active_role::source;
-                    src.attached();
-                    // only a fresh source attach starts VCONN, and
-                    // only when the cable presents Ra
-                    port.vconn_.attachedSource(raPresent(
-                        machine.template getIf<NEW_STATE>()->context.cc));
-                }
-            } else if constexpr (std::is_same_v<NEW_STATE, tc::drp::swap_standby_to_snk>) {
-                // the old source asserted Rd mid PR_Swap: the sink
-                // engine takes over the PS_RDY exchange
+            switch (active) {
+            case active_role::sink: snk.vbusRemoved(); break;
+            case active_role::source: src.detached(); break;
+            case active_role::none: break;
+            }
+            active = active_role::none;
+            port.vconn_.detached();
+        }
+
+        // the resolved role names the live engine (a swap's completion
+        // included: the standby carries no role)
+        void notifyEntry(tc::attached_role attached)
+        {
+            active = attached.role == power_role::sink ? active_role::sink : active_role::source;
+        }
+
+        // The old source asserted Rd mid PR_Swap: the sink engine takes
+        // over the PS_RDY exchange, continuing the connection's
+        // negotiated revision and MessageID lifecycle (a swap is no
+        // reset trigger, 6.7.1) - captured before the retiring engine's
+        // teardown resets its layer. The other direction hands over on
+        // the swap's completion, the sink engine stays live until then
+        void notifyEntry(tc::drp::swap_standby standby)
+        {
+            if (standby.to == power_role::sink) {
+                auto const revision = src.negotiatedRevision();
+                auto const ids      = src.messageIds();
+                src.detached();
                 header(power_role::sink);
                 active = active_role::sink;
-                snk.startSwapWaitSourceOn(data, swap_revision, swap_ids);
+                snk.startSwapWaitSourceOn(data, revision, ids);
             }
         }
 
-        template<typename OLD_STATE, typename NEW_STATE, typename MACHINE>
-        void onExitFrom(MACHINE&)
+        // An Attached state entered, the live engine acts: a fresh
+        // attach or the resume after a hard-reset window starts its
+        // negotiation, the completion of a power swap continues it
+        void notifyEntry(tc::attached_partner const& partner)
         {
-            if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_snk>) {
-                // the swap standby and the hard-reset window keep the
-                // sink engine live: it still awaits the partner
-                if constexpr (!std::is_same_v<NEW_STATE, tc::drp::swap_standby_to_src> &&
-                              !std::is_same_v<NEW_STATE, tc::state::hard_reset_snk>) {
-                    snk.vbusRemoved();
-                    active = active_role::none;
-                    port.vconn_.detached();
-                }
-            } else if constexpr (std::is_same_v<OLD_STATE, tc::state::hard_reset_snk>) {
-                if constexpr (!std::is_same_v<NEW_STATE, tc::state::hard_reset_recover_snk>) {
-                    snk.vbusRemoved(); // window timed out: dead port
-                    active = active_role::none;
-                    port.vconn_.detached();
-                }
-            } else if constexpr (std::is_same_v<OLD_STATE, tc::state::hard_reset_recover_snk>) {
-                if constexpr (!std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
-                    snk.vbusRemoved(); // window timed out: dead port
-                    active = active_role::none;
-                    port.vconn_.detached();
-                }
-            } else if constexpr (std::is_same_v<OLD_STATE, tc::state::attached_src>) {
-                if constexpr (std::is_same_v<NEW_STATE, tc::drp::swap_standby_to_snk>) {
-                    swap_revision = src.negotiatedRevision(); // before the reset
-                    swap_ids      = src.messageIds();
+            data = partner.data;
+            bool const completing =
+                partner.origin == tc::attach_origin::completed_power_role_swap;
+            if (active == active_role::sink) {
+                header(power_role::sink);
+                // seed the PD3 collision-avoidance view of the
+                // source's Rp; CC alerts keep it current from here
+                snk.sinkTxChanged(tc::sinkTxOk(partner.cc));
+                if (completing) {
+                    snk.finishSwap(); // already live mid PR_Swap
                 } else {
-                    port.vconn_.detached(); // a real detach, not a swap
+                    snk.vbusPresent(); // fresh attach, or VBUS back
                 }
-                src.detached();
-                active = active_role::none;
-            } else if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_src>) {
-                if constexpr (!std::is_same_v<NEW_STATE, tc::state::attached_src>) {
-                    snk.vbusRemoved(); // the swap failed: engine resets
-                    active = active_role::none;
-                    port.vconn_.detached();
-                }
-            } else if constexpr (std::is_same_v<OLD_STATE, tc::drp::swap_standby_to_snk>) {
-                if constexpr (!std::is_same_v<NEW_STATE, tc::state::attached_snk>) {
-                    snk.vbusRemoved(); // the swap failed: engine resets
-                    active = active_role::none;
-                    port.vconn_.detached();
+            } else {
+                header(power_role::source);
+                if (completing) {
+                    // the sink engine's half is done: its revision
+                    // and MessageIDs continue in the source engine
+                    auto const revision = snk.negotiatedRevision();
+                    auto const ids      = snk.messageIds();
+                    snk.vbusRemoved();
+                    src.attachedAfterSwap(data, revision, ids);
+                } else {
+                    src.attached();
+                    // only a fresh source attach starts VCONN, and
+                    // only when the cable presents Ra
+                    port.vconn_.attachedSource(raPresent(partner.cc));
                 }
             }
         }
@@ -481,11 +468,9 @@ private:
         void onCcStatus(cc_status cc)
         {
             if (active == active_role::sink) {
-                snk.sinkTxChanged(sinkTxOk(cc));
+                snk.sinkTxChanged(tc::sinkTxOk(cc));
             }
         }
-
-        static bool sinkTxOk(cc_status cc) { return tc::sinkTxOk(cc); }
 
         static bool raPresent(cc_status cc)
         {

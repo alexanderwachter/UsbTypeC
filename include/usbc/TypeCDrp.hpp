@@ -150,7 +150,9 @@ inline constexpr std::chrono::milliseconds t_src_slice = TIMING.t_drp * TIMING.d
 
 // --- toggling unattached states ---------------------------------------------
 
-// Unattached.SNK of a DRP: Rd presented for the sink slice of tDRP
+// Unattached.SNK of a DRP: Rd presented for the sink slice of tDRP;
+// the toggle resets the connection's attachment, the next attach
+// resolves afresh
 template<drp_timing const& TIMING>
 struct unattached_snk : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
@@ -158,7 +160,12 @@ struct unattached_snk : state::sink_state {
         fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_drp - t_src_slice<TIMING>;
 
-    using state::sink_state::sink_state;
+    unattached_snk(line_status& line_ref, attachment& attached) : sink_state(line_ref)
+    {
+        attached = {};
+    }
+
+    using contexts = mtl::typelist<line_status, attachment>;
 };
 
 // Unattached.SRC of a DRP: Rp presented for the source slice of tDRP
@@ -171,11 +178,38 @@ struct unattached_src : state::source_state {
     static constexpr auto timeout     = t_src_slice<TIMING>;
 
     // entering on the discharge-complete event records what it means
-    unattached_src(event::vbus_reached_safe0v const&, port_context& ctx) : source_state(ctx)
+    unattached_src(event::vbus_reached_safe0v const&, line_status& line_ref,
+                   attachment& attached)
+        : unattached_src(line_ref, attached)
     {
-        context.vbus_safe0v = true;
+        line.vbus_safe0v = true;
     }
-    using state::source_state::source_state;
+    unattached_src(line_status& line_ref, attachment& attached) : source_state(line_ref)
+    {
+        attached = {};
+    }
+
+    using contexts = mtl::typelist<line_status, attachment>;
+};
+
+// --- the Try phases' shared budget -------------------------------------------
+
+// A Try phase runs under one deadline; the states asking about it
+// declare the phase context through this base: the phase openers
+// reset the budget, the debounce sub-states record the deadline
+// falling mid-debounce (the debounce runs on, its failure exit then
+// leaves the phase - the try_expired guard)
+template<typename ROLE_STATE>
+struct try_state : ROLE_STATE {
+    try_state(line_status& line_ref, try_phase& phase_ref) : ROLE_STATE(line_ref), phase(phase_ref)
+    {
+    }
+
+    using ROLE_STATE::handle;
+    void handle(fsm::deadline const&) { phase.expired = true; }
+
+    using contexts = mtl::typelist<line_status, try_phase>;
+    try_phase& phase;
 };
 
 // --- Try.SRC / TryWait.SNK (drp_preference::source) --------------------------
@@ -184,7 +218,7 @@ struct unattached_src : state::source_state {
 // budget is a phase deadline shared with the debounce sub-state, so a
 // flapping partner cannot extend it
 template<drp_timing const& TIMING>
-struct try_src : state::source_state {
+struct try_src : try_state<state::source_state> {
     static constexpr vbus_level vbus_watch = vbus_level::safe0v;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
@@ -192,25 +226,29 @@ struct try_src : state::source_state {
 
     // entered only with the phase fresh (an expired phase leaves
     // through its debounce guard): open a new budget
-    explicit try_src(port_context& ctx) : source_state(ctx) { context.try_expired = false; }
+    try_src(line_status& line_ref, try_phase& phase_ref) : try_state(line_ref, phase_ref)
+    {
+        phase.expired = false;
+    }
 };
 
 // A single Rd appeared in Try.SRC: stable for tTryCCDebounce attaches.
 // The phase deadline keeps running; expiring mid-debounce does not
 // abort it - the failure exit leaves the phase instead of re-arming
 template<drp_timing const& TIMING>
-struct try_src_debounce : state::source_state {
+struct try_src_debounce : try_state<state::source_state> {
     static constexpr vbus_level vbus_watch = vbus_level::safe0v;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_try_cc_debounce;
     static constexpr auto deadline    = TIMING.t_drp_try;
 
-    try_src_debounce(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
+    try_src_debounce(event::cc_changed const& event, line_status& line_ref, try_phase& phase_ref)
+        : try_state(line_ref, phase_ref)
     {
-        context.cc = event.cc;
+        line.cc = event.cc;
     }
-    using state::source_state::source_state;
+    using try_state<state::source_state>::try_state;
 };
 
 // The partner did not present Rd: back to Rd for tDRPTryWait, attaching
@@ -222,9 +260,7 @@ struct try_wait_snk : state::sink_state {
         fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_drp_try_wait;
 
-    // a fresh-attach gateway: a stale hard-reset window flag must not
-    // leak into the attach it resolves
-    explicit try_wait_snk(port_context& ctx) : sink_state(ctx) { context.resuming = false; }
+    using state::sink_state::sink_state;
 };
 
 // --- Try.SNK / TryWait.SRC (drp_preference::sink) ----------------------------
@@ -234,14 +270,17 @@ struct try_wait_snk : state::sink_state {
 // whole Try.SNK phase - wait, monitor, debounce - runs under one
 // tTryTimeout deadline
 template<drp_timing const& TIMING>
-struct try_snk : state::sink_state {
+struct try_snk : try_state<state::sink_state> {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_drp_try;
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
-    explicit try_snk(port_context& ctx) : sink_state(ctx) { context.try_expired = false; }
+    try_snk(line_status& line_ref, try_phase& phase_ref) : try_state(line_ref, phase_ref)
+    {
+        phase.expired = false;
+    }
 };
 
 // Monitoring phase of Try.SNK: the phase deadline is the only clock
@@ -258,32 +297,33 @@ struct try_snk_monitor : state::sink_state {
 // A single Rp appeared in Try.SNK: stable for tPDDebounce with VBUS
 // present attaches; a failure after the phase deadline expired exits
 template<drp_timing const& TIMING>
-struct try_snk_debounce : state::sink_state {
+struct try_snk_debounce : try_state<state::sink_state> {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_pd_debounce;
     static constexpr auto deadline    = TIMING.t_try_timeout;
 
-    try_snk_debounce(event::cc_changed const& event, port_context& ctx) : sink_state(ctx)
+    try_snk_debounce(event::cc_changed const& event, line_status& line_ref, try_phase& phase_ref)
+        : try_state(line_ref, phase_ref)
     {
-        context.cc = event.cc;
+        line.cc = event.cc;
     }
-    using state::sink_state::sink_state;
+    using try_state<state::sink_state>::try_state;
 };
 
 // The partner did not present Rp: back to Rp under the tDRPTryWait
 // phase deadline
 template<drp_timing const& TIMING>
-struct try_wait_src : state::source_state {
+struct try_wait_src : try_state<state::source_state> {
     static constexpr vbus_level vbus_watch = vbus_level::safe0v;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto deadline    = TIMING.t_drp_try_wait;
 
-    explicit try_wait_src(port_context& ctx) : source_state(ctx)
+    try_wait_src(line_status& line_ref, try_phase& phase_ref) : try_state(line_ref, phase_ref)
     {
-        context.try_expired = false;
+        phase.expired = false;
     }
 };
 
@@ -291,18 +331,20 @@ struct try_wait_src : state::source_state {
 // attaches once VBUS is at vSafe0V; a failure after the phase
 // deadline expired exits
 template<drp_timing const& TIMING>
-struct try_wait_src_debounce : state::source_state {
+struct try_wait_src_debounce : try_state<state::source_state> {
     static constexpr vbus_level vbus_watch = vbus_level::safe0v;
     static constexpr auto annotations =
         fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
     static constexpr auto timeout     = TIMING.t_try_cc_debounce;
     static constexpr auto deadline    = TIMING.t_drp_try_wait;
 
-    try_wait_src_debounce(event::cc_changed const& event, port_context& ctx) : source_state(ctx)
+    try_wait_src_debounce(event::cc_changed const& event, line_status& line_ref,
+                          try_phase& phase_ref)
+        : try_state(line_ref, phase_ref)
     {
-        context.cc = event.cc;
+        line.cc = event.cc;
     }
-    using state::source_state::source_state;
+    using try_state<state::source_state>::try_state;
 };
 
 // Rd debounced but VBUS not yet at vSafe0V: attach follows the report
@@ -328,9 +370,12 @@ inline constexpr auto t_ps_source_on  = std::chrono::milliseconds{435}; // tPSSo
 // completes: a swap without the partner's PS_RDY has failed, and
 // connection resolution restarts from Unattached.SNK
 
-// Annotation tag marking that window: completeSwap()/abortSwap() only
-// mean something inside it, tracked by the hw driver
+// Annotation marking that window and the role the swap heads for:
+// completeSwap()/abortSwap() only mean something inside it (tracked by
+// the hw driver), and the PD layer hands its engines over on it. The
+// PD connection holds throughout - the standbys carry its tag
 struct swap_standby {
+    power_role to;
     constexpr bool operator==(swap_standby const&) const = default;
 };
 
@@ -338,7 +383,8 @@ struct swap_standby {
 struct swap_standby_to_src : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch, swap_standby{});
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch,
+                      swap_standby{power_role::source}, pd_connection{});
     static constexpr auto timeout     = t_ps_source_off;
 
     using state::sink_state::sink_state;
@@ -348,7 +394,8 @@ struct swap_standby_to_src : state::sink_state {
 struct swap_standby_to_snk : state::sink_state {
     static constexpr vbus_level vbus_watch = vbus_level::safe5v;
     static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch, swap_standby{});
+        fsm::annotate(cc_termination{cc_pull::rd}, vbus_power{vbus_path::open}, vbus_watch,
+                      swap_standby{power_role::sink}, pd_connection{});
     static constexpr auto timeout     = t_ps_source_on;
 
     using state::sink_state::sink_state;
@@ -368,18 +415,18 @@ struct rp_on_event {
 };
 
 struct rd_in_context {
-    static bool check(auto const& state) { return singleRd(state.context.cc); }
+    static bool check(auto const& state) { return singleRd(state.line.cc); }
 };
 
 struct rp_in_context {
-    static bool check(auto const& state) { return singleRp(state.context.cc); }
+    static bool check(auto const& state) { return singleRp(state.line.cc); }
 };
 
 // The phase deadline expired while this debounce ran (the role bases'
 // fsm::deadline handler recorded it): its failure exits the phase
 // instead of re-arming it
 struct try_expired {
-    static bool check(auto const& state) { return state.context.try_expired; }
+    static bool check(auto const& state) { return state.phase.expired; }
 };
 
 // --- the role lock -----------------------------------------------------------
@@ -871,12 +918,12 @@ public:
         return std::nullopt;
     }
 
-    // The attached pair's data role, from the shared context; nullopt
-    // while not attached
+    // The attached pair's data role, from the connection's attachment;
+    // nullopt while not attached
     std::optional<data_role> dataRole() const
     {
         if (powerRole()) {
-            return sm_.template context<tc::port_context>().data;
+            return sm_.template context<tc::attachment>().data;
         }
         return std::nullopt;
     }
