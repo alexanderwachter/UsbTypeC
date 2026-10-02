@@ -11,8 +11,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <usbc/TypeCSink.hpp>
 #include <mtl/zephyr/TraceLogger.hpp>
+#include <usbc/TypeCSink.hpp>
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
@@ -40,17 +40,23 @@ unsigned advertisedMilliamps(usbc::rp_value advertisement)
 struct AttachLogger : fsm::observing<AttachLogger> {
     void notifyEntry(usbc::tc::attach_info info)
     {
-        LOG_INF("attached: CC%d, source advertises %u mA",
-                info.orientation == usbc::plug_orientation::cc1 ? 1 : 2,
-                advertisedMilliamps(info.advertisement));
+        LOG_INF(
+            "attached: CC%d, source advertises %u mA",
+            info.orientation == usbc::plug_orientation::cc1 ? 1 : 2,
+            advertisedMilliamps(info.advertisement)
+        );
     }
     void notifyExit(usbc::tc::attach_info) { LOG_INF("detached"); }
 };
 
 // The TraceLogger traces every transition (module mtl_fsm, info
 // level, behind CONFIG_MTL_FSM_TRACE) in the fsmview line grammar
-using Sink = usbc::TypeCSink<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                             AttachLogger, mtl::zephyr::TraceLogger>;
+using Sink = usbc::TypeCSink<
+    usbc::zephyr::Tcpc,
+    usbc::zephyr::Vbus,
+    usbc::zephyr::Timer,
+    AttachLogger,
+    mtl::zephyr::TraceLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};

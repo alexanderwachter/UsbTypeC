@@ -56,7 +56,6 @@ constexpr plug_orientation srcOrientationOf(cc_status status)
     return isRd(status.cc1) ? plug_orientation::cc1 : plug_orientation::cc2;
 }
 
-
 namespace state {
 
 // The spec's Disabled state: the port is not operating, terminations
@@ -107,8 +106,7 @@ struct unattached_src : source_state {
 
     // entering on the discharge-complete event records what it means -
     // a transition does not run the internal handlers
-    unattached_src(event::vbus_reached_safe0v const&, line_status& line_ref,
-                   attachment& attached)
+    unattached_src(event::vbus_reached_safe0v const&, line_status& line_ref, attachment& attached)
         : unattached_src(line_ref, attached)
     {
         line.vbus_safe0v = true;
@@ -158,8 +156,7 @@ struct attached_src : source_state {
     );
 
     // entered from the debounced wait on the vSafe0V event
-    attached_src(event::vbus_reached_safe0v const&, line_status& line_ref,
-                 attachment& attached_ref)
+    attached_src(event::vbus_reached_safe0v const&, line_status& line_ref, attachment& attached_ref)
         : attached_src(line_ref, attached_ref)
     {
         line.vbus_safe0v = true;
@@ -181,8 +178,8 @@ struct attached_src : source_state {
     attached_src(line_status& line_ref, attachment& attached_ref)
         : source_state(line_ref), attached(attached_ref)
     {
-        attached = {.orientation = srcOrientationOf(line.cc), .data = data_role::dfp,
-                    .resolved    = true};
+        attached =
+            {.orientation = srcOrientationOf(line.cc), .data = data_role::dfp, .resolved = true};
     }
 
     using source_state::handle;
@@ -198,9 +195,11 @@ struct attached_src : source_state {
     // data role, the cable's Ra)
     auto values() const
     {
-        return fsm::annotate(attached.orientation, polarity{.orientation = attached.orientation},
-                             attached_partner{.origin = origin_, .data = attached.data,
-                                              .cc     = line.cc});
+        return fsm::annotate(
+            attached.orientation,
+            polarity{.orientation = attached.orientation},
+            attached_partner{.origin = origin_, .data = attached.data, .cc = line.cc}
+        );
     }
 
     using contexts = mtl::typelist<line_status, attachment>;
@@ -254,66 +253,47 @@ struct rd_removed {
 // or Try.SNK for a sink-preferring DRP)
 template<typename UNATTACHED, typename ATTACH>
 using source_attach_flow = mtl::typelist<
-    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>,
-                    fsm::to<state::attach_wait_src>>,
+    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_src>>,
     fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_reached_safe0v>>,
     fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_left_safe0v>>,
     // a CC change during the debounce restarts it
-    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<event::cc_changed>,
-                    fsm::to<state::attach_wait_src>>,
-    fsm::internal_transition<fsm::from<state::attach_wait_src>,
-                             fsm::on<event::vbus_reached_safe0v>>,
-    fsm::internal_transition<fsm::from<state::attach_wait_src>,
-                             fsm::on<event::vbus_left_safe0v>>,
+    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_src>>,
+    fsm::internal_transition<fsm::from<state::attach_wait_src>, fsm::on<event::vbus_reached_safe0v>>,
+    fsm::internal_transition<fsm::from<state::attach_wait_src>, fsm::on<event::vbus_left_safe0v>>,
     // debounce complete: attach, wait for vSafe0V, or back to unattached
-    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>,
-                    fsm::to<ATTACH>, fsm::guard<src_stable_rd, vbus_safe0v_in_context>>,
-    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>,
-                    fsm::to<state::attach_wait_src_debounced>, fsm::guard<src_stable_rd>>,
-    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>,
-                    fsm::to<UNATTACHED>>,
-    fsm::transition<fsm::from<state::attach_wait_src_debounced>,
-                    fsm::on<event::vbus_reached_safe0v>, fsm::to<ATTACH>>,
-    fsm::internal_transition<fsm::from<state::attach_wait_src_debounced>,
-                             fsm::on<event::vbus_left_safe0v>>,
-    fsm::transition<fsm::from<state::attach_wait_src_debounced>, fsm::on<event::cc_changed>,
-                    fsm::to<state::attach_wait_src>>,
+    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>, fsm::guard<src_stable_rd, vbus_safe0v_in_context>, fsm::to<ATTACH>>,
+    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>, fsm::guard<src_stable_rd>, fsm::to<state::attach_wait_src_debounced>>,
+    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>,
+    fsm::transition<fsm::from<state::attach_wait_src_debounced>, fsm::on<event::vbus_reached_safe0v>, fsm::to<ATTACH>>,
+    fsm::internal_transition<fsm::from<state::attach_wait_src_debounced>, fsm::on<event::vbus_left_safe0v>>,
+    fsm::transition<fsm::from<state::attach_wait_src_debounced>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_src>>,
     // source detach detection is CC-based: Rd removed; toggling
     // resumes after UnattachedWait.SRC - whose entry re-arms vSafe0V,
     // and the driver's arm-report exits it right away when the line
     // is already there
-    fsm::transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>,
-                    fsm::to<state::unattached_wait_src>, fsm::guard<rd_removed>>,
+    fsm::transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>, fsm::guard<rd_removed>, fsm::to<state::unattached_wait_src>>,
     fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>>,
-    fsm::internal_transition<fsm::from<state::attached_src>,
-                             fsm::on<event::vbus_reached_safe0v>>,
+    fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::vbus_reached_safe0v>>,
     fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::vbus_left_safe0v>>,
-    fsm::transition<fsm::from<state::unattached_wait_src>, fsm::on<event::vbus_reached_safe0v>,
-                    fsm::to<UNATTACHED>>,
-    fsm::internal_transition<fsm::from<state::unattached_wait_src>,
-                             fsm::on<event::vbus_left_safe0v>>,
-    fsm::internal_transition<fsm::from<state::unattached_wait_src>,
-                             fsm::on<event::cc_changed>>>;
+    fsm::transition<fsm::from<state::unattached_wait_src>, fsm::on<event::vbus_reached_safe0v>, fsm::to<UNATTACHED>>,
+    fsm::internal_transition<fsm::from<state::unattached_wait_src>, fsm::on<event::vbus_left_safe0v>>,
+    fsm::internal_transition<fsm::from<state::unattached_wait_src>, fsm::on<event::cc_changed>>>;
 
 // The spec timer range of every timed state of the source flow; the
 // DRP concatenates this map with its own, like the flows themselves
-using source_timer_ranges = mtl::typelist<
-    fsm::timed_by<state::attach_wait_src, spec::t_cc_debounce>>;
+using source_timer_ranges =
+    mtl::typelist<fsm::timed_by<state::attach_wait_src, spec::t_cc_debounce>>;
 
 // A named struct, not an alias: the short name replaces the fully
 // spelled table type in every mangled symbol
-struct source_table
-    : mtl::rebind_t<
-          mtl::linearize_t<mtl::typelist<
-              fsm::initial<state::disabled_src>,
-              fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>,
-                              fsm::to<state::unattached_src>>,
-              source_attach_flow<state::unattached_src, state::attached_src>,
-              fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>,
-                              fsm::to<state::error_recovery_src>>,
-              fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>,
-                              fsm::to<state::unattached_src>>>>,
-          fsm::transition_table> {};
+struct source_table : mtl::rebind_t<
+                          mtl::linearize_t<mtl::typelist<
+                              fsm::initial<state::disabled_src>,
+                              fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>, fsm::to<state::unattached_src>>,
+                              source_attach_flow<state::unattached_src, state::attached_src>,
+                              fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>, fsm::to<state::error_recovery_src>>,
+                              fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>, fsm::to<state::unattached_src>>>>,
+                          fsm::transition_table> {};
 
 // error_recovery_src is not part of source_timer_ranges: the DRP
 // composes that map without carrying this table's private state
@@ -338,10 +318,14 @@ struct src_hw_driver : fsm::observing<src_hw_driver<TCPC, VBUS>> {
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(fsm::all_states_carry_v<TABLE, cc_termination>,
-                      "src_hw_driver: every state must annotate its CC termination");
-        static_assert(fsm::all_states_carry_v<TABLE, vbus_power>,
-                      "src_hw_driver: every state must annotate its VBUS power path");
+        static_assert(
+            fsm::all_states_carry_v<TABLE, cc_termination>,
+            "src_hw_driver: every state must annotate its CC termination"
+        );
+        static_assert(
+            fsm::all_states_carry_v<TABLE, vbus_power>,
+            "src_hw_driver: every state must annotate its VBUS power path"
+        );
     }
 
     void notifyEntry(cc_termination termination) { tcpc.setCc(termination.pull, rp); }
@@ -359,10 +343,13 @@ struct src_hw_driver : fsm::observing<src_hw_driver<TCPC, VBUS>> {
 
 } // namespace tc
 
-template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         typename... OBSERVERs>
-class TypeCSource : public tc::port_frontend<TypeCSource<TCPC, VBUS, TIMER, OBSERVERs...>,
-                                             TCPC, VBUS> {
+template<
+    concepts::tcpc TCPC,
+    concepts::vbus VBUS,
+    fsm::concepts::timer TIMER,
+    typename... OBSERVERs>
+class TypeCSource
+    : public tc::port_frontend<TypeCSource<TCPC, VBUS, TIMER, OBSERVERs...>, TCPC, VBUS> {
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). The advertisement is the Rp the port
@@ -373,10 +360,15 @@ public:
     // observer providing onPdAlert(alert_status) receives the alert
     // bits this layer does not consume - the hook for the PD layers
     // above
-    TypeCSource(TCPC& tcpc, VBUS& vbus, TIMER& timer, rp_value advertisement,
-                OBSERVERs&... observers)
-        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timer_(timer),
-          timed_(timer_), observers_(observers...), sm_(timed_, hw_, vbus_, observers...)
+    TypeCSource(
+        TCPC& tcpc,
+        VBUS& vbus,
+        TIMER& timer,
+        rp_value advertisement,
+        OBSERVERs&... observers
+    )
+        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timer_(timer), timed_(timer_),
+          observers_(observers...), sm_(timed_, hw_, vbus_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
@@ -403,9 +395,15 @@ private:
     fsm::QueuedTimer<TIMER> timer_;
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     std::tuple<OBSERVERs&...> observers_;
-    fsm::QueuedMachine<tc::source_table, 4, fsm::inline_work, fsm::no_lock,
-                       fsm::timed<fsm::QueuedTimer<TIMER>&>, tc::src_hw_driver<TCPC, VBUS>,
-                       tc::vbus_watcher<VBUS>, OBSERVERs...>
+    fsm::QueuedMachine<
+        tc::source_table,
+        4,
+        fsm::inline_work,
+        fsm::no_lock,
+        fsm::timed<fsm::QueuedTimer<TIMER>&>,
+        tc::src_hw_driver<TCPC, VBUS>,
+        tc::vbus_watcher<VBUS>,
+        OBSERVERs...>
         sm_;
 };
 

@@ -31,8 +31,7 @@ namespace {
 struct AttachLogger : fsm::observing<AttachLogger> {
     void notifyEntry(usbc::plug_orientation orientation)
     {
-        LOG_INF("sink attached: CC%d, VBUS on",
-                orientation == usbc::plug_orientation::cc1 ? 1 : 2);
+        LOG_INF("sink attached: CC%d, VBUS on", orientation == usbc::plug_orientation::cc1 ? 1 : 2);
     }
     void notifyExit(usbc::plug_orientation) { LOG_INF("sink detached, VBUS off"); }
 };

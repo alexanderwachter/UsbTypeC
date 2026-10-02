@@ -23,8 +23,8 @@ namespace usbc {
 
 namespace tc {
 
-inline constexpr auto t_cc_debounce   = std::chrono::milliseconds{150}; // tCCDebounce
-inline constexpr auto t_error_recovery = std::chrono::milliseconds{50}; // tErrorRecovery
+inline constexpr auto t_cc_debounce = std::chrono::milliseconds{150};        // tCCDebounce
+inline constexpr auto t_error_recovery = std::chrono::milliseconds{50};      // tErrorRecovery
 inline constexpr auto t_hard_reset_window = std::chrono::milliseconds{6000}; // > tNoResponse
 
 // What one CC line's voltage says about the partner's termination:
@@ -162,9 +162,9 @@ struct vbus_power {
 // state keeps it current through its internal-transition handlers,
 // the debounce guards read it
 struct line_status {
-    cc_status cc      = {.cc1 = cc_state::snk_open, .cc2 = cc_state::snk_open};
+    cc_status cc = {.cc1 = cc_state::snk_open, .cc2 = cc_state::snk_open};
     bool vbus_present = false;
-    bool vbus_safe0v  = false;
+    bool vbus_safe0v = false;
 };
 
 // One connection's attachment: the plug orientation and data role a
@@ -174,8 +174,8 @@ struct line_status {
 // whether VBUS returning resumes the connection or attaches afresh
 struct attachment {
     plug_orientation orientation = plug_orientation::cc1;
-    data_role data               = data_role::ufp;
-    bool resolved                = false;
+    data_role data = data_role::ufp;
+    bool resolved = false;
 };
 
 // One DRP Try phase, shared by its composite state and its sub-states.
@@ -185,7 +185,7 @@ struct attachment {
 // ends the phase instead of resuming it
 struct try_phase {
     bool termination_seen = false;
-    bool expired          = false;
+    bool expired = false;
 };
 
 // The one place tying a VBUS level to the events its reports become:
@@ -217,10 +217,10 @@ template<typename STATE>
     requires requires { STATE::annotations.template get<vbus_level>(); } &&
              (STATE::annotations.template get<vbus_level>() != vbus_level::unwatched)
 struct required_vbus_events<STATE>
-    : std::conditional<familyOf(STATE::annotations.template get<vbus_level>()) ==
-                           vbus_family::discharge,
-                       mtl::typelist<event::vbus_reached_safe0v, event::vbus_left_safe0v>,
-                       mtl::typelist<event::vbus_present, event::vbus_removed>> {};
+    : std::conditional<
+          familyOf(STATE::annotations.template get<vbus_level>()) == vbus_family::discharge,
+          mtl::typelist<event::vbus_reached_safe0v, event::vbus_left_safe0v>,
+          mtl::typelist<event::vbus_present, event::vbus_removed>> {};
 
 template<typename TABLE>
 inline constexpr bool watch_events_consistent_v =
@@ -244,11 +244,15 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(fsm::all_states_carry_v<TABLE, vbus_level>,
-                      "vbus_watcher: every state must annotate its vbus_level "
-                      "(vbus_level::unwatched switches monitoring off)");
-        static_assert(watch_events_consistent_v<TABLE>,
-                      "vbus_watcher: a watching state must handle its level's event family");
+        static_assert(
+            fsm::all_states_carry_v<TABLE, vbus_level>,
+            "vbus_watcher: every state must annotate its vbus_level "
+            "(vbus_level::unwatched switches monitoring off)"
+        );
+        static_assert(
+            watch_events_consistent_v<TABLE>,
+            "vbus_watcher: a watching state must handle its level's event family"
+        );
     }
 
     VBUS& vbus;
@@ -275,16 +279,17 @@ protected:
         if (started_) {
             return;
         }
-        started_   = true;
+        started_ = true;
         auto& self = derived();
         self.sm_.process(event::started{});
         self.vbus_.vbus.setCallback(
-            [](void* frontend, bool met) {
-                static_cast<port_frontend*>(frontend)->vbusEvent(met);
-            },
-            this);
+            [](void* frontend, bool met) { static_cast<port_frontend*>(frontend)->vbusEvent(met); },
+            this
+        );
         self.tcpc_.setAlertHandler(
-            [](void* frontend) { static_cast<port_frontend*>(frontend)->alert(); }, this);
+            [](void* frontend) { static_cast<port_frontend*>(frontend)->alert(); },
+            this
+        );
         self.vbus_.vbus.monitor(self.vbus_.monitored); // deliver the initial condition
         seedCcState();
     }
@@ -301,15 +306,18 @@ private:
             if (any(*alerts & alert_status::cc_status_changed)) {
                 if (auto const cc = self.tcpc_.readCcStatus()) {
                     self.sm_.process(event::cc_changed{*cc});
-                    std::apply([&](auto&... observer)
-                               { (forwardCcStatus(observer, *cc), ...); },
-                               self.observers_);
+                    std::apply(
+                        [&](auto&... observer) { (forwardCcStatus(observer, *cc), ...); },
+                        self.observers_
+                    );
                 }
             }
             auto const residual = *alerts & ~alert_status::cc_status_changed;
             if (any(residual)) {
-                std::apply([&](auto&... observer) { (forwardPdAlert(observer, residual), ...); },
-                           self.observers_);
+                std::apply(
+                    [&](auto&... observer) { (forwardPdAlert(observer, residual), ...); },
+                    self.observers_
+                );
             }
         }
     }
@@ -357,7 +365,7 @@ private:
     // announce it
     void seedCcState()
     {
-        auto& self    = derived();
+        auto& self = derived();
         auto const cc = self.tcpc_.readCcStatus();
         if (cc && (isRp(cc->cc1) || isRp(cc->cc2) || isRd(cc->cc1) || isRd(cc->cc2))) {
             self.sm_.process(event::cc_changed{*cc});

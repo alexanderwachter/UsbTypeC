@@ -77,14 +77,14 @@ enum class plug_orientation : std::uint8_t { cc1, cc2 };
 // What the driver shall detect and forward to the stack; a driver
 // without this granularity enables at least the requested classes
 enum class receive_detect : std::uint8_t {
-    none                   = 0,
-    sop                    = 1u << 0,
-    sop_prime              = 1u << 1,
-    sop_double_prime       = 1u << 2,
-    sop_prime_debug        = 1u << 3,
+    none = 0,
+    sop = 1u << 0,
+    sop_prime = 1u << 1,
+    sop_double_prime = 1u << 2,
+    sop_prime_debug = 1u << 3,
     sop_double_prime_debug = 1u << 4,
-    hard_reset             = 1u << 5,
-    cable_reset            = 1u << 6,
+    hard_reset = 1u << 5,
+    cable_reset = 1u << 6,
 };
 
 template<>
@@ -106,14 +106,14 @@ enum class transmit_signal : std::uint8_t {
 
 // Pending events, cleared by readAlert()
 enum class alert_status : std::uint8_t {
-    none                = 0,
-    cc_status_changed   = 1u << 0,
-    message_received    = 1u << 1, // fetch with receive() until it returns false
-    transmit_success    = 1u << 2, // GoodCRC received
-    transmit_discarded  = 1u << 3, // dropped in favor of an incoming message
-    transmit_failed     = 1u << 4, // no GoodCRC within the retries
+    none = 0,
+    cc_status_changed = 1u << 0,
+    message_received = 1u << 1,   // fetch with receive() until it returns false
+    transmit_success = 1u << 2,   // GoodCRC received
+    transmit_discarded = 1u << 3, // dropped in favor of an incoming message
+    transmit_failed = 1u << 4,    // no GoodCRC within the retries
     hard_reset_received = 1u << 5,
-    fault               = 1u << 6,
+    fault = 1u << 6,
 };
 
 template<>
@@ -130,8 +130,15 @@ namespace concepts {
 // messaging are capability concepts a driver implements only when its
 // port uses them
 template<typename T>
-concept tcpc = requires(T t, cc_pull pull, rp_value rp, plug_orientation orientation,
-                        alert_callback callback, void* context, bool enable) {
+concept tcpc = requires(
+    T t,
+    cc_pull pull,
+    rp_value rp,
+    plug_orientation orientation,
+    alert_callback callback,
+    void* context,
+    bool enable
+) {
     t.setAlertHandler(callback, context);
     { t.readAlert() } -> std::same_as<std::optional<alert_status>>;
     { t.setCc(pull, rp) } -> std::same_as<bool>;
@@ -147,9 +154,14 @@ concept tcpc = requires(T t, cc_pull pull, rp_value rp, plug_orientation orienta
 
 // PD message transport; a Type-C-only port needs none of it
 template<typename T>
-concept pd_transport = requires(T t, receive_detect detect, message_header_info header_info,
-                                pd_message const& message, pd_message& receive_buffer,
-                                transmit_signal signal) {
+concept pd_transport = requires(
+    T t,
+    receive_detect detect,
+    message_header_info header_info,
+    pd_message const& message,
+    pd_message& receive_buffer,
+    transmit_signal signal
+) {
     { t.setMessageHeaderInfo(header_info) } -> std::same_as<bool>;
     { t.setReceiveDetect(detect) } -> std::same_as<bool>;
     { t.transmit(message) } -> std::same_as<bool>; // one attempt, outcome via alert

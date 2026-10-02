@@ -74,17 +74,17 @@ namespace usbc {
 // A policy's answer: the operating point the supply must deliver
 struct supply_target {
     millivolt voltage = pe::v_safe_5v;
-    milliamp current  = pe::i_default_current;
+    milliamp current = pe::i_default_current;
     constexpr bool operator==(supply_target const&) const = default;
 };
 
 namespace concepts {
 
 template<typename T>
-concept source_policy = requires(T policy, std::uint32_t rdo,
-                                 std::span<std::uint32_t const> capabilities) {
-    { policy.evaluate(rdo, capabilities) } -> std::same_as<std::optional<supply_target>>;
-};
+concept source_policy =
+    requires(T policy, std::uint32_t rdo, std::span<std::uint32_t const> capabilities) {
+        { policy.evaluate(rdo, capabilities) } -> std::same_as<std::optional<supply_target>>;
+    };
 
 // The interface a SourcePower-derived class provides
 template<typename T>
@@ -100,8 +100,8 @@ concept source_power_client = requires(T client, millivolt voltage, milliamp cur
 // within that PDO's maximum
 class RequestPolicy {
 public:
-    constexpr std::optional<supply_target> evaluate(
-        std::uint32_t rdo, std::span<std::uint32_t const> capabilities) const
+    constexpr std::optional<supply_target>
+    evaluate(std::uint32_t rdo, std::span<std::uint32_t const> capabilities) const
     {
         auto const position = pdo::requestPosition(rdo);
         if (position == 0 || position > capabilities.size()) {
@@ -122,11 +122,12 @@ static_assert(concepts::source_policy<RequestPolicy>);
 
 namespace pe {
 
-inline constexpr auto t_typec_send_source_cap = std::chrono::milliseconds{150}; // tTypeCSendSourceCap
-inline constexpr auto t_src_transition        = std::chrono::milliseconds{30};  // tSrcTransition
-inline constexpr auto t_src_recover           = std::chrono::milliseconds{800}; // tSrcRecover
-inline constexpr auto t_source_start          = std::chrono::milliseconds{30};  // tSwapSourceStart
-inline constexpr auto t_sink_tx               = std::chrono::milliseconds{18};  // tSinkTx
+inline constexpr auto t_typec_send_source_cap =
+    std::chrono::milliseconds{150};                                     // tTypeCSendSourceCap
+inline constexpr auto t_src_transition = std::chrono::milliseconds{30}; // tSrcTransition
+inline constexpr auto t_src_recover = std::chrono::milliseconds{800};   // tSrcRecover
+inline constexpr auto t_source_start = std::chrono::milliseconds{30};   // tSwapSourceStart
+inline constexpr auto t_sink_tx = std::chrono::milliseconds{18};        // tSinkTx
 
 // PD3 collision avoidance, signalled through the source's Rp: states
 // carrying the annotation drive it (SinkTxOk = 3.0 A, SinkTxNG = 1.5 A)
@@ -145,9 +146,9 @@ struct send_capabilities_action {
 // worth, gone with every reset within the connection (the connection
 // itself is the shared pe_connection)
 struct src_negotiation {
-    std::uint8_t caps_counter = 0;     // CapsCounter
-    bool pd_connected         = false; // a Source_Capabilities got its GoodCRC
-    bool explicit_contract    = false;
+    std::uint8_t caps_counter = 0; // CapsCounter
+    bool pd_connected = false;     // a Source_Capabilities got its GoodCRC
+    bool explicit_contract = false;
     supply_target target{};
 };
 
@@ -173,11 +174,13 @@ namespace state {
 // power restore covers the detach entry (after a hard reset,
 // Transition_to_default already restored and suppression elides it)
 struct pe_src_startup {
-    static constexpr auto annotations =
-        fsm::annotate(prl::reset_action{}, restore_default_action{});
-    static constexpr power_level power           = power_level::default_power;
-    static constexpr pd_status pd                = pd_status::connected_or_not_connected;
-    static constexpr std::string_view dot_note   = specNote(power, pd);
+    static constexpr auto annotations = fsm::annotate(
+        prl::reset_action{},
+        restore_default_action{}
+    );
+    static constexpr power_level power = power_level::default_power;
+    static constexpr pd_status pd = pd_status::connected_or_not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action =
         "resets the protocol layer, restores default power";
 
@@ -185,7 +188,7 @@ struct pe_src_startup {
     explicit pe_src_startup(pe_connection& connection, src_negotiation& negotiation)
         : connection(connection), negotiation(negotiation)
     {
-        this->connection  = {.data = defaultDataRole(power_role::source)};
+        this->connection = {.data = defaultDataRole(power_role::source)};
         this->negotiation = {};
     }
     using contexts = mtl::typelist<pe_connection, src_negotiation>;
@@ -197,14 +200,19 @@ struct pe_src_startup {
 // includes the transmission (deviation, see the file comment)
 struct pe_src_send_capabilities {
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr auto annotations            = fsm::annotate(send_capabilities_action{});
-    static constexpr power_level power           = power_level::default_power;
-    static constexpr pd_status pd                = pd_status::connected_or_not_connected;
-    static constexpr std::string_view dot_note   = specNote(power, pd);
+    static constexpr auto annotations = fsm::annotate(
+        send_capabilities_action{}
+    );
+    static constexpr power_level power = power_level::default_power;
+    static constexpr pd_status pd = pd_status::connected_or_not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = send_capabilities_action::note;
 
-    pe_src_send_capabilities(event::attached const&, pe_connection& connection,
-                             src_negotiation& negotiation)
+    pe_src_send_capabilities(
+        event::attached const&,
+        pe_connection& connection,
+        src_negotiation& negotiation
+    )
         : pe_src_send_capabilities(connection, negotiation)
     {
         connection.attached = true;
@@ -226,9 +234,9 @@ struct pe_src_send_capabilities {
 // Waits SourceCapabilityTimer between advertisement attempts
 struct pe_src_discovery {
     static constexpr auto timeout = t_typec_send_source_cap; // SourceCapabilityTimer
-    static constexpr power_level power          = power_level::default_power;
-    static constexpr pd_status pd               = pd_status::not_connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::default_power;
+    static constexpr pd_status pd = pd_status::not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 
     explicit pe_src_discovery(src_negotiation& negotiation) : negotiation(negotiation) {}
     using contexts = mtl::typelist<src_negotiation>; // the guard reads CapsCounter
@@ -238,17 +246,17 @@ struct pe_src_discovery {
 // nCapsCount advertisements went unanswered: the sink speaks no PD,
 // the port stays a plain Type-C source until detach
 struct pe_src_disabled {
-    static constexpr power_level power          = power_level::default_power;
-    static constexpr pd_status pd               = pd_status::not_connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::default_power;
+    static constexpr pd_status pd = pd_status::not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 // The engine evaluates the Request through the injected policy and
 // advances with request_ok or request_bad
 struct pe_src_negotiate_capability {
-    static constexpr power_level power          = power_level::contract_or_default;
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::contract_or_default;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 
     explicit pe_src_negotiate_capability(pe_connection& connection) : connection(connection)
     {
@@ -261,20 +269,24 @@ struct pe_src_negotiate_capability {
 // PE_SRC_Transition_Supply: sends the Accept; the _delay, _settle and
 // _ps_rdy sub-states spell out the supply choreography
 struct pe_src_transition_supply {
-    static constexpr power_level power          = power_level::transition;
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 
-    pe_src_transition_supply(event::request_ok const& event, pe_connection& connection_ref,
-                             src_negotiation& negotiation_ref)
+    pe_src_transition_supply(
+        event::request_ok const& event,
+        pe_connection& connection_ref,
+        src_negotiation& negotiation_ref
+    )
         : pe_src_transition_supply(connection_ref, negotiation_ref)
     {
         negotiation.target = event.target;
     }
     pe_src_transition_supply(pe_connection& connection_ref, src_negotiation& negotiation_ref)
         : connection(connection_ref), negotiation(negotiation_ref),
-          message_(makeControlMessage(control_message_type::accept, power_role::source,
-                                      connection.data))
+          message_(
+              makeControlMessage(control_message_type::accept, power_role::source, connection.data)
+          )
     {
     }
 
@@ -291,17 +303,17 @@ private:
 // The spec's tSrcTransition wait between the Accept and the change
 struct pe_src_transition_supply_delay {
     static constexpr auto timeout = t_src_transition; // tSrcTransition
-    static constexpr power_level power          = power_level::transition;
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 // Commands the supply to the new operating point and waits for the
 // settled callback
 struct pe_src_transition_supply_settle {
-    static constexpr power_level power           = power_level::transition;
-    static constexpr pd_status pd                = pd_status::connected;
-    static constexpr std::string_view dot_note   = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "programs the supply";
 
     explicit pe_src_transition_supply_settle(src_negotiation& negotiation)
@@ -317,14 +329,15 @@ struct pe_src_transition_supply_settle {
 
 // The supply is at the target: PS_RDY tells the sink to draw
 struct pe_src_transition_supply_ps_rdy {
-    static constexpr power_level power          = power_level::transition;
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 
     explicit pe_src_transition_supply_ps_rdy(pe_connection& connection_ref)
         : connection(connection_ref),
-          message_(makeControlMessage(control_message_type::ps_rdy, power_role::source,
-                                      connection.data))
+          message_(
+              makeControlMessage(control_message_type::ps_rdy, power_role::source, connection.data)
+          )
     {
     }
 
@@ -338,17 +351,20 @@ private:
 };
 
 struct pe_src_ready {
-    static constexpr power_level power          = power_level::explicit_contract;
+    static constexpr power_level power = power_level::explicit_contract;
     // the sink may initiate (SinkTxOk)
-    static constexpr auto annotations =
-        fsm::annotate(power, sink_tx::ok, ready_for_atomic_message_sequence{});
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr auto annotations = fsm::annotate(
+        power,
+        sink_tx::ok,
+        ready_for_atomic_message_sequence{}
+    );
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 
     explicit pe_src_ready(src_negotiation& negotiation) : negotiation(negotiation)
     {
         negotiation.explicit_contract = true;
-        negotiation.pd_connected      = true;
+        negotiation.pd_connected = true;
     }
 
     active_contract values() const
@@ -362,19 +378,23 @@ struct pe_src_ready {
 
 // PE_SRC_Capability_Response: the policy refused, the Reject goes out
 struct pe_src_capability_response {
-    static constexpr power_level power          = power_level::contract_or_default;
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::contract_or_default;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 
-    pe_src_capability_response(event::request_bad const&, pe_connection& connection_ref,
-                               src_negotiation& negotiation_ref)
+    pe_src_capability_response(
+        event::request_bad const&,
+        pe_connection& connection_ref,
+        src_negotiation& negotiation_ref
+    )
         : pe_src_capability_response(connection_ref, negotiation_ref)
     {
     }
     pe_src_capability_response(pe_connection& connection_ref, src_negotiation& negotiation_ref)
         : connection(connection_ref), negotiation(negotiation_ref),
-          message_(makeControlMessage(control_message_type::reject, power_role::source,
-                                      connection.data))
+          message_(
+              makeControlMessage(control_message_type::reject, power_role::source, connection.data)
+          )
     {
     }
 
@@ -396,19 +416,25 @@ private:
 struct pe_src_sink_tx_wait_pr {
     using feature = pr_swap_feature;
     static constexpr auto timeout = t_sink_tx; // tSinkTx
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, sink_tx::ng);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr auto annotations = fsm::annotate(
+        power,
+        sink_tx::ng
+    );
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 struct pe_src_sink_tx_wait_dr {
     using feature = dr_swap_feature;
     static constexpr auto timeout = t_sink_tx; // tSinkTx
-    static constexpr power_level power          = power_level::explicit_contract;
-    static constexpr auto annotations           = fsm::annotate(power, sink_tx::ng);
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr auto annotations = fsm::annotate(
+        power,
+        sink_tx::ng
+    );
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 // PE_PRS_SRC_SNK_Transition_to_off, the spec's tSrcTransition wait
@@ -416,57 +442,65 @@ struct pe_src_sink_tx_wait_dr {
 struct pe_src_swap_transition_to_off {
     using feature = pr_swap_feature;
     static constexpr auto timeout = t_src_transition; // tSrcTransition
-    static constexpr power_level power          = power_level::transition;
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 // ... the supply is commanded off and its settled report awaited
 struct pe_src_swap_supply_off {
     using feature = pr_swap_feature;
-    static constexpr power_level power           = power_level::transition;
-    static constexpr pd_status pd                = pd_status::connected;
-    static constexpr std::string_view dot_note   = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "turns the supply off";
 
-    static constexpr auto annotations = fsm::annotate(supply_target{.voltage = 0, .current = 0});
+    static constexpr auto annotations = fsm::annotate(
+        supply_target{.voltage = 0, .current = 0}
+    );
 };
 
 // PE_PRS_SRC_SNK_Assert_Rd: VBUS is off - the port flips its
 // termination now; the sink engine then announces our PS_RDY
 struct pe_src_swap_assert_rd {
     using feature = pr_swap_feature;
-    static constexpr power_level power          = power_level::transition;
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 
-    static constexpr auto annotations = fsm::annotate(assert_new_role{power_role::sink});
+    static constexpr auto annotations = fsm::annotate(
+        assert_new_role{power_role::sink}
+    );
 };
 
 // PE_PRS_SNK_SRC_Source_on, this engine's half: the port was the sink
 // and asserted Rp - VBUS is driven to vSafe5V first
 struct pe_src_swap_source_on {
     using feature = pr_swap_feature;
-    static constexpr power_level power           = power_level::transition;
-    static constexpr pd_status pd                = pd_status::connected;
-    static constexpr std::string_view dot_note   = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "drives VBUS to vSafe5V";
 
-    pe_src_swap_source_on(pe::event::attached_swap const& event, pe_connection& connection,
-                          src_negotiation& negotiation)
+    pe_src_swap_source_on(
+        pe::event::attached_swap const& event,
+        pe_connection& connection,
+        src_negotiation& negotiation
+    )
         : connection(connection), negotiation(negotiation)
     {
-        connection.attached       = true;
-        connection.data           = event.role; // a power swap preserves the data role
-        negotiation.pd_connected  = true;       // the swap was PD-negotiated
+        connection.attached = true;
+        connection.data = event.role;    // a power swap preserves the data role
+        negotiation.pd_connected = true; // the swap was PD-negotiated
     }
     explicit pe_src_swap_source_on(pe_connection& connection, src_negotiation& negotiation)
         : connection(connection), negotiation(negotiation)
     {
     }
 
-    static constexpr auto annotations =
-        fsm::annotate(supply_target{.voltage = v_safe_5v, .current = i_default_current});
+    static constexpr auto annotations = fsm::annotate(
+        supply_target{.voltage = v_safe_5v, .current = i_default_current}
+    );
 
     using contexts = mtl::typelist<pe_connection, src_negotiation>;
     pe_connection& connection;
@@ -476,15 +510,16 @@ struct pe_src_swap_source_on {
 // ... at vSafe5V the PS_RDY completes the partner's wait
 struct pe_src_swap_source_on_ps_rdy {
     using feature = pr_swap_feature;
-    static constexpr power_level power          = power_level::transition;
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PS_RDY";
 
     explicit pe_src_swap_source_on_ps_rdy(pe_connection& connection_ref)
         : connection(connection_ref),
-          message_(makeControlMessage(control_message_type::ps_rdy, power_role::source,
-                                      connection.data))
+          message_(
+              makeControlMessage(control_message_type::ps_rdy, power_role::source, connection.data)
+          )
     {
     }
 
@@ -502,9 +537,9 @@ private:
 struct pe_src_swap_source_start {
     using feature = pr_swap_feature;
     static constexpr auto timeout = t_source_start; // SwapSourceStartTimer
-    static constexpr power_level power          = power_level::transition;
-    static constexpr pd_status pd               = pd_status::connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 
     explicit pe_src_swap_source_start(src_negotiation& negotiation) : negotiation(negotiation)
     {
@@ -522,13 +557,14 @@ struct pe_src_swap_source_start {
 // detach)
 struct pe_src_transition_to_default {
     // the protocol reset, and VBUS removed - both compile-time facts
-    static constexpr auto annotations =
-        fsm::annotate(prl::reset_action{}, supply_target{.voltage = 0, .current = 0});
-    static constexpr power_level power           = power_level::transition;
-    static constexpr pd_status pd                = pd_status::not_connected;
-    static constexpr std::string_view dot_note   = specNote(power, pd);
-    static constexpr std::string_view dot_action =
-        "resets the protocol layer, removes VBUS";
+    static constexpr auto annotations = fsm::annotate(
+        prl::reset_action{},
+        supply_target{.voltage = 0, .current = 0}
+    );
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "resets the protocol layer, removes VBUS";
 
     // the connection persists, the negotiation ends
     explicit pe_src_transition_to_default(src_negotiation& negotiation) : negotiation(negotiation)
@@ -543,18 +579,20 @@ struct pe_src_transition_to_default {
 // tSrcRecover at vSafe0V before the defaults return
 struct pe_src_recover {
     static constexpr auto timeout = t_src_recover; // tSrcRecover
-    static constexpr power_level power          = power_level::transition;
-    static constexpr pd_status pd               = pd_status::not_connected;
-    static constexpr std::string_view dot_note  = specNote(power, pd);
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 // vSafe5V defaults restored (the restore action also reports the
 // contract lost); the settled supply resumes the advertisement
 struct pe_src_restore_default {
-    static constexpr auto annotations            = fsm::annotate(restore_default_action{});
-    static constexpr power_level power           = power_level::transition;
-    static constexpr pd_status pd                = pd_status::not_connected;
-    static constexpr std::string_view dot_note   = specNote(power, pd);
+    static constexpr auto annotations = fsm::annotate(
+        restore_default_action{}
+    );
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = restore_default_action::note;
 
     explicit pe_src_restore_default(pe_connection& connection) : connection(connection) {}
@@ -564,27 +602,27 @@ struct pe_src_restore_default {
 
 // The states shared with the sink engine (PolicyEngine.hpp), under
 // the spec's source-side names where it has them
-using pe_src_error_recovery     = pe_error_recovery;
-using pe_dr_src_give_sink_cap   = pe_give_sink_cap;
-using pe_src_bist_carrier       = pe_bist_carrier;
+using pe_src_error_recovery = pe_error_recovery;
+using pe_dr_src_give_sink_cap = pe_give_sink_cap;
+using pe_src_bist_carrier = pe_bist_carrier;
 using pe_src_send_not_supported = pe_send_not_supported<power_role::source>;
-using pe_src_chunk_received     = pe_chunk_received;
-using pe_src_send_dr_swap       = pe_drs_send_swap<power_role::source>;
-using pe_src_accept_dr_swap     = pe_drs_accept_swap<power_role::source>;
-using pe_src_dr_swap_change     = pe_drs_change_data_role;
-using pe_src_vcs_send_swap      = pe_vcs_send_swap<power_role::source>;
-using pe_src_vcs_accept         = pe_vcs_accept_swap<power_role::source>;
-using pe_src_vcs_active         = pe_vcs_active;
-using pe_src_vcs_send_ps_rdy    = pe_vcs_send_ps_rdy<power_role::source>;
-using pe_src_vcs_partner_on     = pe_vcs_partner_on;
-using pe_src_vcs_ps_rdy_sent    = pe_vcs_ps_rdy_sent;
-using pe_src_send_pr_swap       = pe_prs_send_swap<power_role::source>;
-using pe_src_accept_pr_swap     = pe_prs_accept_swap<power_role::source>;
-using pe_src_dr_swap_wait       = pe_dr_swap_wait;
-using pe_src_pr_swap_wait       = pe_pr_swap_wait;
-using pe_src_soft_reset         = pe_soft_reset<power_role::source>;
-using pe_src_send_soft_reset    = pe_send_soft_reset<power_role::source>;
-using pe_src_hard_reset         = pe_hard_reset;
+using pe_src_chunk_received = pe_chunk_received;
+using pe_src_send_dr_swap = pe_drs_send_swap<power_role::source>;
+using pe_src_accept_dr_swap = pe_drs_accept_swap<power_role::source>;
+using pe_src_dr_swap_change = pe_drs_change_data_role;
+using pe_src_vcs_send_swap = pe_vcs_send_swap<power_role::source>;
+using pe_src_vcs_accept = pe_vcs_accept_swap<power_role::source>;
+using pe_src_vcs_active = pe_vcs_active;
+using pe_src_vcs_send_ps_rdy = pe_vcs_send_ps_rdy<power_role::source>;
+using pe_src_vcs_partner_on = pe_vcs_partner_on;
+using pe_src_vcs_ps_rdy_sent = pe_vcs_ps_rdy_sent;
+using pe_src_send_pr_swap = pe_prs_send_swap<power_role::source>;
+using pe_src_accept_pr_swap = pe_prs_accept_swap<power_role::source>;
+using pe_src_dr_swap_wait = pe_dr_swap_wait;
+using pe_src_pr_swap_wait = pe_pr_swap_wait;
+using pe_src_soft_reset = pe_soft_reset<power_role::source>;
+using pe_src_send_soft_reset = pe_send_soft_reset<power_role::source>;
+using pe_src_hard_reset = pe_hard_reset;
 
 } // namespace state
 
@@ -630,225 +668,124 @@ using source_timer_ranges = mtl::typelist<
 
 using source_transitions = mtl::typelist<
     fsm::initial<state::pe_src_startup>,
-    fsm::transition<fsm::from<state::pe_src_startup>, fsm::on<event::attached>,
-                    fsm::to<state::pe_src_send_capabilities>>,
-    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::detached>,
-                    fsm::to<state::pe_src_startup>>,
+    fsm::transition<fsm::from<state::pe_src_startup>, fsm::on<event::attached>, fsm::to<state::pe_src_send_capabilities>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::detached>, fsm::to<state::pe_src_startup>>,
     // capabilities out; GoodCRC marks the sink PD-capable (internal)
-    fsm::internal_transition<fsm::from<state::pe_src_send_capabilities>,
-                             fsm::on<pe::event::message_sent>>,
-    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<event::request>,
-                    fsm::to<state::pe_src_negotiate_capability>>,
+    fsm::internal_transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<pe::event::message_sent>>,
+    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<event::request>, fsm::to<state::pe_src_negotiate_capability>>,
     // no Request from a PD-capable sink: hard reset while the counter
     // allows, then Error Recovery; a PD-incapable one goes to Discovery
-    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_hard_reset>,
-                    fsm::guard<pd_was_connected, hard_resets_left>>,
-    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_error_recovery>, fsm::guard<pd_was_connected>>,
-    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_discovery>>,
-    fsm::transition<fsm::from<state::pe_src_send_capabilities>,
-                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>,
-                    fsm::guard<pd_was_connected>>,
-    fsm::transition<fsm::from<state::pe_src_send_capabilities>,
-                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_discovery>>,
+    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>, fsm::guard<pd_was_connected, hard_resets_left>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>, fsm::guard<pd_was_connected>, fsm::to<state::pe_src_error_recovery>>,
+    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_discovery>>,
+    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<pe::event::protocol_error>, fsm::guard<pd_was_connected>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_send_capabilities>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_discovery>>,
     // Discovery retries the advertisement up to nCapsCount times
-    fsm::transition<fsm::from<state::pe_src_discovery>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_send_capabilities>, fsm::guard<caps_count_allows>>,
-    fsm::transition<fsm::from<state::pe_src_discovery>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_disabled>>,
+    fsm::transition<fsm::from<state::pe_src_discovery>, fsm::on<fsm::timeout>, fsm::guard<caps_count_allows>, fsm::to<state::pe_src_send_capabilities>>,
+    fsm::transition<fsm::from<state::pe_src_discovery>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_disabled>>,
     // negotiation: the engine injects the policy's verdict
-    fsm::transition<fsm::from<state::pe_src_negotiate_capability>, fsm::on<event::request_ok>,
-                    fsm::to<state::pe_src_transition_supply>>,
-    fsm::transition<fsm::from<state::pe_src_negotiate_capability>, fsm::on<event::request_bad>,
-                    fsm::to<state::pe_src_capability_response>>,
+    fsm::transition<fsm::from<state::pe_src_negotiate_capability>, fsm::on<event::request_ok>, fsm::to<state::pe_src_transition_supply>>,
+    fsm::transition<fsm::from<state::pe_src_negotiate_capability>, fsm::on<event::request_bad>, fsm::to<state::pe_src_capability_response>>,
     // supply transition: Accept -> tSrcTransition -> settle -> PS_RDY
-    fsm::transition<fsm::from<state::pe_src_transition_supply>, fsm::on<pe::event::message_sent>,
-                    fsm::to<state::pe_src_transition_supply_delay>>,
-    fsm::transition<fsm::from<state::pe_src_transition_supply>,
-                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_src_transition_supply_delay>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_transition_supply_settle>>,
-    fsm::transition<fsm::from<state::pe_src_transition_supply_settle>,
-                    fsm::on<event::supply_settled>,
-                    fsm::to<state::pe_src_transition_supply_ps_rdy>>,
-    fsm::transition<fsm::from<state::pe_src_transition_supply_ps_rdy>,
-                    fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_transition_supply_ps_rdy>,
-                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_transition_supply>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_transition_supply_delay>>,
+    fsm::transition<fsm::from<state::pe_src_transition_supply>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_transition_supply_delay>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_transition_supply_settle>>,
+    fsm::transition<fsm::from<state::pe_src_transition_supply_settle>, fsm::on<event::supply_settled>, fsm::to<state::pe_src_transition_supply_ps_rdy>>,
+    fsm::transition<fsm::from<state::pe_src_transition_supply_ps_rdy>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_transition_supply_ps_rdy>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
     // the Reject: back to Ready under a contract, hard reset without
-    fsm::transition<fsm::from<state::pe_src_capability_response>,
-                    fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_ready>,
-                    fsm::guard<explicit_contract_holds>>,
-    fsm::transition<fsm::from<state::pe_src_capability_response>,
-                    fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_src_capability_response>,
-                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_capability_response>, fsm::on<pe::event::message_sent>, fsm::guard<explicit_contract_holds>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_capability_response>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_capability_response>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
     // Ready serves the sink
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::request>,
-                    fsm::to<state::pe_src_negotiate_capability>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::get_source_caps>,
-                    fsm::to<state::pe_src_send_capabilities>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_sink_capabilities>,
-                    fsm::to<state::pe_dr_src_give_sink_cap>>,
-    fsm::transition<fsm::from<state::pe_dr_src_give_sink_cap>, fsm::on<pe::event::message_sent>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_dr_src_give_sink_cap>,
-                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::unsupported>,
-                    fsm::to<state::pe_src_send_not_supported>>,
-    fsm::transition<fsm::from<state::pe_src_send_not_supported>,
-                    fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_send_not_supported>,
-                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::bist_carrier>,
-                    fsm::to<state::pe_src_bist_carrier>>,
-    fsm::transition<fsm::from<state::pe_src_bist_carrier>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::chunked_message>,
-                    fsm::to<state::pe_src_chunk_received>>,
-    fsm::transition<fsm::from<state::pe_src_chunk_received>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_send_not_supported>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::request>, fsm::to<state::pe_src_negotiate_capability>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::get_source_caps>, fsm::to<state::pe_src_send_capabilities>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_sink_capabilities>, fsm::to<state::pe_dr_src_give_sink_cap>>,
+    fsm::transition<fsm::from<state::pe_dr_src_give_sink_cap>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_dr_src_give_sink_cap>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::unsupported>, fsm::to<state::pe_src_send_not_supported>>,
+    fsm::transition<fsm::from<state::pe_src_send_not_supported>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_not_supported>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::bist_carrier>, fsm::to<state::pe_src_bist_carrier>>,
+    fsm::transition<fsm::from<state::pe_src_bist_carrier>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::chunked_message>, fsm::to<state::pe_src_chunk_received>>,
+    fsm::transition<fsm::from<state::pe_src_chunk_received>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_send_not_supported>>,
     // DR_Swap: sent from Ready, or accepted there; both sides flip on
     // the agreement, an ignored request falls back to Ready
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_dr_swap>,
-                    fsm::to<state::pe_src_send_dr_swap>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::begin_dr_swap>,
-                    fsm::to<state::pe_src_sink_tx_wait_dr>>,
-    fsm::transition<fsm::from<state::pe_src_sink_tx_wait_dr>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_send_dr_swap>>,
-    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::accept>,
-                    fsm::to<state::pe_src_dr_swap_change>>,
-    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::reject>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::wait>,
-                    fsm::to<state::pe_src_dr_swap_wait>>,
-    fsm::transition<fsm::from<state::pe_src_dr_swap_wait>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_send_dr_swap>>,
-    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::protocol_error>,
-                    fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_dr_swap>, fsm::to<state::pe_src_send_dr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::begin_dr_swap>, fsm::to<state::pe_src_sink_tx_wait_dr>>,
+    fsm::transition<fsm::from<state::pe_src_sink_tx_wait_dr>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_send_dr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::accept>, fsm::to<state::pe_src_dr_swap_change>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::reject>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::wait>, fsm::to<state::pe_src_dr_swap_wait>>,
+    fsm::transition<fsm::from<state::pe_src_dr_swap_wait>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_send_dr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_dr_swap>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
     // the partner's DR_Swap: the table asks the injected policy
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::dr_swap_received>,
-                    fsm::to<state::pe_src_accept_dr_swap>, fsm::guard<pe::dr_swap_allowed>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::dr_swap_received>,
-                    fsm::to<state::pe_src_send_not_supported>>,
-    fsm::transition<fsm::from<state::pe_src_accept_dr_swap>, fsm::on<pe::event::message_sent>,
-                    fsm::to<state::pe_src_dr_swap_change>>,
-    fsm::transition<fsm::from<state::pe_src_accept_dr_swap>, fsm::on<pe::event::protocol_error>,
-                    fsm::to<state::pe_src_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_src_dr_swap_change>, fsm::on<pe::event::swap_done>,
-                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::dr_swap_received>, fsm::guard<pe::dr_swap_allowed>, fsm::to<state::pe_src_accept_dr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::dr_swap_received>, fsm::to<state::pe_src_send_not_supported>>,
+    fsm::transition<fsm::from<state::pe_src_accept_dr_swap>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_dr_swap_change>>,
+    fsm::transition<fsm::from<state::pe_src_accept_dr_swap>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_dr_swap_change>, fsm::on<pe::event::swap_done>, fsm::to<state::pe_src_ready>>,
     // VCONN_Swap: the messages anchor here, the vconn machine owns
     // the role, the switch, and the hand-off deadline
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_vconn_swap>,
-                    fsm::to<state::pe_src_vcs_send_swap>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::accept>,
-                    fsm::to<state::pe_src_vcs_active>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::reject>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::wait>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::protocol_error>,
-                    fsm::to<state::pe_src_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::vconn_swap_received>,
-                    fsm::to<state::pe_src_vcs_accept>, fsm::guard<pe::vconn_swap_allowed>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::vconn_swap_received>,
-                    fsm::to<state::pe_src_send_not_supported>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_accept>, fsm::on<pe::event::message_sent>,
-                    fsm::to<state::pe_src_vcs_active>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_accept>, fsm::on<pe::event::protocol_error>,
-                    fsm::to<state::pe_src_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_active>, fsm::on<pe::event::ps_rdy>,
-                    fsm::to<state::pe_src_vcs_partner_on>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_active>, fsm::on<pe::event::send_vconn_ps_rdy>,
-                    fsm::to<state::pe_src_vcs_send_ps_rdy>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_active>, fsm::on<pe::event::hard_reset_request>,
-                    fsm::to<state::pe_src_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_send_ps_rdy>, fsm::on<pe::event::message_sent>,
-                    fsm::to<state::pe_src_vcs_ps_rdy_sent>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_send_ps_rdy>,
-                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_partner_on>, fsm::on<pe::event::swap_done>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_vcs_ps_rdy_sent>, fsm::on<pe::event::swap_done>,
-                    fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_vconn_swap>, fsm::to<state::pe_src_vcs_send_swap>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::accept>, fsm::to<state::pe_src_vcs_active>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::reject>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::wait>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_swap>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::vconn_swap_received>, fsm::guard<pe::vconn_swap_allowed>, fsm::to<state::pe_src_vcs_accept>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::vconn_swap_received>, fsm::to<state::pe_src_send_not_supported>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_accept>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_vcs_active>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_accept>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_active>, fsm::on<pe::event::ps_rdy>, fsm::to<state::pe_src_vcs_partner_on>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_active>, fsm::on<pe::event::send_vconn_ps_rdy>, fsm::to<state::pe_src_vcs_send_ps_rdy>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_active>, fsm::on<pe::event::hard_reset_request>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_ps_rdy>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_vcs_ps_rdy_sent>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_send_ps_rdy>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_partner_on>, fsm::on<pe::event::swap_done>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_vcs_ps_rdy_sent>, fsm::on<pe::event::swap_done>, fsm::to<state::pe_src_ready>>,
     // PR_Swap while sourcing: the agreement leads through tSrcTransition
     // into the supply-off wait, then the termination flip
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_pr_swap>,
-                    fsm::to<state::pe_src_send_pr_swap>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::begin_pr_swap>,
-                    fsm::to<state::pe_src_sink_tx_wait_pr>>,
-    fsm::transition<fsm::from<state::pe_src_sink_tx_wait_pr>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_send_pr_swap>>,
-    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::accept>,
-                    fsm::to<state::pe_src_swap_transition_to_off>>,
-    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::reject>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::wait>,
-                    fsm::to<state::pe_src_pr_swap_wait>>,
-    fsm::transition<fsm::from<state::pe_src_pr_swap_wait>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_send_pr_swap>>,
-    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_ready>>,
-    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::protocol_error>,
-                    fsm::to<state::pe_src_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::pr_swap_received>,
-                    fsm::to<state::pe_src_accept_pr_swap>, fsm::guard<pe::pr_swap_allowed>>,
-    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::pr_swap_received>,
-                    fsm::to<state::pe_src_send_not_supported>>,
-    fsm::transition<fsm::from<state::pe_src_accept_pr_swap>, fsm::on<pe::event::message_sent>,
-                    fsm::to<state::pe_src_swap_transition_to_off>>,
-    fsm::transition<fsm::from<state::pe_src_accept_pr_swap>, fsm::on<pe::event::protocol_error>,
-                    fsm::to<state::pe_src_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_src_swap_transition_to_off>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_swap_supply_off>>,
-    fsm::transition<fsm::from<state::pe_src_swap_supply_off>, fsm::on<event::supply_settled>,
-                    fsm::to<state::pe_src_swap_assert_rd>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::send_pr_swap>, fsm::to<state::pe_src_send_pr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<event::begin_pr_swap>, fsm::to<state::pe_src_sink_tx_wait_pr>>,
+    fsm::transition<fsm::from<state::pe_src_sink_tx_wait_pr>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_send_pr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::accept>, fsm::to<state::pe_src_swap_transition_to_off>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::reject>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::wait>, fsm::to<state::pe_src_pr_swap_wait>>,
+    fsm::transition<fsm::from<state::pe_src_pr_swap_wait>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_send_pr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_ready>>,
+    fsm::transition<fsm::from<state::pe_src_send_pr_swap>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::pr_swap_received>, fsm::guard<pe::pr_swap_allowed>, fsm::to<state::pe_src_accept_pr_swap>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::pr_swap_received>, fsm::to<state::pe_src_send_not_supported>>,
+    fsm::transition<fsm::from<state::pe_src_accept_pr_swap>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_swap_transition_to_off>>,
+    fsm::transition<fsm::from<state::pe_src_accept_pr_swap>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_swap_transition_to_off>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_swap_supply_off>>,
+    fsm::transition<fsm::from<state::pe_src_swap_supply_off>, fsm::on<event::supply_settled>, fsm::to<state::pe_src_swap_assert_rd>>,
     // PR_Swap's other half: this port was the sink and asserted Rp -
     // VBUS on, PS_RDY out, a pause, then the capabilities
-    fsm::transition<fsm::from<state::pe_src_startup>, fsm::on<pe::event::attached_swap>,
-                    fsm::to<state::pe_src_swap_source_on>>,
-    fsm::transition<fsm::from<state::pe_src_swap_source_on>, fsm::on<event::supply_settled>,
-                    fsm::to<state::pe_src_swap_source_on_ps_rdy>>,
-    fsm::transition<fsm::from<state::pe_src_swap_source_on_ps_rdy>,
-                    fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_swap_source_start>>,
-    fsm::transition<fsm::from<state::pe_src_swap_source_on_ps_rdy>,
-                    fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_src_swap_source_start>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_send_capabilities>>,
+    fsm::transition<fsm::from<state::pe_src_startup>, fsm::on<pe::event::attached_swap>, fsm::to<state::pe_src_swap_source_on>>,
+    fsm::transition<fsm::from<state::pe_src_swap_source_on>, fsm::on<event::supply_settled>, fsm::to<state::pe_src_swap_source_on_ps_rdy>>,
+    fsm::transition<fsm::from<state::pe_src_swap_source_on_ps_rdy>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_swap_source_start>>,
+    fsm::transition<fsm::from<state::pe_src_swap_source_on_ps_rdy>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_swap_source_start>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_send_capabilities>>,
     // resets
-    fsm::transition<fsm::from<fsm::any_state>, fsm::on<pe::event::soft_reset_received>,
-                    fsm::to<state::pe_src_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_src_soft_reset>, fsm::on<pe::event::message_sent>,
-                    fsm::to<state::pe_src_send_capabilities>>,
-    fsm::transition<fsm::from<state::pe_src_soft_reset>, fsm::on<pe::event::protocol_error>,
-                    fsm::to<state::pe_src_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_src_send_soft_reset>, fsm::on<pe::event::accept>,
-                    fsm::to<state::pe_src_send_capabilities>>,
-    fsm::transition<fsm::from<state::pe_src_send_soft_reset>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_src_send_soft_reset>, fsm::on<pe::event::protocol_error>,
-                    fsm::to<state::pe_src_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_src_hard_reset>, fsm::on<pe::event::hard_reset_complete>,
-                    fsm::to<state::pe_src_transition_to_default>>,
-    fsm::transition<fsm::from<fsm::any_state>, fsm::on<pe::event::hard_reset_received>,
-                    fsm::to<state::pe_src_transition_to_default>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<pe::event::soft_reset_received>, fsm::to<state::pe_src_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_src_soft_reset>, fsm::on<pe::event::message_sent>, fsm::to<state::pe_src_send_capabilities>>,
+    fsm::transition<fsm::from<state::pe_src_soft_reset>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_send_soft_reset>, fsm::on<pe::event::accept>, fsm::to<state::pe_src_send_capabilities>>,
+    fsm::transition<fsm::from<state::pe_src_send_soft_reset>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_send_soft_reset>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_hard_reset>, fsm::on<pe::event::hard_reset_complete>, fsm::to<state::pe_src_transition_to_default>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<pe::event::hard_reset_received>, fsm::to<state::pe_src_transition_to_default>>,
     // the hard-reset VBUS cycle: off and settled, tSrcRecover, the
     // defaults back and settled - then advertise again, or rest in
     // Startup when the sink is gone
-    fsm::transition<fsm::from<state::pe_src_transition_to_default>,
-                    fsm::on<event::supply_settled>, fsm::to<state::pe_src_recover>>,
-    fsm::transition<fsm::from<state::pe_src_recover>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_src_restore_default>>,
-    fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>,
-                    fsm::to<state::pe_src_send_capabilities>, fsm::guard<still_attached>>,
-    fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>,
-                    fsm::to<state::pe_src_startup>>>;
+    fsm::transition<fsm::from<state::pe_src_transition_to_default>, fsm::on<event::supply_settled>, fsm::to<state::pe_src_recover>>,
+    fsm::transition<fsm::from<state::pe_src_recover>, fsm::on<fsm::timeout>, fsm::to<state::pe_src_restore_default>>,
+    fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>, fsm::guard<still_attached>, fsm::to<state::pe_src_send_capabilities>>,
+    fsm::transition<fsm::from<state::pe_src_restore_default>, fsm::on<event::supply_settled>, fsm::to<state::pe_src_startup>>>;
 // The engine's table, every optional feature included: the machine
 // leaves out the features its policy does not answer for. A named
 // struct, not an alias: the short name replaces the fully spelled
@@ -871,23 +808,28 @@ struct source_table : mtl::rebind_t<source_transitions, fsm::transition_table> {
 // The supply itself is engine-owned; this observer only reports, with
 // onContractLost() fired only when a contract was actually in place
 template<typename DERIVED>
-class SourcePower : public fsm::ObserverGroup<pe::contract_store<SourcePower<DERIVED>>,
-                                              pe::power_effects<SourcePower<DERIVED>>> {
+class SourcePower : public fsm::ObserverGroup<
+                        pe::contract_store<SourcePower<DERIVED>>,
+                        pe::power_effects<SourcePower<DERIVED>>> {
 public:
     // store before the effects: the contract terms must be fresh when
     // the power annotation edge fires on the same entry
     SourcePower()
         : fsm::ObserverGroup<pe::contract_store<SourcePower>, pe::power_effects<SourcePower>>(
-              store_, effects_)
+              store_,
+              effects_
+          )
     {
     }
 
     // checked once the machine is built, when DERIVED is complete
     static constexpr void validateClient()
     {
-        static_assert(concepts::source_power_client<DERIVED>,
-                      "SourcePower: the derived class must provide onContract(millivolt, "
-                      "milliamp) and onContractLost()");
+        static_assert(
+            concepts::source_power_client<DERIVED>,
+            "SourcePower: the derived class must provide onContract(millivolt, "
+            "milliamp) and onContractLost()"
+        );
     }
 
 private:
@@ -916,25 +858,35 @@ private:
     bool contract_active_ = false;
 };
 
-template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER, concepts::source_policy POLICY,
-         concepts::source_supply SUPPLY, typename... OBSERVERs>
-class SourcePolicyEngine
-    : public pe::PolicyEngineBase<SourcePolicyEngine<TCPC, TIMER, POLICY, SUPPLY, OBSERVERs...>,
-                                  power_role::source, TCPC, TIMER, POLICY> {
-    using base =
-        pe::PolicyEngineBase<SourcePolicyEngine, power_role::source, TCPC, TIMER, POLICY>;
+template<
+    concepts::pd_transport TCPC,
+    fsm::concepts::timer TIMER,
+    concepts::source_policy POLICY,
+    concepts::source_supply SUPPLY,
+    typename... OBSERVERs>
+class SourcePolicyEngine : public pe::PolicyEngineBase<
+                               SourcePolicyEngine<TCPC, TIMER, POLICY, SUPPLY, OBSERVERs...>,
+                               power_role::source,
+                               TCPC,
+                               TIMER,
+                               POLICY> {
+    using base = pe::PolicyEngineBase<SourcePolicyEngine, power_role::source, TCPC, TIMER, POLICY>;
     friend base;
 
 public:
     // The observers are injected into the engine's machine after the
     // protocol layer and the supply driver; a SourcePower-derived one
     // supplies the contract notifications
-    SourcePolicyEngine(TCPC& tcpc, TIMER& prl_timer, TIMER& pe_timer,
-                       std::span<std::uint32_t const> capabilities, POLICY& policy,
-                       SUPPLY& supply, OBSERVERs&... observers)
-        : base(tcpc, prl_timer, pe_timer),
-          policy_(policy),
-          supply_(supply),
+    SourcePolicyEngine(
+        TCPC& tcpc,
+        TIMER& prl_timer,
+        TIMER& pe_timer,
+        std::span<std::uint32_t const> capabilities,
+        POLICY& policy,
+        SUPPLY& supply,
+        OBSERVERs&... observers
+    )
+        : base(tcpc, prl_timer, pe_timer), policy_(policy), supply_(supply),
           sm_(this->timed_, this->prl_, action_driver_, policy_, observers...)
     {
         this->source_capabilities_ = capabilities;
@@ -945,7 +897,8 @@ public:
                     engine.sm_.process(pe::event::supply_settled{});
                 }
             },
-            this);
+            this
+        );
     }
 
     // The Type-C source layer reports the attached sink: advertise
@@ -996,8 +949,7 @@ public:
     // seeds the context with it); the negotiated revision and the
     // MessageID lifecycle hold for the connection - a swap is no reset
     // trigger (6.7.1) - and are handed over from the retiring engine
-    void attachedAfterSwap(data_role role, pd_revision revision,
-                           prl::message_id_state const& ids)
+    void attachedAfterSwap(data_role role, pd_revision revision, prl::message_id_state const& ids)
     {
         this->prl_.seedRevision(revision);
         this->prl_.seedMessageIds(ids);
@@ -1029,8 +981,10 @@ private:
                 !engine.sm_.template context<pe::src_negotiation>().explicit_contract) {
                 return;
             }
-            engine.tcpc_.setCc(cc_pull::rp,
-                               tx == pe::sink_tx::ok ? rp_value::p_3a0 : rp_value::p_1a5);
+            engine.tcpc_.setCc(
+                cc_pull::rp,
+                tx == pe::sink_tx::ok ? rp_value::p_3a0 : rp_value::p_1a5
+            );
         }
         void notifyEntry(pe::restore_default_action)
         {
@@ -1077,8 +1031,13 @@ private:
 
     void transmitSourceCaps()
     {
-        this->prl_.transmit(pe::makeSourceCapabilitiesMessage(
-            power_role::source, this->dataRole(), this->source_capabilities_));
+        this->prl_.transmit(
+            pe::makeSourceCapabilitiesMessage(
+                power_role::source,
+                this->dataRole(),
+                this->source_capabilities_
+            )
+        );
     }
 
     // PE_SRC_Negotiate_Capability: the policy's verdict advances the
@@ -1100,9 +1059,16 @@ private:
     SUPPLY& supply_;
     ActionDriver action_driver_{*this};
     // the policy rides in the pack to answer the table's questions
-    fsm::QueuedMachine<pe::source_table, 4, fsm::inline_work, fsm::no_lock,
-                       fsm::timed<fsm::QueuedTimer<TIMER>&>,
-                       ProtocolLayer<TCPC, TIMER>, ActionDriver, POLICY, OBSERVERs...>
+    fsm::QueuedMachine<
+        pe::source_table,
+        4,
+        fsm::inline_work,
+        fsm::no_lock,
+        fsm::timed<fsm::QueuedTimer<TIMER>&>,
+        ProtocolLayer<TCPC, TIMER>,
+        ActionDriver,
+        POLICY,
+        OBSERVERs...>
         sm_;
 };
 

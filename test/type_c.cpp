@@ -25,16 +25,16 @@ namespace {
 struct manual_timer {
     std::chrono::milliseconds duration{};
     fsm::timer_callback callback = nullptr;
-    void* context                = nullptr;
-    bool armed                   = false;
-    int starts                   = 0;
+    void* context = nullptr;
+    bool armed = false;
+    int starts = 0;
 
     void start(std::chrono::milliseconds d, fsm::timer_callback cb, void* ctx)
     {
         duration = d;
         callback = cb;
-        context  = ctx;
-        armed    = true;
+        context = ctx;
+        armed = true;
         ++starts;
     }
     void stop() { armed = false; }
@@ -51,15 +51,15 @@ static_assert(fsm::concepts::timer<manual_timer>);
 // --- user observer test doubles ---------------------------------------------
 // Injected into the machine, watching the attached state's attachedInfo()
 struct mock_tc_client : fsm::observing<mock_tc_client> {
-    int attached                       = 0;
-    int detached                       = 0;
+    int attached = 0;
+    int detached = 0;
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
-    usbc::rp_value advertisement       = usbc::rp_value::usb_default;
+    usbc::rp_value advertisement = usbc::rp_value::usb_default;
 
     void notifyEntry(usbc::tc::attach_info info)
     {
         ++attached;
-        orientation   = info.orientation;
+        orientation = info.orientation;
         advertisement = info.advertisement;
     }
     void notifyExit(usbc::tc::attach_info) { ++detached; }
@@ -72,8 +72,8 @@ struct mock_pd_forwarding_client : mock_tc_client {
 };
 
 struct mock_src_client : fsm::observing<mock_src_client> {
-    int attached                       = 0;
-    int detached                       = 0;
+    int attached = 0;
+    int detached = 0;
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
 
     void notifyEntry(usbc::plug_orientation o)
@@ -93,19 +93,27 @@ using usbc::cc_status;
 static_assert(usbc::tc::singleRp(cc_status{cc_state::snk_power_1a5, cc_state::snk_open}));
 static_assert(!usbc::tc::singleRp(cc_status{cc_state::snk_open, cc_state::snk_open}));
 static_assert(!usbc::tc::singleRp(cc_status{cc_state::snk_default, cc_state::snk_default}));
-static_assert(usbc::tc::orientationOf(cc_status{cc_state::snk_open, cc_state::snk_power_3a0}) ==
-              usbc::plug_orientation::cc2);
-static_assert(usbc::tc::advertisementOf(cc_status{cc_state::snk_open, cc_state::snk_power_3a0}) ==
-              usbc::rp_value::p_3a0);
-static_assert(usbc::tc::advertisementOf(cc_status{cc_state::snk_default, cc_state::snk_open}) ==
-              usbc::rp_value::usb_default);
+static_assert(
+    usbc::tc::orientationOf(cc_status{cc_state::snk_open, cc_state::snk_power_3a0}) ==
+    usbc::plug_orientation::cc2
+);
+static_assert(
+    usbc::tc::advertisementOf(cc_status{cc_state::snk_open, cc_state::snk_power_3a0}) ==
+    usbc::rp_value::p_3a0
+);
+static_assert(
+    usbc::tc::advertisementOf(cc_status{cc_state::snk_default, cc_state::snk_open}) ==
+    usbc::rp_value::usb_default
+);
 
 static_assert(usbc::tc::singleRd(cc_status{cc_state::src_rd, cc_state::src_open}));
 static_assert(usbc::tc::singleRd(cc_status{cc_state::src_ra, cc_state::src_rd}));
 static_assert(!usbc::tc::singleRd(cc_status{cc_state::src_rd, cc_state::src_rd}));
 static_assert(!usbc::tc::singleRd(cc_status{cc_state::src_open, cc_state::src_ra}));
-static_assert(usbc::tc::srcOrientationOf(cc_status{cc_state::src_open, cc_state::src_rd}) ==
-              usbc::plug_orientation::cc2);
+static_assert(
+    usbc::tc::srcOrientationOf(cc_status{cc_state::src_open, cc_state::src_rd}) ==
+    usbc::plug_orientation::cc2
+);
 
 // every watching state consumes its level's vbus event family
 // the positive checks moved to test/compliance.cpp with the other
@@ -113,15 +121,14 @@ static_assert(usbc::tc::srcOrientationOf(cc_status{cc_state::src_open, cc_state:
 
 // a watching state whose table drops a family event is rejected
 namespace inconsistent {
-    struct deaf {
-        static constexpr auto annotations = fsm::annotate(
-            usbc::vbus_level{usbc::vbus_level::safe5v}
-        );
-    };
-    struct poke {};
-    using table = fsm::transition_table<
-        fsm::transition<fsm::from<deaf>, fsm::on<poke>, fsm::to<deaf>>>;
-    static_assert(!usbc::tc::watch_events_consistent_v<table>);
+struct deaf {
+    static constexpr auto annotations = fsm::annotate(
+        usbc::vbus_level{usbc::vbus_level::safe5v}
+    );
+};
+struct poke {};
+using table = fsm::transition_table<fsm::transition<fsm::from<deaf>, fsm::on<poke>, fsm::to<deaf>>>;
+static_assert(!usbc::tc::watch_events_consistent_v<table>);
 } // namespace inconsistent
 
 } // namespace compile_time
@@ -227,12 +234,12 @@ int typeCTests()
         mock_vbus pd_vbus;
         mock_pd_forwarding_client pd_client;
         manual_timer pd_timer;
-        usbc::TypeCSink<mock_tcpc, mock_vbus, manual_timer, mock_pd_forwarding_client> pd_tc{
-            pd_tcpc, pd_vbus, pd_timer, pd_client};
+        usbc::TypeCSink<mock_tcpc, mock_vbus, manual_timer, mock_pd_forwarding_client>
+            pd_tc{pd_tcpc, pd_vbus, pd_timer, pd_client};
         pd_tc.start();
 
-        pd_tcpc.alerts |= usbc::alert_status::message_received |
-                          usbc::alert_status::cc_status_changed;
+        pd_tcpc.alerts |=
+            usbc::alert_status::message_received | usbc::alert_status::cc_status_changed;
         pd_tcpc.callback(pd_tcpc.context);
         check(pd_client.forwarded == usbc::alert_status::message_received);
     }
@@ -282,7 +289,7 @@ int typeCSourceTests()
     ccAlert();
     check(!tcpc.sourcing && vbus.discharging);
     check(client.detached == 1);
-    vbus.setVoltage(0); // discharge complete
+    vbus.setVoltage(0);       // discharge complete
     check(!vbus.discharging); // Unattached.SRC again
 
     // attach with Ra on the other pin: still a single Rd, on CC1

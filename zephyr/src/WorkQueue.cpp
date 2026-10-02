@@ -19,8 +19,13 @@ k_work_q work_queue;
 int startWorkQueue()
 {
     static constexpr k_work_queue_config config{.name = "usb_typec"};
-    k_work_queue_start(&work_queue, work_queue_stack, K_KERNEL_STACK_SIZEOF(work_queue_stack),
-                       CONFIG_USB_TYPEC_STACK_THREAD_PRIORITY, &config);
+    k_work_queue_start(
+        &work_queue,
+        work_queue_stack,
+        K_KERNEL_STACK_SIZEOF(work_queue_stack),
+        CONFIG_USB_TYPEC_STACK_THREAD_PRIORITY,
+        &config
+    );
     return 0;
 }
 

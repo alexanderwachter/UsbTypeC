@@ -16,18 +16,18 @@
 // TCPC driver test double, shared by the interface and protocol layer tests
 struct mock_tcpc {
     usbc::alert_callback callback = nullptr;
-    void* context                 = nullptr;
-    usbc::alert_status alerts     = usbc::alert_status::none;
-    usbc::cc_pull pull            = usbc::cc_pull::open;
-    usbc::rp_value rp             = usbc::rp_value::usb_default;
+    void* context = nullptr;
+    usbc::alert_status alerts = usbc::alert_status::none;
+    usbc::cc_pull pull = usbc::cc_pull::open;
+    usbc::rp_value rp = usbc::rp_value::usb_default;
     usbc::cc_status line_state{usbc::cc_state::src_open, usbc::cc_state::src_open};
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
-    bool sourcing                 = false;
-    bool sinking                  = false;
-    usbc::receive_detect detect   = usbc::receive_detect::none;
+    bool sourcing = false;
+    bool sinking = false;
+    usbc::receive_detect detect = usbc::receive_detect::none;
     usbc::message_header_info header_info{};
     usbc::pd_message last_transmitted{};
-    int transmit_count   = 0;
+    int transmit_count = 0;
     bool accept_transmit = true;
     std::optional<usbc::transmit_signal> last_signal{};
     std::optional<usbc::pd_message> pending_rx{};
@@ -35,18 +35,18 @@ struct mock_tcpc {
     void setAlertHandler(usbc::alert_callback cb, void* ctx)
     {
         callback = cb;
-        context  = ctx;
+        context = ctx;
     }
     std::optional<usbc::alert_status> readAlert()
     {
         auto const pending = alerts;
-        alerts             = usbc::alert_status::none;
+        alerts = usbc::alert_status::none;
         return pending;
     }
     bool setCc(usbc::cc_pull p, usbc::rp_value current)
     {
         pull = p;
-        rp   = current;
+        rp = current;
         return true;
     }
     std::optional<usbc::cc_status> readCcStatus() { return line_state; }
@@ -109,12 +109,12 @@ struct mock_tcpc {
 
 // VBUS driver test double simulating a comparator
 struct mock_vbus {
-    bool enabled                 = false;
+    bool enabled = false;
     usbc::vbus_callback callback = nullptr;
-    void* context                = nullptr;
+    void* context = nullptr;
     std::optional<usbc::vbus_level> monitored{};
     std::int32_t voltage_mv = 0;
-    bool reported_met       = false;
+    bool reported_met = false;
 
     bool enable(bool e)
     {
@@ -124,7 +124,7 @@ struct mock_vbus {
     void setCallback(usbc::vbus_callback cb, void* ctx)
     {
         callback = cb;
-        context  = ctx;
+        context = ctx;
     }
     bool monitor(usbc::vbus_level level)
     {
@@ -169,8 +169,7 @@ struct mock_vbus {
     void setVoltage(std::int32_t mv)
     {
         voltage_mv = mv;
-        if (monitored && *monitored != usbc::vbus_level::unwatched &&
-            met() != reported_met) {
+        if (monitored && *monitored != usbc::vbus_level::unwatched && met() != reported_met) {
             report();
         }
     }

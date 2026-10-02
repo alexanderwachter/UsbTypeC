@@ -28,10 +28,10 @@ enum class pd_revision : std::uint8_t { rev_1_0 = 0, rev_2_0 = 1, rev_3_x = 2 };
 
 // Contiguous zero-based values; used as per-SOP* array index
 enum class sop_type : std::uint8_t {
-    sop                    = 0,
-    sop_prime              = 1,
-    sop_double_prime       = 2,
-    sop_prime_debug        = 3,
+    sop = 0,
+    sop_prime = 1,
+    sop_double_prime = 2,
+    sop_prime_debug = 3,
     sop_double_prime_debug = 4,
 };
 
@@ -52,13 +52,13 @@ struct pd_header {
     static constexpr pd_header decode(std::uint16_t raw)
     {
         return {
-            .message_type     = static_cast<std::uint8_t>(raw & 0x1fu),
-            .port_data_role   = static_cast<data_role>((raw >> 5u) & 0x1u),
-            .revision         = static_cast<pd_revision>((raw >> 6u) & 0x3u),
-            .port_power_role  = static_cast<power_role>((raw >> 8u) & 0x1u),
-            .message_id       = static_cast<std::uint8_t>((raw >> 9u) & 0x7u),
+            .message_type = static_cast<std::uint8_t>(raw & 0x1fu),
+            .port_data_role = static_cast<data_role>((raw >> 5u) & 0x1u),
+            .revision = static_cast<pd_revision>((raw >> 6u) & 0x3u),
+            .port_power_role = static_cast<power_role>((raw >> 8u) & 0x1u),
+            .message_id = static_cast<std::uint8_t>((raw >> 9u) & 0x7u),
             .num_data_objects = static_cast<std::uint8_t>((raw >> 12u) & 0x7u),
-            .extended         = ((raw >> 15u) & 0x1u) != 0u,
+            .extended = ((raw >> 15u) & 0x1u) != 0u,
         };
     }
 
@@ -67,9 +67,9 @@ struct pd_header {
         return static_cast<std::uint16_t>(
             (message_type & 0x1fu) | (static_cast<std::uint16_t>(port_data_role) << 5u) |
             (static_cast<std::uint16_t>(revision) << 6u) |
-            (static_cast<std::uint16_t>(port_power_role) << 8u) |
-            ((message_id & 0x7u) << 9u) | ((num_data_objects & 0x7u) << 12u) |
-            (static_cast<std::uint16_t>(extended) << 15u));
+            (static_cast<std::uint16_t>(port_power_role) << 8u) | ((message_id & 0x7u) << 9u) |
+            ((num_data_objects & 0x7u) << 12u) | (static_cast<std::uint16_t>(extended) << 15u)
+        );
     }
 
     constexpr bool operator==(pd_header const&) const = default;
@@ -91,7 +91,7 @@ struct pd_message {
 // The payload's 32-bit data objects, little-endian on the wire
 constexpr void appendDataObject(pd_message& message, std::uint32_t object)
 {
-    auto const offset           = message.payload_size;
+    auto const offset = message.payload_size;
     message.payload[offset + 0] = static_cast<std::uint8_t>(object);
     message.payload[offset + 1] = static_cast<std::uint8_t>(object >> 8u);
     message.payload[offset + 2] = static_cast<std::uint8_t>(object >> 16u);

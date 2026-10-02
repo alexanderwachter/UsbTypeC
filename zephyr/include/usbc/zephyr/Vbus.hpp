@@ -27,9 +27,11 @@ namespace usbc::zephyr {
 
 class Vbus {
 public:
-    explicit Vbus(device const* dev,
-                  std::chrono::milliseconds poll_interval = std::chrono::milliseconds{5});
-    Vbus(Vbus const&)            = delete;
+    explicit Vbus(
+        device const* dev,
+        std::chrono::milliseconds poll_interval = std::chrono::milliseconds{5}
+    );
+    Vbus(Vbus const&) = delete;
     Vbus& operator=(Vbus const&) = delete;
 
     bool enable(bool on);
@@ -45,10 +47,10 @@ private:
     k_work_delayable work_{};
     std::chrono::milliseconds poll_interval_;
     vbus_callback callback_ = nullptr;
-    void* context_          = nullptr;
-    tc_vbus_level level_    = TC_VBUS_PRESENT;
-    bool met_               = false;
-    bool report_pending_    = false;
+    void* context_ = nullptr;
+    tc_vbus_level level_ = TC_VBUS_PRESENT;
+    bool met_ = false;
+    bool report_pending_ = false;
 };
 
 static_assert(concepts::vbus<Vbus>);

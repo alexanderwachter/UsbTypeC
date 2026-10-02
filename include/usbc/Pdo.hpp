@@ -25,28 +25,28 @@ namespace usbc {
 // The numeric values of these two enums are the header message type
 // encodings (num_data_objects == 0: control, > 0: data)
 enum class control_message_type : std::uint8_t {
-    good_crc      = 0x01,
-    goto_min      = 0x02,
-    accept        = 0x03,
-    reject        = 0x04,
-    ping          = 0x05,
-    ps_rdy        = 0x06,
+    good_crc = 0x01,
+    goto_min = 0x02,
+    accept = 0x03,
+    reject = 0x04,
+    ping = 0x05,
+    ps_rdy = 0x06,
     get_source_cap = 0x07,
-    get_sink_cap  = 0x08,
-    dr_swap       = 0x09,
-    pr_swap       = 0x0a,
-    vconn_swap    = 0x0b,
-    wait          = 0x0c,
-    soft_reset    = 0x0d,
+    get_sink_cap = 0x08,
+    dr_swap = 0x09,
+    pr_swap = 0x0a,
+    vconn_swap = 0x0b,
+    wait = 0x0c,
+    soft_reset = 0x0d,
     not_supported = 0x10,
 };
 
 enum class data_message_type : std::uint8_t {
     source_capabilities = 0x01,
-    request             = 0x02,
-    bist                = 0x03,
-    sink_capabilities   = 0x04,
-    vendor_defined      = 0x0f,
+    request = 0x02,
+    bist = 0x03,
+    sink_capabilities = 0x04,
+    vendor_defined = 0x0f,
 };
 
 // BIST data object: the requested test mode in bits 31..28
@@ -54,7 +54,7 @@ namespace bist {
 
 enum class mode : std::uint8_t {
     carrier_mode_2 = 5, // continuous BMC carrier for tBISTContMode
-    test_data      = 8, // sink test frames until a hard reset/detach
+    test_data = 8,      // sink test frames until a hard reset/detach
 };
 
 constexpr mode modeOf(std::uint32_t bdo)
@@ -67,10 +67,10 @@ constexpr mode modeOf(std::uint32_t bdo)
 namespace pdo {
 
 enum class kind : std::uint8_t {
-    fixed_supply       = 0b00, // bits 31..30
-    battery            = 0b01,
-    variable_supply    = 0b10,
-    augmented          = 0b11,
+    fixed_supply = 0b00, // bits 31..30
+    battery = 0b01,
+    variable_supply = 0b10,
+    augmented = 0b11,
 };
 
 constexpr kind kindOf(std::uint32_t pdo)
@@ -106,8 +106,12 @@ constexpr std::uint32_t makeFixedSource(millivolt voltage, milliamp maximum_curr
 
 // Fixed supply RDO. no_usb_suspend is set: a pure power sink does not
 // participate in USB suspend power rules
-constexpr std::uint32_t makeFixedRequest(std::uint8_t object_position, milliamp operating_current,
-                                         milliamp maximum_current, bool capability_mismatch)
+constexpr std::uint32_t makeFixedRequest(
+    std::uint8_t object_position,
+    milliamp operating_current,
+    milliamp maximum_current,
+    bool capability_mismatch
+)
 {
     constexpr std::uint32_t no_usb_suspend = 1u << 24u;
     return (static_cast<std::uint32_t>(object_position & 0x7u) << 28u) |
@@ -142,26 +146,27 @@ constexpr bool requestMismatch(std::uint32_t rdo)
 // The 16-bit extended message header, first two payload bytes of an
 // extended message
 struct extended_header {
-    bool chunked               = false;
-    std::uint8_t chunk_number  = 0;
-    bool request_chunk         = false;
-    std::uint16_t data_size    = 0; // bytes of the full extended message
+    bool chunked = false;
+    std::uint8_t chunk_number = 0;
+    bool request_chunk = false;
+    std::uint16_t data_size = 0; // bytes of the full extended message
 
     static constexpr extended_header decode(std::uint16_t raw)
     {
         return {
-            .chunked       = ((raw >> 15u) & 0x1u) != 0u,
-            .chunk_number  = static_cast<std::uint8_t>((raw >> 11u) & 0xfu),
+            .chunked = ((raw >> 15u) & 0x1u) != 0u,
+            .chunk_number = static_cast<std::uint8_t>((raw >> 11u) & 0xfu),
             .request_chunk = ((raw >> 10u) & 0x1u) != 0u,
-            .data_size     = static_cast<std::uint16_t>(raw & 0x1ffu),
+            .data_size = static_cast<std::uint16_t>(raw & 0x1ffu),
         };
     }
 
     constexpr std::uint16_t encode() const
     {
-        return static_cast<std::uint16_t>((chunked ? 1u << 15u : 0u) |
-                                          ((chunk_number & 0xfu) << 11u) |
-                                          (request_chunk ? 1u << 10u : 0u) | (data_size & 0x1ffu));
+        return static_cast<std::uint16_t>(
+            (chunked ? 1u << 15u : 0u) | ((chunk_number & 0xfu) << 11u) |
+            (request_chunk ? 1u << 10u : 0u) | (data_size & 0x1ffu)
+        );
     }
 
     constexpr bool operator==(extended_header const&) const = default;

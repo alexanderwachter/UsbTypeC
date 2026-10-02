@@ -184,7 +184,7 @@ struct attached_snk : sink_state {
         : sink_state(line_ref), attached(attached_ref)
     {
         if (attached.resolved) {
-            origin_        = attach_origin::resumed_after_hard_reset;
+            origin_ = attach_origin::resumed_after_hard_reset;
             advertisement_ = advertisementOf(line.cc);
         } else {
             attachFresh();
@@ -228,7 +228,8 @@ struct attached_snk : sink_state {
         return fsm::annotate(
             attach_info{.orientation = attached.orientation, .advertisement = advertisement_},
             polarity{.orientation = attached.orientation},
-            attached_partner{.origin = origin_, .data = attached.data, .cc = line.cc});
+            attached_partner{.origin = origin_, .data = attached.data, .cc = line.cc}
+        );
     }
 
     using contexts = mtl::typelist<line_status, attachment>;
@@ -239,13 +240,13 @@ private:
     // sink's default data role
     void attachFresh()
     {
-        attached = {.orientation = orientationOf(line.cc), .data = data_role::ufp,
-                    .resolved    = true};
+        attached =
+            {.orientation = orientationOf(line.cc), .data = data_role::ufp, .resolved = true};
         advertisement_ = advertisementOf(line.cc);
     }
 
     rp_value advertisement_ = rp_value::usb_default;
-    attach_origin origin_   = attach_origin::fresh_attach;
+    attach_origin origin_ = attach_origin::fresh_attach;
 };
 
 // The hard-reset window, first phase: the source legitimately drops
@@ -297,43 +298,33 @@ struct vbus_present_in_context {
 // for a source-preferring DRP)
 template<typename UNATTACHED, typename ATTACH>
 using sink_attach_flow = mtl::typelist<
-    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>,
-                    fsm::to<state::attach_wait_snk>>,
+    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
     fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_removed>>,
     // a CC change during the debounce restarts it
-    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<event::cc_changed>,
-                    fsm::to<state::attach_wait_snk>>,
+    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
     fsm::internal_transition<fsm::from<state::attach_wait_snk>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<state::attach_wait_snk>, fsm::on<event::vbus_removed>>,
     // debounce complete: attach, keep waiting for VBUS, or detach
-    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<ATTACH>, fsm::guard<stable_rp, vbus_present_in_context>>,
-    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<state::attach_wait_snk_debounced>, fsm::guard<stable_rp>>,
-    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<UNATTACHED>>,
-    fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_present>,
-                    fsm::to<ATTACH>>,
-    fsm::internal_transition<fsm::from<state::attach_wait_snk_debounced>,
-                             fsm::on<event::vbus_removed>>,
-    fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::cc_changed>,
-                    fsm::to<state::attach_wait_snk>>,
+    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::guard<stable_rp, vbus_present_in_context>, fsm::to<ATTACH>>,
+    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::guard<stable_rp>, fsm::to<state::attach_wait_snk_debounced>>,
+    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>,
+    fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_present>, fsm::to<ATTACH>>,
+    fsm::internal_transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_removed>>,
+    fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
     // sink detach detection is VBUS-based
-    fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::vbus_removed>,
-                    fsm::to<UNATTACHED>>,
+    fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::vbus_removed>, fsm::to<UNATTACHED>>,
     fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::cc_changed>>,
     fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::vbus_present>>>;
 
 // The spec timer range of every timed state of the sink flow; the DRP
 // concatenates this map with its own, like the flows themselves
-using sink_timer_ranges = mtl::typelist<
-    fsm::timed_by<state::attach_wait_snk, spec::t_cc_debounce>>;
+using sink_timer_ranges = mtl::typelist<fsm::timed_by<state::attach_wait_snk, spec::t_cc_debounce>>;
 
 // Separate entry: the DRP shares the state, standalone source tables
 // do not - the bidirectional map check rejects entries for absent states
-using error_recovery_timer_range = mtl::typelist<
-    fsm::timed_by<state::error_recovery, spec::t_error_recovery>>;
+using error_recovery_timer_range =
+    mtl::typelist<fsm::timed_by<state::error_recovery, spec::t_error_recovery>>;
 
 using hard_reset_timer_ranges = mtl::typelist<
     fsm::timed_by<state::hard_reset_snk, spec::t_hard_reset_window>,
@@ -344,44 +335,33 @@ using hard_reset_timer_ranges = mtl::typelist<
 // falls back to the table's unattached anchor
 template<typename UNATTACHED>
 using hard_reset_flow = mtl::typelist<
-    fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::hard_reset>,
-                    fsm::to<state::hard_reset_snk>>,
-    fsm::transition<fsm::from<state::hard_reset_snk>, fsm::on<event::vbus_removed>,
-                    fsm::to<state::hard_reset_recover_snk>>,
+    fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::hard_reset>, fsm::to<state::hard_reset_snk>>,
+    fsm::transition<fsm::from<state::hard_reset_snk>, fsm::on<event::vbus_removed>, fsm::to<state::hard_reset_recover_snk>>,
     fsm::internal_transition<fsm::from<state::hard_reset_snk>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<state::hard_reset_snk>, fsm::on<event::cc_changed>>,
-    fsm::transition<fsm::from<state::hard_reset_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<UNATTACHED>>,
-    fsm::transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<event::vbus_present>,
-                    fsm::to<state::attached_snk>>,
-    fsm::internal_transition<fsm::from<state::hard_reset_recover_snk>,
-                             fsm::on<event::vbus_removed>>,
-    fsm::internal_transition<fsm::from<state::hard_reset_recover_snk>,
-                             fsm::on<event::cc_changed>>,
-    fsm::transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<UNATTACHED>>>;
+    fsm::transition<fsm::from<state::hard_reset_snk>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>,
+    fsm::transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<event::vbus_present>, fsm::to<state::attached_snk>>,
+    fsm::internal_transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<event::vbus_removed>>,
+    fsm::internal_transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<event::cc_changed>>,
+    fsm::transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>>;
 
 // ErrorRecovery is anchored per table: open terminations, then back
 // to that table's unattached resting state
 template<typename UNATTACHED>
 using error_recovery_flow = mtl::typelist<
-    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>,
-                    fsm::to<state::error_recovery>>,
-    fsm::transition<fsm::from<state::error_recovery>, fsm::on<fsm::timeout>,
-                    fsm::to<UNATTACHED>>>;
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>, fsm::to<state::error_recovery>>,
+    fsm::transition<fsm::from<state::error_recovery>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>>;
 
 // A named struct, not an alias: the short name replaces the fully
 // spelled table type in every mangled symbol
-struct sink_table
-    : mtl::rebind_t<
-          mtl::linearize_t<mtl::typelist<
-              fsm::initial<state::disabled_snk>,
-              fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
-                              fsm::to<state::unattached_snk>>,
-              sink_attach_flow<state::unattached_snk, state::attached_snk>,
-              error_recovery_flow<state::unattached_snk>,
-              hard_reset_flow<state::unattached_snk>>>,
-          fsm::transition_table> {};
+struct sink_table : mtl::rebind_t<
+                        mtl::linearize_t<mtl::typelist<
+                            fsm::initial<state::disabled_snk>,
+                            fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>, fsm::to<state::unattached_snk>>,
+                            sink_attach_flow<state::unattached_snk, state::attached_snk>,
+                            error_recovery_flow<state::unattached_snk>,
+                            hard_reset_flow<state::unattached_snk>>>,
+                        fsm::transition_table> {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's hw annotation (suppressed while unchanged) and
@@ -396,10 +376,14 @@ struct hw_driver : fsm::observing<hw_driver<TCPC>> {
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(fsm::all_states_carry_v<TABLE, cc_termination>,
-                      "hw_driver: every state must annotate its CC termination");
-        static_assert(fsm::all_states_carry_v<TABLE, vbus_power>,
-                      "hw_driver: every state must annotate its VBUS power paths");
+        static_assert(
+            fsm::all_states_carry_v<TABLE, cc_termination>,
+            "hw_driver: every state must annotate its CC termination"
+        );
+        static_assert(
+            fsm::all_states_carry_v<TABLE, vbus_power>,
+            "hw_driver: every state must annotate its VBUS power paths"
+        );
     }
 
     void notifyEntry(cc_termination termination)
@@ -414,10 +398,12 @@ struct hw_driver : fsm::observing<hw_driver<TCPC>> {
 
 } // namespace tc
 
-template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         typename... OBSERVERs>
-class TypeCSink : public tc::port_frontend<TypeCSink<TCPC, VBUS, TIMER, OBSERVERs...>, TCPC,
-                                           VBUS> {
+template<
+    concepts::tcpc TCPC,
+    concepts::vbus VBUS,
+    fsm::concepts::timer TIMER,
+    typename... OBSERVERs>
+class TypeCSink : public tc::port_frontend<TypeCSink<TCPC, VBUS, TIMER, OBSERVERs...>, TCPC, VBUS> {
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). The observers are injected into the
@@ -453,9 +439,15 @@ private:
     fsm::QueuedTimer<TIMER> timer_;
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     std::tuple<OBSERVERs&...> observers_;
-    fsm::QueuedMachine<tc::sink_table, 4, fsm::inline_work, fsm::no_lock,
-                       fsm::timed<fsm::QueuedTimer<TIMER>&>, tc::hw_driver<TCPC>,
-                       tc::vbus_watcher<VBUS>, OBSERVERs...>
+    fsm::QueuedMachine<
+        tc::sink_table,
+        4,
+        fsm::inline_work,
+        fsm::no_lock,
+        fsm::timed<fsm::QueuedTimer<TIMER>&>,
+        tc::hw_driver<TCPC>,
+        tc::vbus_watcher<VBUS>,
+        OBSERVERs...>
         sm_;
 };
 

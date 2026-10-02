@@ -43,39 +43,66 @@ struct pd_source_timers {
     TIMER pe;
 };
 
-template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         concepts::source_policy POLICY, concepts::source_supply SUPPLY, typename POWER,
-         typename... OBSERVERs>
+template<
+    concepts::tcpc TCPC,
+    concepts::vbus VBUS,
+    fsm::concepts::timer TIMER,
+    concepts::source_policy POLICY,
+    concepts::source_supply SUPPLY,
+    typename POWER,
+    typename... OBSERVERs>
 class PdSource {
     // The single-role facade wires none of the tag-enabled features:
     // an enabling observer here would be silently ignored
-    static_assert(((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
-                                            pe::pr_swap_feature> &&
-                    !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
-                                            pe::dr_swap_feature> &&
-                    !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
-                                            pe::vconn_feature>) &&
-                   ...),
-                  "PdSource does not wire the optional features (swaps, VCONN); "
-                  "a port offering them is a PdDrp");
+    static_assert(
+        ((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::pr_swap_feature> &&
+          !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::dr_swap_feature> &&
+          !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::vconn_feature>) &&
+         ...),
+        "PdSource does not wire the optional features (swaps, VCONN); "
+        "a port offering them is a PdDrp"
+    );
 
 public:
-    PdSource(TCPC& tcpc, VBUS& vbus, pd_source_timers<TIMER>& timers,
-             std::span<std::uint32_t const> capabilities, POLICY& policy, SUPPLY& supply,
-             POWER& power, rp_value advertisement, OBSERVERs&... observers)
+    PdSource(
+        TCPC& tcpc,
+        VBUS& vbus,
+        pd_source_timers<TIMER>& timers,
+        std::span<std::uint32_t const> capabilities,
+        POLICY& policy,
+        SUPPLY& supply,
+        POWER& power,
+        rp_value advertisement,
+        OBSERVERs&... observers
+    )
         : watch_{*this},
           engine_(tcpc, timers.prl, timers.pe, capabilities, policy, supply, power, watch_),
-          router_{*this},
-          source_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
+          router_{*this}, source_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
     // advertisement
-    PdSource(TCPC& tcpc, VBUS& vbus, pd_source_timers<TIMER>& timers,
-             std::span<std::uint32_t const> capabilities, POLICY& policy, SUPPLY& supply,
-             POWER& power, OBSERVERs&... observers)
-        : PdSource(tcpc, vbus, timers, capabilities, policy, supply, power,
-                   rp_value::usb_default, observers...)
+    PdSource(
+        TCPC& tcpc,
+        VBUS& vbus,
+        pd_source_timers<TIMER>& timers,
+        std::span<std::uint32_t const> capabilities,
+        POLICY& policy,
+        SUPPLY& supply,
+        POWER& power,
+        OBSERVERs&... observers
+    )
+        : PdSource(
+              tcpc,
+              vbus,
+              timers,
+              capabilities,
+              policy,
+              supply,
+              power,
+              rp_value::usb_default,
+              observers...
+          )
     {
     }
 

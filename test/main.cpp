@@ -21,12 +21,13 @@ int pdSourceFacadeTests();
 int policyEngineTests();
 int policyEngineSourceTests();
 
-int main(int argc, const char* argv[]) {
+int main(int argc, const char* argv[])
+{
     int const failures = tcpcTests() + protocolLayerTests() + typeCTests() + typeCSourceTests() +
                          typeCDrpTests() + typeCDrpTrySrcTests() + typeCDrpTrySnkTests() +
                          typeCDrpSwapTests() + typeCDrpRoleLockTests() + pdDrpTests() +
-                         pdSinkFacadeTests() + pdSourceFacadeTests() +
-                         policyEngineTests() + policyEngineSourceTests();
+                         pdSinkFacadeTests() + pdSourceFacadeTests() + policyEngineTests() +
+                         policyEngineSourceTests();
     if (failures != 0) {
         std::print("{} check(s) FAILED\n", failures);
         return 1;

@@ -20,8 +20,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <usbc/TypeCDrp.hpp>
 #include <mtl/zephyr/TraceLogger.hpp>
+#include <usbc/TypeCDrp.hpp>
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
@@ -40,14 +40,15 @@ namespace {
 struct AttachLogger : fsm::observing<AttachLogger> {
     void notifyEntry(usbc::tc::attach_info info)
     {
-        LOG_INF("attached as sink: CC%d",
-                info.orientation == usbc::plug_orientation::cc1 ? 1 : 2);
+        LOG_INF("attached as sink: CC%d", info.orientation == usbc::plug_orientation::cc1 ? 1 : 2);
     }
     void notifyExit(usbc::tc::attach_info) { LOG_INF("source detached"); }
     void notifyEntry(usbc::plug_orientation orientation)
     {
-        LOG_INF("attached as source: CC%d, VBUS on",
-                orientation == usbc::plug_orientation::cc1 ? 1 : 2);
+        LOG_INF(
+            "attached as source: CC%d, VBUS on",
+            orientation == usbc::plug_orientation::cc1 ? 1 : 2
+        );
     }
     void notifyExit(usbc::plug_orientation) { LOG_INF("sink detached, VBUS off"); }
 };
@@ -55,9 +56,14 @@ struct AttachLogger : fsm::observing<AttachLogger> {
 // The TraceLogger traces every transition (module mtl_fsm, info
 // level, behind CONFIG_MTL_FSM_TRACE) - a toggling DRP logs several
 // per tDRP
-using Drp = usbc::TypeCDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                           usbc::default_drp_timing, usbc::drp_preference::none, AttachLogger,
-                           mtl::zephyr::TraceLogger>;
+using Drp = usbc::TypeCDrp<
+    usbc::zephyr::Tcpc,
+    usbc::zephyr::Vbus,
+    usbc::zephyr::Timer,
+    usbc::default_drp_timing,
+    usbc::drp_preference::none,
+    AttachLogger,
+    mtl::zephyr::TraceLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};

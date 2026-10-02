@@ -46,10 +46,13 @@ inline constexpr unsigned dc_src_drp_min = 30; // dcSRC.DRP, percent of tDRP at 
 inline constexpr unsigned dc_src_drp_max = 70;
 // one role's slice of the toggle: dcSRC.DRP min * tDRP min to max * max
 inline constexpr timeout_range t_drp_pw{milliseconds{15}, milliseconds{70}};
-inline constexpr timeout_range t_drp_try{milliseconds{75}, milliseconds{150}};        // tDRPTry
-inline constexpr timeout_range t_drp_try_wait{milliseconds{400}, milliseconds{800}};  // tDRPTryWait
-inline constexpr timeout_range t_try_cc_debounce{milliseconds{10}, milliseconds{20}}; // tTryCCDebounce
-inline constexpr timeout_range t_try_timeout{milliseconds{550}, milliseconds{1100}};  // tTryTimeout
+inline constexpr timeout_range t_drp_try{milliseconds{75}, milliseconds{150}};       // tDRPTry
+inline constexpr timeout_range t_drp_try_wait{milliseconds{400}, milliseconds{800}}; // tDRPTryWait
+inline constexpr timeout_range t_try_cc_debounce{
+    milliseconds{10},
+    milliseconds{20}
+}; // tTryCCDebounce
+inline constexpr timeout_range t_try_timeout{milliseconds{550}, milliseconds{1100}}; // tTryTimeout
 
 // VBUS thresholds
 inline constexpr millivolt v_safe_0v_max = 800;  // vSafe0V
@@ -60,8 +63,8 @@ inline constexpr millivolt v_sink_disconnect_max = 3670; // vSinkDisconnect
 
 // Rp current advertisements; usb_default is the USB 2.0 default load
 inline constexpr milliamp i_usb_default = 500;
-inline constexpr milliamp i_rp_1a5     = 1500;
-inline constexpr milliamp i_rp_3a0     = 3000;
+inline constexpr milliamp i_rp_1a5 = 1500;
+inline constexpr milliamp i_rp_3a0 = 3000;
 
 // --- USB Power Delivery Specification ----------------------------------------
 
@@ -120,10 +123,10 @@ inline constexpr timeout_range t_error_recovery{milliseconds{25}, milliseconds{5
 inline constexpr timeout_range t_hard_reset_window{t_no_response.max, milliseconds{10000}};
 
 // Counters
-inline constexpr std::uint8_t n_retry_count      = 2;  // nRetryCount, PD rev 3.x
-inline constexpr std::uint8_t n_retry_count_rev2 = 3;  // nRetryCount, PD rev 2.0
-inline constexpr std::uint8_t n_caps_count       = 50; // nCapsCount
-inline constexpr std::uint8_t n_hard_reset_count = 2;  // nHardResetCount
+inline constexpr std::uint8_t n_retry_count = 2;      // nRetryCount, PD rev 3.x
+inline constexpr std::uint8_t n_retry_count_rev2 = 3; // nRetryCount, PD rev 2.0
+inline constexpr std::uint8_t n_caps_count = 50;      // nCapsCount
+inline constexpr std::uint8_t n_hard_reset_count = 2; // nHardResetCount
 
 // Sink standby draw during a transition, at any voltage
 inline constexpr milliamp i_snk_stdby = 500; // iSnkStdby

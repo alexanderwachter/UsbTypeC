@@ -25,16 +25,16 @@ namespace {
 struct manual_timer {
     std::chrono::milliseconds duration{};
     fsm::timer_callback callback = nullptr;
-    void* context                = nullptr;
-    bool armed                   = false;
-    int starts                   = 0;
+    void* context = nullptr;
+    bool armed = false;
+    int starts = 0;
 
     void start(std::chrono::milliseconds d, fsm::timer_callback cb, void* ctx)
     {
         duration = d;
         callback = cb;
-        context  = ctx;
-        armed    = true;
+        context = ctx;
+        armed = true;
         ++starts;
     }
     void stop() { armed = false; }
@@ -52,16 +52,16 @@ static_assert(fsm::concepts::timer<manual_timer>);
 // Watches both attached states' attachedInfo(); the info type encodes
 // the attached role
 struct mock_drp_client : fsm::observing<mock_drp_client> {
-    int attached_snk                   = 0;
-    int attached_src                   = 0;
-    int detached                       = 0;
+    int attached_snk = 0;
+    int attached_src = 0;
+    int detached = 0;
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
-    usbc::rp_value advertisement       = usbc::rp_value::usb_default;
+    usbc::rp_value advertisement = usbc::rp_value::usb_default;
 
     void notifyEntry(usbc::tc::attach_info info)
     {
         ++attached_snk;
-        orientation   = info.orientation;
+        orientation = info.orientation;
         advertisement = info.advertisement;
     }
     void notifyExit(usbc::tc::attach_info) { ++detached; }
@@ -79,15 +79,18 @@ namespace compile_time {
 constexpr auto& timing = usbc::default_drp_timing;
 
 // the toggle slices split tDRP by dcSRC.DRP
-static_assert(usbc::tc::drp::t_src_slice<timing> ==
-              timing.t_drp * timing.dc_src / 100);
-static_assert(usbc::tc::drp::unattached_src<timing>::timeout +
-                  usbc::tc::drp::unattached_snk<timing>::timeout ==
-              timing.t_drp);
+static_assert(usbc::tc::drp::t_src_slice<timing> == timing.t_drp * timing.dc_src / 100);
+static_assert(
+    usbc::tc::drp::unattached_src<timing>::timeout +
+        usbc::tc::drp::unattached_snk<timing>::timeout ==
+    timing.t_drp
+);
 
 // a custom timing overrides the defaults with designated initializers
-inline constexpr usbc::drp_timing sink_heavy_timing{.t_drp = std::chrono::milliseconds{100},
-                                                    .dc_src = 30};
+inline constexpr usbc::drp_timing sink_heavy_timing{
+    .t_drp = std::chrono::milliseconds{100},
+    .dc_src = 30
+};
 static_assert(usbc::tc::drp::unattached_src<sink_heavy_timing>::timeout == 30ms);
 static_assert(usbc::tc::drp::unattached_snk<sink_heavy_timing>::timeout == 70ms);
 static_assert(usbc::tc::drp::timingWithinSpec<sink_heavy_timing>());
@@ -122,7 +125,7 @@ struct fixture {
 // A swap-policy observer: consulted with the role the port would swap
 // to, arbitrating both swap kinds; it also hears the data role flips
 struct mock_swap_policy {
-    bool allow    = true;
+    bool allow = true;
     int consulted = 0;
     usbc::power_role asked{};
     usbc::data_role asked_data{};
@@ -152,9 +155,11 @@ struct mock_role_lock {
     bool check(usbc::tc::drp::sourcing_allowed) const { return sourcing; }
 };
 static_assert(
-    fsm::concepts::answers_stateless_guard<mock_role_lock, usbc::tc::drp::sourcing_allowed>);
+    fsm::concepts::answers_stateless_guard<mock_role_lock, usbc::tc::drp::sourcing_allowed>
+);
 static_assert(
-    !fsm::concepts::answers_stateless_guard<mock_swap_policy, usbc::tc::drp::sourcing_allowed>);
+    !fsm::concepts::answers_stateless_guard<mock_swap_policy, usbc::tc::drp::sourcing_allowed>
+);
 static_assert(usbc::tc::drp::sourcing_allowed::check()); // the default without a lock
 
 } // namespace
@@ -162,11 +167,16 @@ static_assert(usbc::tc::drp::sourcing_allowed::check()); // the default without 
 int typeCDrpTests()
 {
     constexpr auto& timing = usbc::default_drp_timing;
-    using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
-                                  usbc::drp_preference::none, mock_drp_client>;
+    using drp = usbc::TypeCDrp<
+        mock_tcpc,
+        mock_vbus,
+        manual_timer,
+        timing,
+        usbc::drp_preference::none,
+        mock_drp_client>;
 
     fixture f;
-    drp tc{f.tcpc, f.vbus, f.timer, f.try_timer,usbc::rp_value::p_1a5, f.client};
+    drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, usbc::rp_value::p_1a5, f.client};
 
     // construction rests in Disabled: nothing registered, nothing driven
     check(f.tcpc.callback == nullptr && f.vbus.monitored == usbc::vbus_level::unwatched);
@@ -239,8 +249,13 @@ int typeCDrpTests()
 int typeCDrpTrySrcTests()
 {
     constexpr auto& timing = usbc::default_drp_timing;
-    using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
-                                  usbc::drp_preference::source, mock_drp_client>;
+    using drp = usbc::TypeCDrp<
+        mock_tcpc,
+        mock_vbus,
+        manual_timer,
+        timing,
+        usbc::drp_preference::source,
+        mock_drp_client>;
 
     // a source-preferring port answers a sink attach with Try.SRC and
     // resolves to Attached.SRC when the partner presents Rd
@@ -354,8 +369,8 @@ int typeCDrpTrySrcTests()
         f.timer.expire(); // -> Try.SRC
         f.vbus.setVoltage(0);
         f.tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
-        f.ccAlert();          // -> the Rd debounce
-        f.timer.expire();     // tDRPTry: recorded, the debounce keeps running
+        f.ccAlert();      // -> the Rd debounce
+        f.timer.expire(); // tDRPTry: recorded, the debounce keeps running
         check(f.tcpc.pull == usbc::cc_pull::rp && f.try_timer.armed);
         f.try_timer.expire(); // Rd stable for tTryCCDebounce: attach
         check(f.tcpc.sourcing && f.client.attached_src == 1);
@@ -389,8 +404,13 @@ int typeCDrpTrySrcTests()
 int typeCDrpTrySnkTests()
 {
     constexpr auto& timing = usbc::default_drp_timing;
-    using drp    = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
-                                  usbc::drp_preference::sink, mock_drp_client>;
+    using drp = usbc::TypeCDrp<
+        mock_tcpc,
+        mock_vbus,
+        manual_timer,
+        timing,
+        usbc::drp_preference::sink,
+        mock_drp_client>;
 
     // a sink-preferring port answers a sink's attach with Try.SNK and
     // resolves to Attached.SNK when the partner turns source
@@ -544,7 +564,7 @@ int typeCDrpTrySnkTests()
         f.timer.expire(); // tTryTimeout is up mid-debounce
         check(f.tcpc.pull == usbc::cc_pull::rd && f.try_timer.armed); // still debouncing
         f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
-        f.ccAlert(); // Rp lost after the wall -> TryWait.SRC
+        f.ccAlert();                             // Rp lost after the wall -> TryWait.SRC
         check(f.timer.starts == armed_once + 1); // the tDRPTryWait wall
         check(f.tcpc.pull == usbc::cc_pull::rp);
         check(f.client.attached_snk == 0);
@@ -559,8 +579,13 @@ int typeCDrpSwapTests()
 
     // no swap-policy observer injected: swaps are refused
     {
-        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
-                                   usbc::drp_preference::none, mock_drp_client>;
+        using drp = usbc::TypeCDrp<
+            mock_tcpc,
+            mock_vbus,
+            manual_timer,
+            timing,
+            usbc::drp_preference::none,
+            mock_drp_client>;
         fixture f;
         drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client};
         tc.start();
@@ -577,9 +602,14 @@ int typeCDrpSwapTests()
 
     // a policy observer arbitrates: swap both ways, veto respected
     {
-        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
-                                   usbc::drp_preference::none, mock_drp_client,
-                                   mock_swap_policy>;
+        using drp = usbc::TypeCDrp<
+            mock_tcpc,
+            mock_vbus,
+            manual_timer,
+            timing,
+            usbc::drp_preference::none,
+            mock_drp_client,
+            mock_swap_policy>;
         fixture f;
         mock_swap_policy policy;
         drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client, policy};
@@ -620,8 +650,8 @@ int typeCDrpSwapTests()
         check(tc.beginSwapToSource());
         check(!f.tcpc.sinking && !f.tcpc.sourcing && f.tcpc.pull == usbc::cc_pull::rd);
         check(f.timer.armed && f.timer.duration == usbc::tc::drp::t_ps_source_off);
-        f.vbus.setVoltage(0); // the old source turns off
-        check(f.client.detached == 1); // the attached pair left standby once
+        f.vbus.setVoltage(0);              // the old source turns off
+        check(f.client.detached == 1);     // the attached pair left standby once
         check(f.client.attached_snk == 1); // ... but no spurious re-attach cycle
 
         // PS_RDY: the pair stays attached, the orientation carries
@@ -659,7 +689,7 @@ int typeCDrpSwapTests()
         // dead bus then detaches naturally
         check(tc.beginSwapToSource());
         f.vbus.setVoltage(0);
-        f.timer.expire(); // tPSSourceOff: no PS_RDY came
+        f.timer.expire();       // tPSSourceOff: no PS_RDY came
         check(!f.tcpc.sinking); // back in Attached.SNK, VBUS gone: detach
         check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.armed); // toggling again
     }
@@ -675,8 +705,14 @@ int typeCDrpRoleLockTests()
     // resumes the Rp slice on the next expiry, and a source appearing
     // while locked attaches as sink like any other
     {
-        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
-                                   usbc::drp_preference::none, mock_drp_client, mock_role_lock>;
+        using drp = usbc::TypeCDrp<
+            mock_tcpc,
+            mock_vbus,
+            manual_timer,
+            timing,
+            usbc::drp_preference::none,
+            mock_drp_client,
+            mock_role_lock>;
         fixture f;
         mock_role_lock lock{.sourcing = false};
         drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client, lock};
@@ -706,9 +742,14 @@ int typeCDrpRoleLockTests()
     // attaches as sink - Rp never presented, the phase's budget never
     // armed; unlocked, the same attach tries Rp
     {
-        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
-                                   usbc::drp_preference::source, mock_drp_client,
-                                   mock_role_lock>;
+        using drp = usbc::TypeCDrp<
+            mock_tcpc,
+            mock_vbus,
+            manual_timer,
+            timing,
+            usbc::drp_preference::source,
+            mock_drp_client,
+            mock_role_lock>;
         fixture f;
         mock_role_lock lock{.sourcing = false};
         drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client, lock};
@@ -732,9 +773,14 @@ int typeCDrpRoleLockTests()
 
     // ... and on the debounced path (Rp stable before VBUS arrives)
     {
-        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
-                                   usbc::drp_preference::source, mock_drp_client,
-                                   mock_role_lock>;
+        using drp = usbc::TypeCDrp<
+            mock_tcpc,
+            mock_vbus,
+            manual_timer,
+            timing,
+            usbc::drp_preference::source,
+            mock_drp_client,
+            mock_role_lock>;
         fixture f;
         mock_role_lock lock{.sourcing = false};
         drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client, lock};
@@ -752,9 +798,15 @@ int typeCDrpRoleLockTests()
     // swap to sink is not the lock's business, nor is a running
     // source contract
     {
-        using drp = usbc::TypeCDrp<mock_tcpc, mock_vbus, manual_timer, timing,
-                                   usbc::drp_preference::none, mock_drp_client,
-                                   mock_swap_policy, mock_role_lock>;
+        using drp = usbc::TypeCDrp<
+            mock_tcpc,
+            mock_vbus,
+            manual_timer,
+            timing,
+            usbc::drp_preference::none,
+            mock_drp_client,
+            mock_swap_policy,
+            mock_role_lock>;
         fixture f;
         mock_swap_policy policy;
         mock_role_lock lock;

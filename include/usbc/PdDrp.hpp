@@ -72,29 +72,57 @@ struct pd_drp_timers {
     TIMER vconn;
 };
 
-template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         concepts::sink_policy SINK_POLICY, typename SINK_POWER,
-         concepts::source_policy SOURCE_POLICY, concepts::source_supply SUPPLY,
-         typename SOURCE_POWER, drp_timing const& TIMING = default_drp_timing,
-         drp_preference PREFERENCE = drp_preference::none, typename... OBSERVERs>
+template<
+    concepts::tcpc TCPC,
+    concepts::vbus VBUS,
+    fsm::concepts::timer TIMER,
+    concepts::sink_policy SINK_POLICY,
+    typename SINK_POWER,
+    concepts::source_policy SOURCE_POLICY,
+    concepts::source_supply SUPPLY,
+    typename SOURCE_POWER,
+    drp_timing const& TIMING = default_drp_timing,
+    drp_preference PREFERENCE = drp_preference::none,
+    typename... OBSERVERs>
 class PdDrp {
 public:
-    PdDrp(TCPC& tcpc, VBUS& vbus, pd_drp_timers<TIMER>& timers,
-          std::span<sink_capability const> sink_capabilities, SINK_POLICY& sink_policy,
-          SINK_POWER& sink_power, std::span<std::uint32_t const> source_capabilities,
-          SOURCE_POLICY& source_policy, SUPPLY& supply, SOURCE_POWER& source_power,
-          rp_value advertisement, OBSERVERs&... observers)
-        : sink_policy_{sink_policy, *this},
-          source_policy_{source_policy, *this},
-          watch_{*this},
-          sink_engine_(tcpc, timers.sink_prl, timers.sink_pe, sink_capabilities, sink_policy_,
-                       sink_power, watch_),
-          source_engine_(tcpc, timers.source_prl, timers.source_pe, source_capabilities,
-                         source_policy_, supply, source_power, watch_),
+    PdDrp(
+        TCPC& tcpc,
+        VBUS& vbus,
+        pd_drp_timers<TIMER>& timers,
+        std::span<sink_capability const> sink_capabilities,
+        SINK_POLICY& sink_policy,
+        SINK_POWER& sink_power,
+        std::span<std::uint32_t const> source_capabilities,
+        SOURCE_POLICY& source_policy,
+        SUPPLY& supply,
+        SOURCE_POWER& source_power,
+        rp_value advertisement,
+        OBSERVERs&... observers
+    )
+        : sink_policy_{sink_policy, *this}, source_policy_{source_policy, *this}, watch_{*this},
+          sink_engine_(
+              tcpc,
+              timers.sink_prl,
+              timers.sink_pe,
+              sink_capabilities,
+              sink_policy_,
+              sink_power,
+              watch_
+          ),
+          source_engine_(
+              tcpc,
+              timers.source_prl,
+              timers.source_pe,
+              source_capabilities,
+              source_policy_,
+              supply,
+              source_power,
+              watch_
+          ),
           vconn_(pickVconnPort(observers...), timers.vconn, watch_),
           router_(tcpc, sink_engine_, source_engine_, *this),
-          drp_(tcpc, vbus, timers.tc, timers.tc_try, advertisement, router_,
-               observers...)
+          drp_(tcpc, vbus, timers.tc, timers.tc_try, advertisement, router_, observers...)
     {
         // a DRP answers Get_Source_Cap/Get_Sink_Cap in either role
         sink_engine_.provideSourceCapabilities(source_capabilities);
@@ -102,14 +130,33 @@ public:
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
     // advertisement
-    PdDrp(TCPC& tcpc, VBUS& vbus, pd_drp_timers<TIMER>& timers,
-          std::span<sink_capability const> sink_capabilities, SINK_POLICY& sink_policy,
-          SINK_POWER& sink_power, std::span<std::uint32_t const> source_capabilities,
-          SOURCE_POLICY& source_policy, SUPPLY& supply, SOURCE_POWER& source_power,
-          OBSERVERs&... observers)
-        : PdDrp(tcpc, vbus, timers, sink_capabilities, sink_policy, sink_power,
-                source_capabilities, source_policy, supply, source_power,
-                rp_value::usb_default, observers...)
+    PdDrp(
+        TCPC& tcpc,
+        VBUS& vbus,
+        pd_drp_timers<TIMER>& timers,
+        std::span<sink_capability const> sink_capabilities,
+        SINK_POLICY& sink_policy,
+        SINK_POWER& sink_power,
+        std::span<std::uint32_t const> source_capabilities,
+        SOURCE_POLICY& source_policy,
+        SUPPLY& supply,
+        SOURCE_POWER& source_power,
+        OBSERVERs&... observers
+    )
+        : PdDrp(
+              tcpc,
+              vbus,
+              timers,
+              sink_capabilities,
+              sink_policy,
+              sink_power,
+              source_capabilities,
+              source_policy,
+              supply,
+              source_power,
+              rp_value::usb_default,
+              observers...
+          )
     {
     }
 
@@ -176,24 +223,27 @@ private:
     // An enabling observer is the feature's arbitration voice (and,
     // for VCONN, the switch-hardware connector) - hold it to the
     // feature's contract right where the tag is honored
-    static_assert(((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
-                                            pe::pr_swap_feature> ||
-                    concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, power_role>) &&
-                   ...),
-                  "an observer enabling pr_swap_feature must provide "
-                  "allowSwap(power_role) -> bool");
-    static_assert(((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
-                                            pe::dr_swap_feature> ||
-                    concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, data_role>) &&
-                   ...),
-                  "an observer enabling dr_swap_feature must provide "
-                  "allowSwap(data_role) -> bool");
-    static_assert(((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
-                                            pe::vconn_feature> ||
-                    concepts::vconn_port<std::remove_cvref_t<OBSERVERs>>) &&
-                   ...),
-                  "an observer enabling vconn_feature must satisfy "
-                  "concepts::vconn_port (setVconn(bool) + allowSwap(vconn_source_role))");
+    static_assert(
+        ((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::pr_swap_feature> ||
+          concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, power_role>) &&
+         ...),
+        "an observer enabling pr_swap_feature must provide "
+        "allowSwap(power_role) -> bool"
+    );
+    static_assert(
+        ((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::dr_swap_feature> ||
+          concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, data_role>) &&
+         ...),
+        "an observer enabling dr_swap_feature must provide "
+        "allowSwap(data_role) -> bool"
+    );
+    static_assert(
+        ((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::vconn_feature> ||
+          concepts::vconn_port<std::remove_cvref_t<OBSERVERs>>) &&
+         ...),
+        "an observer enabling vconn_feature must satisfy "
+        "concepts::vconn_port (setVconn(bool) + allowSwap(vconn_source_role))"
+    );
 
     // The inert hardware stand-in when the feature is compiled out
     struct no_vconn_port {
@@ -203,10 +253,11 @@ private:
 
     // The vconn-enabling observer is the port; the stand-in without one
     using vconn_enabler_t =
-        fsm::feature_enabler_t<pe::vconn_feature,
-                               mtl::typelist<std::remove_cvref_t<OBSERVERs>...>>;
-    using vconn_port_t = std::conditional_t<std::is_same_v<vconn_enabler_t, mtl::nil_type>,
-                                            no_vconn_port, vconn_enabler_t>;
+        fsm::feature_enabler_t<pe::vconn_feature, mtl::typelist<std::remove_cvref_t<OBSERVERs>...>>;
+    using vconn_port_t = std::conditional_t<
+        std::is_same_v<vconn_enabler_t, mtl::nil_type>,
+        no_vconn_port,
+        vconn_enabler_t>;
 
     // The first vconn-enabling observer of the pack, or the stand-in
     auto& pickVconnPort() { return dummy_vconn_port_; }
@@ -233,7 +284,8 @@ private:
 
         std::optional<contract_request> select(
             std::span<std::uint32_t const> source_capabilities,
-            std::span<sink_capability const> capabilities) const
+            std::span<sink_capability const> capabilities
+        ) const
         {
             return inner.select(source_capabilities, capabilities);
         }
@@ -258,8 +310,8 @@ private:
         SOURCE_POLICY& inner;
         PdDrp& port;
 
-        std::optional<supply_target> evaluate(
-            std::uint32_t rdo, std::span<std::uint32_t const> capabilities) const
+        std::optional<supply_target>
+        evaluate(std::uint32_t rdo, std::span<std::uint32_t const> capabilities) const
         {
             return inner.evaluate(rdo, capabilities);
         }
@@ -348,10 +400,9 @@ private:
         PdDrp& port;
     };
 
-    using SinkEngine =
-        SinkPolicyEngine<TCPC, TIMER, sink_policy_proxy, SINK_POWER, swap_watch>;
-    using SourceEngine = SourcePolicyEngine<TCPC, TIMER, source_policy_proxy, SUPPLY,
-                                            SOURCE_POWER, swap_watch>;
+    using SinkEngine = SinkPolicyEngine<TCPC, TIMER, sink_policy_proxy, SINK_POWER, swap_watch>;
+    using SourceEngine =
+        SourcePolicyEngine<TCPC, TIMER, source_policy_proxy, SUPPLY, SOURCE_POWER, swap_watch>;
 
     // The port's internal wiring, observing the connection machine's
     // declared facts: the PD connection brackets the engines' life (its
@@ -364,14 +415,21 @@ private:
     // the cable's Ra). The PD alerts and CC reports are forwarded from
     // the driver frontend
     struct router : fsm::observing<router> {
-        router(TCPC& tcpc_ref, SinkEngine& sink_engine, SourceEngine& source_engine,
-               PdDrp& port_ref)
+        router(
+            TCPC& tcpc_ref,
+            SinkEngine& sink_engine,
+            SourceEngine& source_engine,
+            PdDrp& port_ref
+        )
             : tcpc(tcpc_ref), snk(sink_engine), src(source_engine), port(port_ref)
         {
         }
 
-        using observes = mtl::typelist<tc::pd_connection, tc::attached_role,
-                                       tc::drp::swap_standby, tc::attached_partner>;
+        using observes = mtl::typelist<
+            tc::pd_connection,
+            tc::attached_role,
+            tc::drp::swap_standby,
+            tc::attached_partner>;
 
         TCPC& tcpc;
         SinkEngine& snk;
@@ -380,7 +438,7 @@ private:
 
         enum class active_role { none, sink, source };
         active_role active = active_role::none;
-        data_role data     = data_role::ufp; // the message header's data role
+        data_role data = data_role::ufp; // the message header's data role
 
         // the one real detach: the live engine resets, VCONN goes down
         void notifyExit(tc::pd_connection)
@@ -411,7 +469,7 @@ private:
         {
             if (standby.to == power_role::sink) {
                 auto const revision = src.negotiatedRevision();
-                auto const ids      = src.messageIds();
+                auto const ids = src.messageIds();
                 src.detached();
                 header(power_role::sink);
                 active = active_role::sink;
@@ -425,8 +483,7 @@ private:
         void notifyEntry(tc::attached_partner const& partner)
         {
             data = partner.data;
-            bool const completing =
-                partner.origin == tc::attach_origin::completed_power_role_swap;
+            bool const completing = partner.origin == tc::attach_origin::completed_power_role_swap;
             if (active == active_role::sink) {
                 header(power_role::sink);
                 // seed the PD3 collision-avoidance view of the
@@ -443,7 +500,7 @@ private:
                     // the sink engine's half is done: its revision
                     // and MessageIDs continue in the source engine
                     auto const revision = snk.negotiatedRevision();
-                    auto const ids      = snk.messageIds();
+                    auto const ids = snk.messageIds();
                     snk.vbusRemoved();
                     src.attachedAfterSwap(data, revision, ids);
                 } else {
@@ -537,8 +594,7 @@ private:
     SinkEngine sink_engine_;
     SourceEngine source_engine_;
     [[no_unique_address]] no_vconn_port dummy_vconn_port_{};
-    std::conditional_t<vconn_enabled, VconnMachine<vconn_port_t, TIMER, swap_watch>,
-                       no_vconn>
+    std::conditional_t<vconn_enabled, VconnMachine<vconn_port_t, TIMER, swap_watch>, no_vconn>
         vconn_;
     router router_;
     Drp drp_;

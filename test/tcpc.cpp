@@ -24,19 +24,19 @@ namespace {
 // --- mock source power supply -----------------------------------------------
 struct mock_supply {
     usbc::supply_ready_callback callback = nullptr;
-    void* context                  = nullptr;
-    usbc::millivolt target_mv      = 5000;
-    usbc::milliamp limit_ma        = 0;
+    void* context = nullptr;
+    usbc::millivolt target_mv = 5000;
+    usbc::milliamp limit_ma = 0;
 
     void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
     {
         callback = cb;
-        context  = ctx;
+        context = ctx;
     }
     bool setOutput(usbc::millivolt voltage, usbc::milliamp current_limit)
     {
         target_mv = voltage;
-        limit_ma  = current_limit;
+        limit_ma = current_limit;
         return true;
     }
 
@@ -52,12 +52,12 @@ struct mock_supply {
 // --- mock sink load ---------------------------------------------------------
 struct mock_sink_load {
     usbc::millivolt expected_mv = 5000;
-    usbc::milliamp limit_ma     = 0;
+    usbc::milliamp limit_ma = 0;
 
     bool setLimit(usbc::millivolt expected_voltage, usbc::milliamp max_current)
     {
         expected_mv = expected_voltage;
-        limit_ma    = max_current;
+        limit_ma = max_current;
         return true;
     }
 };
@@ -173,10 +173,10 @@ void check(bool condition, std::source_location location = std::source_location:
 template<usbc::concepts::tcpc TCPC, usbc::concepts::vbus VBUS>
 bool startSink(TCPC& tcpc, VBUS& vbus)
 {
-    return tcpc.setCc(usbc::cc_pull::rd, usbc::rp_value::usb_default) &&
-           vbus.enable(true) &&
-           tcpc.setMessageHeaderInfo({usbc::power_role::sink, usbc::data_role::ufp,
-                                         usbc::pd_revision::rev_3_x}) &&
+    return tcpc.setCc(usbc::cc_pull::rd, usbc::rp_value::usb_default) && vbus.enable(true) &&
+           tcpc.setMessageHeaderInfo(
+               {usbc::power_role::sink, usbc::data_role::ufp, usbc::pd_revision::rev_3_x}
+           ) &&
            tcpc.setReceiveDetect(usbc::receive_detect::sop | usbc::receive_detect::hard_reset);
 }
 
@@ -219,14 +219,16 @@ int tcpcTests()
     check(vbus.enabled);
     check(tcpc.header_info.power == usbc::power_role::sink);
     check(tcpc.header_info.data == usbc::data_role::ufp);
-    check(any(tcpc.detect & usbc::receive_detect::sop) &&
-          any(tcpc.detect & usbc::receive_detect::hard_reset) &&
-          !any(tcpc.detect & usbc::receive_detect::sop_prime));
+    check(
+        any(tcpc.detect & usbc::receive_detect::sop) &&
+        any(tcpc.detect & usbc::receive_detect::hard_reset) &&
+        !any(tcpc.detect & usbc::receive_detect::sop_prime)
+    );
 
     // event-driven vbus flow: monitor a level, get notified on crossings
     struct vbus_events {
         int count = 0;
-        bool met  = false;
+        bool met = false;
     } events;
     vbus.setCallback(
         [](void* ctx, bool met) {
@@ -234,13 +236,14 @@ int tcpcTests()
             ++ev.count;
             ev.met = met;
         },
-        &events);
+        &events
+    );
 
     check(vbus.monitor(usbc::vbus_level::safe5v));
     check(events.count == 1 && !events.met); // initial state reported unasked
-    vbus.setVoltage(5000);                  // source attached
+    vbus.setVoltage(5000);                   // source attached
     check(events.count == 2 && events.met);
-    vbus.setVoltage(5100);                  // still in range: no event
+    vbus.setVoltage(5100); // still in range: no event
     check(events.count == 2);
 
     check(vbus.monitor(usbc::vbus_level::sink_disconnect)); // re-arm for detach
@@ -252,26 +255,31 @@ int tcpcTests()
     bool alerted = false;
     tcpc.setAlertHandler([](void* ctx) { *static_cast<bool*>(ctx) = true; }, &alerted);
     usbc::pd_message incoming{
-        .sop = usbc::sop_type::sop, .header = 0x1161, .payload_size = 4, .payload = {1, 2, 3, 4}};
+        .sop = usbc::sop_type::sop,
+        .header = 0x1161,
+        .payload_size = 4,
+        .payload = {1, 2, 3, 4}
+    };
     tcpc.injectMessage(incoming);
     check(alerted);
 
     auto const fetched = fetchMessage(tcpc);
     check(fetched.has_value());
     check(fetched && fetched->header == 0x1161 && fetched->payload_size == 4);
-    check(!tcpc.pending_rx);                 // consumed
+    check(!tcpc.pending_rx);                // consumed
     check(!fetchMessage(tcpc).has_value()); // readAlert() cleared the pending alert
 
     // transmit both forms through the concept-constrained interface
     check(tcpc.transmit(incoming) && tcpc.transmit_count == 1);
-    check(tcpc.transmit(usbc::transmit_signal::hard_reset) &&
-          tcpc.last_signal == usbc::transmit_signal::hard_reset);
+    check(
+        tcpc.transmit(usbc::transmit_signal::hard_reset) &&
+        tcpc.last_signal == usbc::transmit_signal::hard_reset
+    );
 
     // source supply: program the contract, PS_RDY trigger on settle
     mock_supply supply;
     bool at_target = false;
-    supply.setReadyCallback([](void* ctx, bool at) { *static_cast<bool*>(ctx) = at; },
-                            &at_target);
+    supply.setReadyCallback([](void* ctx, bool at) { *static_cast<bool*>(ctx) = at; }, &at_target);
     check(requestOutput(supply, 9000, 3000));
     check(supply.target_mv == 9000 && supply.limit_ma == 3000);
     check(!at_target); // still transitioning
@@ -291,7 +299,7 @@ int tcpcTests()
     mock_sink_load load;
     check(applyLimit(load, 5000, 1500)); // Rp advertised 1.5 A
     check(load.expected_mv == 5000 && load.limit_ma == 1500);
-    check(applyLimit(load, 9000, 500)); // iSnkStdby while transitioning
+    check(applyLimit(load, 9000, 500));                           // iSnkStdby while transitioning
     check(applyLimit(load, 9000, 3000) && load.limit_ma == 3000); // after PS_RDY
 
     return failures;

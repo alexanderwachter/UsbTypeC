@@ -96,8 +96,8 @@ Tcpc::Tcpc(device const* dev) : dev_(dev)
 
 void Tcpc::setAlertHandler(alert_callback callback, void* context)
 {
-    callback_     = callback;
-    context_      = context;
+    callback_ = callback;
+    context_ = context;
     int const ret = tcpc_set_alert_handler_cb(dev_, &Tcpc::alert, this);
     if (ret != 0) {
         LOG_ERR("registering the alert handler failed (%d)", ret);
@@ -118,7 +118,7 @@ bool Tcpc::setCc(cc_pull pull, rp_value rp)
             return false;
         }
     }
-    pull_         = pull;
+    pull_ = pull;
     int const ret = tcpc_set_cc(dev_, toZephyr(pull));
     if (ret != 0) {
         LOG_ERR("setting the CC pull failed (%d)", ret);
@@ -141,7 +141,9 @@ std::optional<cc_status> Tcpc::readCcStatus()
 bool Tcpc::setPlugOrientation(plug_orientation orientation)
 {
     int const ret = tcpc_set_cc_polarity(
-        dev_, orientation == plug_orientation::cc1 ? TC_POLARITY_CC1 : TC_POLARITY_CC2);
+        dev_,
+        orientation == plug_orientation::cc1 ? TC_POLARITY_CC1 : TC_POLARITY_CC2
+    );
     if (ret != 0) {
         LOG_ERR("setting the CC polarity failed (%d)", ret);
     }
@@ -177,9 +179,11 @@ bool Tcpc::setVconn(bool enable)
 
 bool Tcpc::setMessageHeaderInfo(message_header_info info)
 {
-    int const ret =
-        tcpc_set_roles(dev_, info.power == power_role::source ? TC_ROLE_SOURCE : TC_ROLE_SINK,
-                       info.data == data_role::dfp ? TC_ROLE_DFP : TC_ROLE_UFP);
+    int const ret = tcpc_set_roles(
+        dev_,
+        info.power == power_role::source ? TC_ROLE_SOURCE : TC_ROLE_SINK,
+        info.data == data_role::dfp ? TC_ROLE_DFP : TC_ROLE_UFP
+    );
     if (ret != 0) {
         LOG_ERR("setting the message header roles failed (%d)", ret);
     }
@@ -206,9 +210,9 @@ bool Tcpc::setReceiveDetect(receive_detect detect)
 bool Tcpc::transmit(pd_message const& message)
 {
     pd_msg msg{};
-    msg.type             = toZephyr(message.sop);
+    msg.type = toZephyr(message.sop);
     msg.header.raw_value = message.header;
-    msg.len              = message.payload_size;
+    msg.len = message.payload_size;
     std::memcpy(msg.data, message.payload.data(), message.payload_size);
     int const ret = tcpc_transmit_data(dev_, &msg);
     if (ret != 0) {
@@ -238,17 +242,17 @@ bool Tcpc::receive(pd_message& out)
     if (tcpc_get_rx_pending_msg(dev_, &msg) < 0) {
         return false; // nothing pending is a normal outcome
     }
-    out.sop          = fromZephyr(msg.type);
-    out.header       = msg.header.raw_value;
-    out.payload_size = static_cast<std::uint8_t>(
-        std::min<std::uint32_t>(msg.len, pd_message::max_payload_size));
+    out.sop = fromZephyr(msg.type);
+    out.header = msg.header.raw_value;
+    out.payload_size =
+        static_cast<std::uint8_t>(std::min<std::uint32_t>(msg.len, pd_message::max_payload_size));
     std::memcpy(out.payload.data(), msg.data, out.payload_size);
     return true;
 }
 
 void Tcpc::alert(device const*, void* data, tcpc_alert alert)
 {
-    auto* self      = static_cast<Tcpc*>(data);
+    auto* self = static_cast<Tcpc*>(data);
     auto const bits = mapAlert(alert);
     if (bits == alert_status::none) {
         LOG_DBG("unhandled TCPC alert %d", static_cast<int>(alert));

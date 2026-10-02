@@ -33,8 +33,13 @@ using supply_ready_callback = void (*)(void* context, bool at_target);
 namespace concepts {
 
 template<typename T>
-concept source_supply = requires(T s, millivolt voltage, milliamp current_limit,
-                                 supply_ready_callback callback, void* context) {
+concept source_supply = requires(
+    T s,
+    millivolt voltage,
+    milliamp current_limit,
+    supply_ready_callback callback,
+    void* context
+) {
     s.setReadyCallback(callback, context);
     { s.setOutput(voltage, current_limit) } -> std::same_as<bool>;
 };

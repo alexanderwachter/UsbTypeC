@@ -71,7 +71,7 @@ concept prl_client = requires(T client, pd_message const& message) {
     client.onTxDone();
     client.onTxDiscarded();
     client.onTxError();
-    client.onHardReset();      // hard reset received from the partner
+    client.onHardReset();     // hard reset received from the partner
     client.onHardResetSent(); // own hard reset signal is on the wire
 };
 
@@ -94,7 +94,7 @@ struct message_id_state {
     std::array<std::optional<std::uint8_t>, sop_count> rx_id{};
 };
 
-inline constexpr auto t_receive             = std::chrono::milliseconds{1}; // tReceive
+inline constexpr auto t_receive = std::chrono::milliseconds{1};             // tReceive
 inline constexpr auto t_hard_reset_complete = std::chrono::milliseconds{5}; // tHardResetComplete
 
 // Shared by the transmitting states: the message in flight survives
@@ -146,7 +146,9 @@ struct hard_reset_action { // not repeatable: a notification transmits
 namespace state {
 
 struct wait_for_message_request {
-    static constexpr auto annotations = fsm::annotate(tx_ready{});
+    static constexpr auto annotations = fsm::annotate(
+        tx_ready{}
+    );
 };
 
 struct wait_for_phy_response {
@@ -154,7 +156,7 @@ struct wait_for_phy_response {
 
     wait_for_phy_response(event::tx_request const& event, tx_context& ctx) : context(ctx)
     {
-        context.message       = event.message;
+        context.message = event.message;
         context.retry_counter = 0;
     }
     // Re-entry is the retransmission: same message, same MessageID
@@ -170,7 +172,9 @@ struct wait_for_phy_response {
 // PRL_Tx_Transmission_Error folded with the idle wait: reported on
 // entry, rests until the policy engine transmits again or resets
 struct transmission_error {
-    static constexpr auto annotations = fsm::annotate(tx_ready{});
+    static constexpr auto annotations = fsm::annotate(
+        tx_ready{}
+    );
 
     explicit transmission_error(tx_context& ctx) : context(ctx) {}
 
@@ -186,7 +190,9 @@ struct wait_for_hard_reset_complete {
 
     // leaving this state completes the hard reset, whichever edge takes
     // it out; observed on exit by the client reporter
-    static constexpr auto annotations = fsm::annotate(hard_reset_sent{});
+    static constexpr auto annotations = fsm::annotate(
+        hard_reset_sent{}
+    );
 };
 
 } // namespace state
@@ -204,33 +210,21 @@ using prl_timer_ranges = mtl::typelist<
 // A named struct, not an alias: the short name replaces the fully
 // spelled table type in every mangled symbol
 struct tx_table : fsm::transition_table<
-    fsm::initial<state::wait_for_message_request>,
-    fsm::transition<fsm::from<state::wait_for_message_request>, fsm::on<event::tx_request>,
-                    fsm::to<state::wait_for_phy_response>>,
-    fsm::transition<fsm::from<state::transmission_error>, fsm::on<event::tx_request>,
-                    fsm::to<state::wait_for_phy_response>>,
-    // no GoodCRC in time: retransmit while RetryCounter allows, else error
-    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<fsm::timeout>,
-                    fsm::to<state::wait_for_phy_response>, fsm::guard<retries_left>>,
-    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<fsm::timeout>,
-                    fsm::to<state::transmission_error>>,
-    // the driver may report a failed attempt before tReceive expires
-    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_failed>,
-                    fsm::to<state::wait_for_phy_response>, fsm::guard<retries_left>>,
-    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_failed>,
-                    fsm::to<state::transmission_error>>,
-    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_success>,
-                    fsm::to<state::wait_for_message_request>>,
-    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_discarded>,
-                    fsm::to<state::wait_for_message_request>>,
-    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::hard_reset_request>,
-                    fsm::to<state::wait_for_hard_reset_complete>>,
-    fsm::transition<fsm::from<state::wait_for_hard_reset_complete>, fsm::on<event::phy_success>,
-                    fsm::to<state::wait_for_message_request>>,
-    fsm::transition<fsm::from<state::wait_for_hard_reset_complete>, fsm::on<fsm::timeout>,
-                    fsm::to<state::wait_for_message_request>>,
-    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::reset>,
-                    fsm::to<state::wait_for_message_request>>> {};
+                      fsm::initial<state::wait_for_message_request>,
+                      fsm::transition<fsm::from<state::wait_for_message_request>, fsm::on<event::tx_request>, fsm::to<state::wait_for_phy_response>>,
+                      fsm::transition<fsm::from<state::transmission_error>, fsm::on<event::tx_request>, fsm::to<state::wait_for_phy_response>>,
+                      // no GoodCRC in time: retransmit while RetryCounter allows, else error
+                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<fsm::timeout>, fsm::guard<retries_left>, fsm::to<state::wait_for_phy_response>>,
+                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<fsm::timeout>, fsm::to<state::transmission_error>>,
+                      // the driver may report a failed attempt before tReceive expires
+                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_failed>, fsm::guard<retries_left>, fsm::to<state::wait_for_phy_response>>,
+                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_failed>, fsm::to<state::transmission_error>>,
+                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_success>, fsm::to<state::wait_for_message_request>>,
+                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_discarded>, fsm::to<state::wait_for_message_request>>,
+                      fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::hard_reset_request>, fsm::to<state::wait_for_hard_reset_complete>>,
+                      fsm::transition<fsm::from<state::wait_for_hard_reset_complete>, fsm::on<event::phy_success>, fsm::to<state::wait_for_message_request>>,
+                      fsm::transition<fsm::from<state::wait_for_hard_reset_complete>, fsm::on<fsm::timeout>, fsm::to<state::wait_for_message_request>>,
+                      fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::reset>, fsm::to<state::wait_for_message_request>>> {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Hands a state's pd_message instance value to the TCPC on entry; a
@@ -260,8 +254,7 @@ class ProtocolLayer : public fsm::observing<ProtocolLayer<TCPC, TIMER>> {
 public:
     template<concepts::prl_client CLIENT>
     ProtocolLayer(TCPC& tcpc, TIMER& timer, CLIENT& client)
-        : tcpc_(tcpc), client_(&client), hooks_(&hooks_for<CLIENT>), timer_(timer),
-          timed_(timer_)
+        : tcpc_(tcpc), client_(&client), hooks_(&hooks_for<CLIENT>), timer_(timer), timed_(timer_)
     {
     }
 
@@ -284,10 +277,10 @@ public:
         if (!tx_ready_) { // a message or hard reset is in flight
             return false;
         }
-        auto header       = pd_header::decode(message.header);
+        auto header = pd_header::decode(message.header);
         header.message_id = tx_counter_[index(message.sop)];
-        header.revision   = revision_;
-        message.header    = header.encode();
+        header.revision = revision_;
+        message.header = header.encode();
         return sm_.process(prl::event::tx_request{message});
     }
 
@@ -322,7 +315,7 @@ public:
     void seedMessageIds(prl::message_id_state const& ids)
     {
         tx_counter_ = ids.tx_counter;
-        rx_id_      = ids.rx_id;
+        rx_id_ = ids.rx_id;
     }
 
     void onAlert(alert_status alerts)
@@ -428,7 +421,7 @@ private:
     void increment(sop_type sop)
     {
         auto& counter = tx_counter_[index(sop)];
-        counter       = (counter + 1u) & 0x7u;
+        counter = (counter + 1u) & 0x7u;
     }
 
     // PRL_Tx_Transmission_Error: MessageIDCounter increments, PE informed
@@ -443,7 +436,7 @@ private:
         pd_message message;
         while (tcpc_.receive(message)) {
             auto const header = pd_header::decode(message.header);
-            auto& stored      = rx_id_[index(message.sop)];
+            auto& stored = rx_id_[index(message.sop)];
             if (stored == header.message_id) {
                 continue; // retransmission of a message already delivered
             }
@@ -457,8 +450,7 @@ private:
 
     std::uint8_t retryLimit() const
     {
-        return revision_ == pd_revision::rev_3_x ? spec::n_retry_count
-                                                 : spec::n_retry_count_rev2;
+        return revision_ == pd_revision::rev_3_x ? spec::n_retry_count : spec::n_retry_count_rev2;
     }
 
     void setRevision(pd_revision rev)
@@ -475,7 +467,7 @@ private:
     void resetAll()
     {
         tx_counter_ = {};
-        rx_id_      = {};
+        rx_id_ = {};
         setRevision(pd_revision::rev_3_x); // re-negotiated after a hard reset
     }
 
@@ -490,9 +482,14 @@ private:
     // Queued: the client's reaction to a report (a tx_error's soft
     // reset, say) transmits from within the delivering hook - the
     // queue turns that re-entrancy into ordered delivery
-    fsm::QueuedMachine<prl::tx_table, 4, fsm::inline_work, fsm::no_lock,
-                       fsm::timed<fsm::QueuedTimer<TIMER>&>, prl::phy_driver<TCPC>,
-                       client_reporter>
+    fsm::QueuedMachine<
+        prl::tx_table,
+        4,
+        fsm::inline_work,
+        fsm::no_lock,
+        fsm::timed<fsm::QueuedTimer<TIMER>&>,
+        prl::phy_driver<TCPC>,
+        client_reporter>
         sm_{timed_, driver_, reporter_};
     std::array<std::uint8_t, prl::sop_count> tx_counter_{};
     std::array<std::optional<std::uint8_t>, prl::sop_count> rx_id_{};

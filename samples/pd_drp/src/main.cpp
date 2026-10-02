@@ -15,8 +15,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <usbc/PdDrp.hpp>
 #include <mtl/zephyr/TraceLogger.hpp>
+#include <usbc/PdDrp.hpp>
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
@@ -37,13 +37,16 @@ LOG_MODULE_REGISTER(pd_drp_sample, LOG_LEVEL_INF);
 namespace {
 
 // What this port takes as a sink, and offers as a source
-constexpr std::array sink_capabilities{usbc::sink_capability{5000, 3000},
-                                       usbc::sink_capability{9000, 3000}};
+constexpr std::array sink_capabilities{
+    usbc::sink_capability{5000, 3000},
+    usbc::sink_capability{9000, 3000}
+};
 // The source offers come straight from the connector node's
 // source-pdos: the DT PDO_FIXED words are the PD wire format that
 // usbc::pdo::makeFixedSource() builds
 constexpr std::array<std::uint32_t, DT_PROP_LEN(USBC_PORT0_NODE, source_pdos)> source_caps{
-    DT_FOREACH_PROP_ELEM_SEP(USBC_PORT0_NODE, source_pdos, DT_PROP_BY_IDX, (,))};
+    DT_FOREACH_PROP_ELEM_SEP(USBC_PORT0_NODE, source_pdos, DT_PROP_BY_IDX, (, ))
+};
 
 // The sink engine's power side: no real input regulator, log its work
 struct Power : usbc::SinkPower<Power> {
@@ -69,19 +72,19 @@ struct Supply {
     static constexpr uint32_t pulseFor(usbc::millivolt voltage)
     {
         switch (voltage) {
-        case 5000:  return 21500;
-        case 9000:  return 30000;
+        case 5000: return 21500;
+        case 9000: return 30000;
         case 15000: return 45000;
-        default:    return 0;
+        default: return 0;
         }
     }
 
     pwm_dt_spec const voltage_select = PWM_DT_SPEC_GET(PWRCTRL_NODE);
-    gpio_dt_spec const source_en     = GPIO_DT_SPEC_GET(PWRCTRL_NODE, source_en_gpios);
-    gpio_dt_spec const dcdc_en       = GPIO_DT_SPEC_GET(PWRCTRL_NODE, dcdc_en_gpios);
+    gpio_dt_spec const source_en = GPIO_DT_SPEC_GET(PWRCTRL_NODE, source_en_gpios);
+    gpio_dt_spec const dcdc_en = GPIO_DT_SPEC_GET(PWRCTRL_NODE, dcdc_en_gpios);
     k_work work{};
     usbc::supply_ready_callback callback = nullptr;
-    void* context                        = nullptr;
+    void* context = nullptr;
 
     Supply()
     {
@@ -101,7 +104,7 @@ struct Supply {
     void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
     {
         callback = cb;
-        context  = ctx;
+        context = ctx;
     }
     bool setOutput(usbc::millivolt voltage, usbc::milliamp current_limit)
     {
@@ -161,15 +164,33 @@ struct SwapPolicy : fsm::observing<SwapPolicy> {
 // stack has none of these) builds with
 // EXTRA_CPPFLAGS=-DPD_DRP_MINIMAL
 #ifdef PD_DRP_MINIMAL
-using Port = usbc::PdDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                         usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, ContractMonitor,
-                         usbc::default_drp_timing, usbc::drp_preference::none,
-                         mtl::zephyr::TraceLogger>;
+using Port = usbc::PdDrp<
+    usbc::zephyr::Tcpc,
+    usbc::zephyr::Vbus,
+    usbc::zephyr::Timer,
+    usbc::PowerPolicy,
+    Power,
+    usbc::RequestPolicy,
+    Supply,
+    ContractMonitor,
+    usbc::default_drp_timing,
+    usbc::drp_preference::none,
+    mtl::zephyr::TraceLogger>;
 #else
-using Port = usbc::PdDrp<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                         usbc::PowerPolicy, Power, usbc::RequestPolicy, Supply, ContractMonitor,
-                         usbc::default_drp_timing, usbc::drp_preference::none,
-                         mtl::zephyr::TraceLogger, VconnPolicy, SwapPolicy>;
+using Port = usbc::PdDrp<
+    usbc::zephyr::Tcpc,
+    usbc::zephyr::Vbus,
+    usbc::zephyr::Timer,
+    usbc::PowerPolicy,
+    Power,
+    usbc::RequestPolicy,
+    Supply,
+    ContractMonitor,
+    usbc::default_drp_timing,
+    usbc::drp_preference::none,
+    mtl::zephyr::TraceLogger,
+    VconnPolicy,
+    SwapPolicy>;
 #endif
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
@@ -189,13 +210,37 @@ SwapPolicy swap_policy;
 
 // The Rp matches the 5 V capability the port advertises through PD
 #ifdef PD_DRP_MINIMAL
-Port port{tcpc,        vbus,          timers, sink_capabilities, sink_policy,           power,
-          source_caps, source_policy, supply, contract_monitor,  usbc::rp_value::p_1a5,
-          state_logger};
+Port port{
+    tcpc,
+    vbus,
+    timers,
+    sink_capabilities,
+    sink_policy,
+    power,
+    source_caps,
+    source_policy,
+    supply,
+    contract_monitor,
+    usbc::rp_value::p_1a5,
+    state_logger
+};
 #else
-Port port{tcpc,        vbus,          timers, sink_capabilities, sink_policy,           power,
-          source_caps, source_policy, supply, contract_monitor,  usbc::rp_value::p_1a5,
-          state_logger, vconn_policy, swap_policy};
+Port port{
+    tcpc,
+    vbus,
+    timers,
+    sink_capabilities,
+    sink_policy,
+    power,
+    source_caps,
+    source_policy,
+    supply,
+    contract_monitor,
+    usbc::rp_value::p_1a5,
+    state_logger,
+    vconn_policy,
+    swap_policy
+};
 #endif
 
 // The joystick triggers the PD swap messaging, submitted to the
@@ -224,12 +269,15 @@ K_WORK_DEFINE(power_swap_work, powerSwap);
 K_WORK_DEFINE(data_swap_work, dataSwap);
 
 gpio_dt_spec const power_button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
-gpio_dt_spec const data_button  = GPIO_DT_SPEC_GET(DT_ALIAS(sw1), gpios);
+gpio_dt_spec const data_button = GPIO_DT_SPEC_GET(DT_ALIAS(sw1), gpios);
 gpio_callback power_button_cb;
 gpio_callback data_button_cb;
 
-void setupButton(gpio_dt_spec const& button, gpio_callback& callback,
-                 gpio_callback_handler_t handler)
+void setupButton(
+    gpio_dt_spec const& button,
+    gpio_callback& callback,
+    gpio_callback_handler_t handler
+)
 {
     gpio_pin_configure_dt(&button, GPIO_INPUT);
     gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_TO_ACTIVE);

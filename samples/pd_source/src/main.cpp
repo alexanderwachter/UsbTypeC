@@ -36,8 +36,10 @@ namespace {
 
 // What this source offers; also the Source_Capabilities content.
 // Matches the source-pdos of the board overlay
-constexpr std::array source_caps{usbc::pdo::makeFixedSource(5000, 1500),
-                                 usbc::pdo::makeFixedSource(9000, 1000)};
+constexpr std::array source_caps{
+    usbc::pdo::makeFixedSource(5000, 1500),
+    usbc::pdo::makeFixedSource(9000, 1000)
+};
 
 // Log-only supply: reports the target settled from the stack's work
 // queue (never synchronously - the engine is mid-transition when
@@ -45,7 +47,7 @@ constexpr std::array source_caps{usbc::pdo::makeFixedSource(5000, 1500),
 struct Supply {
     k_work work{};
     usbc::supply_ready_callback callback = nullptr;
-    void* context                        = nullptr;
+    void* context = nullptr;
 
     Supply()
     {
@@ -58,7 +60,7 @@ struct Supply {
     void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
     {
         callback = cb;
-        context  = ctx;
+        context = ctx;
     }
     bool setOutput(usbc::millivolt voltage, usbc::milliamp current_limit)
     {
@@ -91,8 +93,14 @@ struct AttachLogger : fsm::observing<AttachLogger> {
     void notifyExit(usbc::plug_orientation) { LOG_INF("sink detached"); }
 };
 
-using Port = usbc::PdSource<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                            usbc::RequestPolicy, Supply, ContractMonitor, AttachLogger>;
+using Port = usbc::PdSource<
+    usbc::zephyr::Tcpc,
+    usbc::zephyr::Vbus,
+    usbc::zephyr::Timer,
+    usbc::RequestPolicy,
+    Supply,
+    ContractMonitor,
+    AttachLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
@@ -103,8 +111,17 @@ Supply supply;
 ContractMonitor contract_monitor;
 AttachLogger attach_logger;
 // The Rp matches the 5 V capability the port advertises through PD
-Port port{tcpc, vbus,   timers,           source_caps,  policy,
-          supply, contract_monitor, usbc::rp_value::p_1a5, attach_logger};
+Port port{
+    tcpc,
+    vbus,
+    timers,
+    source_caps,
+    policy,
+    supply,
+    contract_monitor,
+    usbc::rp_value::p_1a5,
+    attach_logger
+};
 
 } // namespace
 

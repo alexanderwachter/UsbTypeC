@@ -45,7 +45,7 @@ bool Vbus::enable(bool on)
 void Vbus::setCallback(vbus_callback callback, void* context)
 {
     callback_ = callback;
-    context_  = context;
+    context_ = context;
 }
 
 bool Vbus::monitor(vbus_level level)
@@ -55,7 +55,7 @@ bool Vbus::monitor(vbus_level level)
         k_work_cancel_delayable(&work_);
         return true;
     }
-    level_          = toZephyr(level);
+    level_ = toZephyr(level);
     report_pending_ = true; // contract: report the current state once known
     schedule(K_NO_WAIT);
     return true;
@@ -73,12 +73,12 @@ bool Vbus::discharge(bool on)
 void Vbus::poll(k_work* work)
 {
     auto* delayable = k_work_delayable_from_work(work);
-    auto* self      = CONTAINER_OF(delayable, Vbus, work_);
+    auto* self = CONTAINER_OF(delayable, Vbus, work_);
 
     bool const met = usbc_vbus_check_level(self->dev_, self->level_);
     if ((self->report_pending_ || met != self->met_) && self->callback_ != nullptr) {
         self->report_pending_ = false;
-        self->met_            = met;
+        self->met_ = met;
         self->callback_(self->context_, met);
     }
     self->schedule(K_MSEC(self->poll_interval_.count()));

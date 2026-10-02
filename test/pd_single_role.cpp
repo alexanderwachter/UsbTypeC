@@ -26,15 +26,15 @@ namespace {
 struct manual_timer {
     std::chrono::milliseconds duration{};
     fsm::timer_callback callback = nullptr;
-    void* context                = nullptr;
-    bool armed                   = false;
+    void* context = nullptr;
+    bool armed = false;
 
     void start(std::chrono::milliseconds d, fsm::timer_callback cb, void* ctx)
     {
         duration = d;
         callback = cb;
-        context  = ctx;
-        armed    = true;
+        context = ctx;
+        armed = true;
     }
     void stop() { armed = false; }
     void expire()
@@ -52,7 +52,7 @@ constexpr std::array source_caps{usbc::pdo::makeFixedSource(5000, 1500)};
 
 struct mock_sink_power : usbc::SinkPower<mock_sink_power> {
     int contracts = 0;
-    int losses    = 0;
+    int losses = 0;
     bool setLimit(usbc::millivolt, usbc::milliamp) { return true; }
     void onContract(usbc::millivolt, usbc::milliamp) { ++contracts; }
     void onContractLost() { ++losses; }
@@ -60,13 +60,13 @@ struct mock_sink_power : usbc::SinkPower<mock_sink_power> {
 
 struct mock_supply {
     usbc::supply_ready_callback callback = nullptr;
-    void* context                        = nullptr;
-    usbc::millivolt voltage              = 5000;
+    void* context = nullptr;
+    usbc::millivolt voltage = 5000;
 
     void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
     {
         callback = cb;
-        context  = ctx;
+        context = ctx;
     }
     bool setOutput(usbc::millivolt v, usbc::milliamp)
     {
@@ -85,28 +85,37 @@ struct mock_source_power : usbc::SourcePower<mock_source_power> {
 // --- partner messages --------------------------------------------------------
 int next_id = 0;
 
-usbc::pd_message partnerMessage(std::uint8_t message_type, std::uint8_t data_objects,
-                                usbc::power_role power, usbc::data_role data)
+usbc::pd_message partnerMessage(
+    std::uint8_t message_type,
+    std::uint8_t data_objects,
+    usbc::power_role power,
+    usbc::data_role data
+)
 {
-    return {.sop    = usbc::sop_type::sop,
-            .header = usbc::pd_header{.message_type     = message_type,
-                                      .port_data_role   = data,
-                                      .revision         = usbc::pd_revision::rev_3_x,
-                                      .port_power_role  = power,
-                                      .message_id = static_cast<std::uint8_t>(next_id++ & 0x7u),
-                                      .num_data_objects = data_objects}
-                          .encode()};
+    return {
+        .sop = usbc::sop_type::sop,
+        .header =
+            usbc::pd_header{
+                .message_type = message_type,
+                .port_data_role = data,
+                .revision = usbc::pd_revision::rev_3_x,
+                .port_power_role = power,
+                .message_id = static_cast<std::uint8_t>(next_id++ & 0x7u),
+                .num_data_objects = data_objects
+            }
+                .encode()
+    };
 }
 
-usbc::pd_message partnerControl(usbc::control_message_type type, usbc::power_role power,
-                                usbc::data_role data)
+usbc::pd_message
+partnerControl(usbc::control_message_type type, usbc::power_role power, usbc::data_role data)
 {
     return partnerMessage(static_cast<std::uint8_t>(type), 0, power, data);
 }
 
 void putObject(usbc::pd_message& message, std::uint32_t object)
 {
-    auto const offset           = message.payload_size;
+    auto const offset = message.payload_size;
     message.payload[offset + 0] = static_cast<std::uint8_t>(object);
     message.payload[offset + 1] = static_cast<std::uint8_t>(object >> 8u);
     message.payload[offset + 2] = static_cast<std::uint8_t>(object >> 16u);
@@ -134,8 +143,8 @@ void check(bool condition, std::source_location location = std::source_location:
 
 int pdSinkFacadeTests()
 {
-    using Port = usbc::PdSink<mock_tcpc, mock_vbus, manual_timer, usbc::PowerPolicy,
-                              mock_sink_power>;
+    using Port =
+        usbc::PdSink<mock_tcpc, mock_vbus, manual_timer, usbc::PowerPolicy, mock_sink_power>;
 
     mock_tcpc tcpc;
     mock_vbus vbus;
@@ -149,24 +158,32 @@ int pdSinkFacadeTests()
         tcpc.alerts |= usbc::alert_status::cc_status_changed;
         tcpc.callback(tcpc.context);
     };
-    auto const deliver   = [&](usbc::pd_message const& message) { tcpc.injectMessage(message); };
+    auto const deliver = [&](usbc::pd_message const& message) { tcpc.injectMessage(message); };
     auto const txSuccess = [&] {
         tcpc.alerts |= usbc::alert_status::transmit_success;
         tcpc.callback(tcpc.context);
     };
     auto const negotiate = [&] { // the source's caps through to PS_RDY
         auto caps = partnerMessage(
-            static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities), 1,
-            usbc::power_role::source, usbc::data_role::dfp);
+            static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities),
+            1,
+            usbc::power_role::source,
+            usbc::data_role::dfp
+        );
         putObject(caps, usbc::pdo::makeFixedSource(5000, 3000));
         deliver(caps);
-        check(transmittedType(tcpc) ==
-              static_cast<std::uint8_t>(usbc::data_message_type::request));
+        check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
         txSuccess();
-        deliver(partnerControl(usbc::control_message_type::accept, usbc::power_role::source,
-                               usbc::data_role::dfp));
-        deliver(partnerControl(usbc::control_message_type::ps_rdy, usbc::power_role::source,
-                               usbc::data_role::dfp));
+        deliver(partnerControl(
+            usbc::control_message_type::accept,
+            usbc::power_role::source,
+            usbc::data_role::dfp
+        ));
+        deliver(partnerControl(
+            usbc::control_message_type::ps_rdy,
+            usbc::power_role::source,
+            usbc::data_role::dfp
+        ));
     };
 
     port.start();
@@ -184,10 +201,15 @@ int pdSinkFacadeTests()
 
     // a sink-only port's policy answers none of the swap questions:
     // the partner's PR_Swap is Not_Supported, the contract stands
-    deliver(partnerControl(usbc::control_message_type::pr_swap, usbc::power_role::source,
-                           usbc::data_role::dfp));
-    check(transmittedType(tcpc) ==
-          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    deliver(partnerControl(
+        usbc::control_message_type::pr_swap,
+        usbc::power_role::source,
+        usbc::data_role::dfp
+    ));
+    check(
+        transmittedType(tcpc) ==
+        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+    );
     txSuccess();
     check(power.contracts == 1);
 
@@ -223,19 +245,24 @@ int pdSinkFacadeTests()
         vbus.setVoltage(5000); // the attach resumes, caps awaited
         check(timers.pe.armed);
     }
-    timers.pe.expire();                          // the counter is spent
-    check(!tcpc.last_signal.has_value());        // no further hard reset
-    check(tcpc.pull == usbc::cc_pull::open);     // Error Recovery: open terminations
-    timers.tc.expire();                          // tErrorRecovery over
-    check(tcpc.pull == usbc::cc_pull::rd);       // resolution restarts
+    timers.pe.expire();                      // the counter is spent
+    check(!tcpc.last_signal.has_value());    // no further hard reset
+    check(tcpc.pull == usbc::cc_pull::open); // Error Recovery: open terminations
+    timers.tc.expire();                      // tErrorRecovery over
+    check(tcpc.pull == usbc::cc_pull::rd);   // resolution restarts
 
     return failures;
 }
 
 int pdSourceFacadeTests()
 {
-    using Port = usbc::PdSource<mock_tcpc, mock_vbus, manual_timer, usbc::RequestPolicy,
-                                mock_supply, mock_source_power>;
+    using Port = usbc::PdSource<
+        mock_tcpc,
+        mock_vbus,
+        manual_timer,
+        usbc::RequestPolicy,
+        mock_supply,
+        mock_source_power>;
 
     mock_tcpc tcpc;
     mock_vbus vbus;
@@ -250,7 +277,7 @@ int pdSourceFacadeTests()
         tcpc.alerts |= usbc::alert_status::cc_status_changed;
         tcpc.callback(tcpc.context);
     };
-    auto const deliver   = [&](usbc::pd_message const& message) { tcpc.injectMessage(message); };
+    auto const deliver = [&](usbc::pd_message const& message) { tcpc.injectMessage(message); };
     auto const txSuccess = [&] {
         tcpc.alerts |= usbc::alert_status::transmit_success;
         tcpc.callback(tcpc.context);
@@ -264,13 +291,18 @@ int pdSourceFacadeTests()
     ccAlert();
     timers.tc.expire(); // tCCDebounce (VBUS at vSafe0V)
     check(tcpc.sourcing);
-    check(transmittedType(tcpc) ==
-          static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities));
+    check(
+        transmittedType(tcpc) ==
+        static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities)
+    );
     txSuccess();
 
     auto request = partnerMessage(
-        static_cast<std::uint8_t>(usbc::data_message_type::request), 1,
-        usbc::power_role::sink, usbc::data_role::ufp);
+        static_cast<std::uint8_t>(usbc::data_message_type::request),
+        1,
+        usbc::power_role::sink,
+        usbc::data_role::ufp
+    );
     putObject(request, usbc::pdo::makeFixedRequest(1, 1000, 1000, false));
     deliver(request);
     check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::accept));
@@ -283,10 +315,15 @@ int pdSourceFacadeTests()
 
     // a source-only port's policy answers none of the swap questions:
     // the partner's DR_Swap is Not_Supported
-    deliver(partnerControl(usbc::control_message_type::dr_swap, usbc::power_role::sink,
-                           usbc::data_role::ufp));
-    check(transmittedType(tcpc) ==
-          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    deliver(partnerControl(
+        usbc::control_message_type::dr_swap,
+        usbc::power_role::sink,
+        usbc::data_role::ufp
+    ));
+    check(
+        transmittedType(tcpc) ==
+        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+    );
     txSuccess();
 
     // a mute PD sink (GoodCRCs, never Requests): hard resets until the
@@ -298,8 +335,16 @@ int pdSourceFacadeTests()
         usbc::pd_source_timers<manual_timer> silent_timers;
         mock_supply silent_supply;
         mock_source_power silent_power;
-        Port silent{silent_tcpc, silent_vbus,  silent_timers,       source_caps,
-                    policy,      silent_supply, silent_power, usbc::rp_value::p_1a5};
+        Port silent{
+            silent_tcpc,
+            silent_vbus,
+            silent_timers,
+            source_caps,
+            policy,
+            silent_supply,
+            silent_power,
+            usbc::rp_value::p_1a5
+        };
         auto const confirm = [&] {
             silent_tcpc.alerts |= usbc::alert_status::transmit_success;
             silent_tcpc.callback(silent_tcpc.context);

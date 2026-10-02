@@ -8,9 +8,9 @@
  */
 
 #include <mtl/StateMachineDot.hpp>
+#include <usbc/ProtocolLayer.hpp>
 #include <usbc/SinkPolicyEngine.hpp>
 #include <usbc/SourcePolicyEngine.hpp>
-#include <usbc/ProtocolLayer.hpp>
 #include <usbc/TypeCDrp.hpp>
 #include <usbc/TypeCSink.hpp>
 #include <usbc/TypeCSource.hpp>
@@ -43,12 +43,15 @@ int main(int argc, char* argv[])
     write<usbc::tc::sink_table>(directory, "tc_sink");
     write<usbc::tc::source_table>(directory, "tc_source");
     constexpr auto& drp_timing = usbc::default_drp_timing;
-    write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::none>>(directory,
-                                                                              "tc_drp");
+    write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::none>>(directory, "tc_drp");
     write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::source>>(
-        directory, "tc_drp_try_src");
+        directory,
+        "tc_drp_try_src"
+    );
     write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::sink>>(
-        directory, "tc_drp_try_snk");
+        directory,
+        "tc_drp_try_snk"
+    );
     // the Try phases are composite states: one graph per submachine
     write<usbc::tc::drp::try_src_table<drp_timing>>(directory, "tc_try_src");
     write<usbc::tc::drp::try_snk_table<drp_timing>>(directory, "tc_try_snk");

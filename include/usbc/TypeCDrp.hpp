@@ -131,18 +131,30 @@ template<drp_timing const& TIMING>
 consteval bool timingWithinSpec()
 {
     static_assert(spec::t_drp.contains(TIMING.t_drp), "tDRP outside the spec's 50-100 ms");
-    static_assert(spec::within(TIMING.dc_src, spec::dc_src_drp_min, spec::dc_src_drp_max),
-                  "dcSRC.DRP outside the spec's 30-70 %");
-    static_assert(spec::t_drp_try.contains(TIMING.t_drp_try),
-                  "tDRPTry outside the spec's 75-150 ms");
-    static_assert(spec::t_drp_try_wait.contains(TIMING.t_drp_try_wait),
-                  "tDRPTryWait outside the spec's 400-800 ms");
-    static_assert(spec::t_try_cc_debounce.contains(TIMING.t_try_cc_debounce),
-                  "tTryCCDebounce outside the spec's 10-20 ms");
-    static_assert(spec::t_try_timeout.contains(TIMING.t_try_timeout),
-                  "tTryTimeout outside the spec's 550-1100 ms");
-    static_assert(spec::t_pd_debounce.contains(TIMING.t_pd_debounce),
-                  "tPDDebounce outside the spec's 10-20 ms");
+    static_assert(
+        spec::within(TIMING.dc_src, spec::dc_src_drp_min, spec::dc_src_drp_max),
+        "dcSRC.DRP outside the spec's 30-70 %"
+    );
+    static_assert(
+        spec::t_drp_try.contains(TIMING.t_drp_try),
+        "tDRPTry outside the spec's 75-150 ms"
+    );
+    static_assert(
+        spec::t_drp_try_wait.contains(TIMING.t_drp_try_wait),
+        "tDRPTryWait outside the spec's 400-800 ms"
+    );
+    static_assert(
+        spec::t_try_cc_debounce.contains(TIMING.t_try_cc_debounce),
+        "tTryCCDebounce outside the spec's 10-20 ms"
+    );
+    static_assert(
+        spec::t_try_timeout.contains(TIMING.t_try_timeout),
+        "tTryTimeout outside the spec's 550-1100 ms"
+    );
+    static_assert(
+        spec::t_pd_debounce.contains(TIMING.t_pd_debounce),
+        "tPDDebounce outside the spec's 10-20 ms"
+    );
     return true;
 }
 
@@ -184,8 +196,7 @@ struct unattached_src : state::source_state {
     static constexpr auto timeout = t_src_slice<TIMING>;
 
     // entering on the discharge-complete event records what it means
-    unattached_src(event::vbus_reached_safe0v const&, line_status& line_ref,
-                   attachment& attached)
+    unattached_src(event::vbus_reached_safe0v const&, line_status& line_ref, attachment& attached)
         : unattached_src(line_ref, attached)
     {
         line.vbus_safe0v = true;
@@ -217,7 +228,7 @@ struct try_phase_state : ROLE_STATE {
     // the budget ran out while the termination is being debounced
     void handle(fsm::timeout const&) { phase.expired = true; }
 
-    using contexts        = mtl::typelist<line_status, try_phase>;
+    using contexts = mtl::typelist<line_status, try_phase>;
     using parent_contexts = mtl::typelist<line_status, try_phase>;
     try_phase& phase;
 };
@@ -239,8 +250,11 @@ struct awaiting_termination : ROLE_STATE {
 // where a failed debounce leads
 template<typename ROLE_STATE>
 struct debouncing_termination : ROLE_STATE {
-    debouncing_termination(event::cc_changed const& event, line_status& line_ref,
-                           try_phase& phase_ref)
+    debouncing_termination(
+        event::cc_changed const& event,
+        line_status& line_ref,
+        try_phase& phase_ref
+    )
         : debouncing_termination(line_ref, phase_ref)
     {
         this->line.cc = event.cc;
@@ -422,7 +436,7 @@ struct try_wait_src : try_phase_state<state::source_state> {
 
 // Operating values for the PS_RDY waits, within the spec ranges
 inline constexpr auto t_ps_source_off = std::chrono::milliseconds{835}; // tPSSourceOff
-inline constexpr auto t_ps_source_on  = std::chrono::milliseconds{435}; // tPSSourceOn
+inline constexpr auto t_ps_source_on = std::chrono::milliseconds{435};  // tPSSourceOn
 
 // The window of a PR_Swap where the roles change hands: power paths
 // off, Rd presented, and CC/VBUS reports absorbed - VBUS is
@@ -524,7 +538,9 @@ struct sourcing_allowed {
 // flows bring the sink and source maps along
 template<drp_timing const& TIMING>
 using core_timer_ranges = mtl::linearize_t<mtl::typelist<
-    sink_timer_ranges, source_timer_ranges, error_recovery_timer_range,
+    sink_timer_ranges,
+    source_timer_ranges,
+    error_recovery_timer_range,
     hard_reset_timer_ranges,
     fsm::timed_by<unattached_snk<TIMING>, spec::t_drp_pw>,
     fsm::timed_by<unattached_src<TIMING>, spec::t_drp_pw>,
@@ -558,152 +574,109 @@ using sink_flow = mtl::concat_t<
     mtl::typelist<
         // the Rd slice is up: advertise Rp - unless the port is locked
         // to the sink role, then another Rd slice (re-asking each time)
-        fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>,
-                        fsm::to<unattached_src<TIMING>>, fsm::guard<sourcing_allowed>>,
-        fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>,
-                        fsm::to<unattached_snk<TIMING>>>>,
+        fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<sourcing_allowed>, fsm::to<unattached_src<TIMING>>>,
+        fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>, fsm::to<unattached_snk<TIMING>>>>,
     sink_attach_flow<unattached_snk<TIMING>, SNK_ATTACH>>;
 
 // Source-role flow; SRC_ATTACH is Attached.SRC, or Try.SNK for a
 // sink-preferring port
 template<drp_timing const& TIMING, typename SRC_ATTACH>
 using source_flow = mtl::concat_t<
-    mtl::typelist<fsm::transition<fsm::from<unattached_src<TIMING>>, fsm::on<fsm::timeout>,
-                                  fsm::to<unattached_snk<TIMING>>>>,
+    mtl::typelist<fsm::transition<fsm::from<unattached_src<TIMING>>, fsm::on<fsm::timeout>, fsm::to<unattached_snk<TIMING>>>>,
     source_attach_flow<unattached_src<TIMING>, SRC_ATTACH>>;
 
 // Inside Try.SRC: watch for a single Rd and debounce it
 template<drp_timing const& TIMING>
-struct try_src_table : fsm::transition_table<
-    fsm::transition<fsm::from<try_src_monitor>, fsm::on<event::cc_changed>,
-                    fsm::to<try_src_debounce<TIMING>>, fsm::guard<rd_on_event>>,
-    fsm::internal_transition<fsm::from<try_src_monitor>, fsm::on<event::cc_changed>>,
-    // a CC change restarts the debounce
-    fsm::transition<fsm::from<try_src_debounce<TIMING>>, fsm::on<event::cc_changed>,
-                    fsm::to<try_src_debounce<TIMING>>>,
-    fsm::transition<fsm::from<try_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<partner_detected>, fsm::guard<rd_in_context>>,
-    fsm::transition<fsm::from<try_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<phase_expired>, fsm::guard<try_expired>>,
-    fsm::transition<fsm::from<try_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<try_src_monitor>>,
-    fsm::final<partner_detected>,
-    fsm::final<phase_expired>> {};
+struct try_src_table
+    : fsm::transition_table<
+                           fsm::transition<fsm::from<try_src_monitor>, fsm::on<event::cc_changed>, fsm::guard<rd_on_event>, fsm::to<try_src_debounce<TIMING>>>,
+                           fsm::internal_transition<fsm::from<try_src_monitor>, fsm::on<event::cc_changed>>,
+          // a CC change restarts the debounce
+                           fsm::transition<fsm::from<try_src_debounce<TIMING>>, fsm::on<event::cc_changed>, fsm::to<try_src_debounce<TIMING>>>,
+                           fsm::transition<fsm::from<try_src_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<rd_in_context>, fsm::to<partner_detected>>,
+                           fsm::transition<fsm::from<try_src_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<try_expired>, fsm::to<phase_expired>>,
+                           fsm::transition<fsm::from<try_src_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::to<try_src_monitor>>,
+          fsm::final<partner_detected>,
+          fsm::final<phase_expired>> {};
 
 template<drp_timing const& TIMING>
 using try_src_flow = mtl::typelist<
     // tDRPTry is up: recorded while an Rd is under debounce, else give
     // up trying
-    fsm::internal_transition<fsm::from<try_src<TIMING>>, fsm::on<fsm::timeout>,
-                             fsm::guard<termination_seen>>,
-    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<try_wait_snk<TIMING>>>,
-    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<try_succeeded>,
-                    fsm::to<state::attached_src>>,
-    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<try_failed>,
-                    fsm::to<try_wait_snk<TIMING>>>,
+    fsm::internal_transition<fsm::from<try_src<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<termination_seen>>,
+    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<fsm::timeout>, fsm::to<try_wait_snk<TIMING>>>,
+    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<try_succeeded>, fsm::to<state::attached_src>>,
+    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<try_failed>, fsm::to<try_wait_snk<TIMING>>>,
     fsm::internal_transition<fsm::from<try_src<TIMING>>, fsm::on<event::vbus_reached_safe0v>>,
     fsm::internal_transition<fsm::from<try_src<TIMING>>, fsm::on<event::vbus_left_safe0v>>,
     // TryWait.SNK: the partner sourcing VBUS is the attach signal
-    fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::cc_changed>,
-                    fsm::to<state::attached_snk>,
-                    fsm::guard<rp_on_event, vbus_present_in_context>>,
+    fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::cc_changed>, fsm::guard<rp_on_event, vbus_present_in_context>, fsm::to<state::attached_snk>>,
     fsm::internal_transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::cc_changed>>,
-    fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::vbus_present>,
-                    fsm::to<state::attached_snk>, fsm::guard<rp_in_context>>,
+    fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::vbus_present>, fsm::guard<rp_in_context>, fsm::to<state::attached_snk>>,
     fsm::internal_transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::vbus_removed>>,
-    fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<unattached_snk<TIMING>>>>;
+    fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<fsm::timeout>, fsm::to<unattached_snk<TIMING>>>>;
 
 // Inside Try.SNK: after the tDRPTry wait, watch for a single Rp and
 // debounce it
 template<drp_timing const& TIMING>
-struct try_snk_table : fsm::transition_table<
-    // the CC pins are not monitored during the initial tDRPTry wait
-    fsm::internal_transition<fsm::from<try_snk_wait<TIMING>>, fsm::on<event::cc_changed>>,
-    fsm::transition<fsm::from<try_snk_wait<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<try_snk_debounce<TIMING>>, fsm::guard<rp_in_context>>,
-    fsm::transition<fsm::from<try_snk_wait<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<try_snk_monitor>>,
-    fsm::transition<fsm::from<try_snk_monitor>, fsm::on<event::cc_changed>,
-                    fsm::to<try_snk_debounce<TIMING>>, fsm::guard<rp_on_event>>,
-    fsm::internal_transition<fsm::from<try_snk_monitor>, fsm::on<event::cc_changed>>,
-    fsm::transition<fsm::from<try_snk_monitor>, fsm::on<event::vbus_present>,
-                    fsm::to<try_snk_debounce<TIMING>>, fsm::guard<rp_in_context>>,
-    // a CC change keeping the Rp restarts the debounce, losing it
-    // resumes monitoring - or ends the phase once its budget is spent
-    fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<event::cc_changed>,
-                    fsm::to<try_snk_debounce<TIMING>>, fsm::guard<rp_on_event>>,
-    fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<event::cc_changed>,
-                    fsm::to<phase_expired>, fsm::guard<try_expired>>,
-    fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<event::cc_changed>,
-                    fsm::to<try_snk_monitor>>,
-    fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<partner_detected>,
-                    fsm::guard<rp_in_context, vbus_present_in_context>>,
-    fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<phase_expired>, fsm::guard<try_expired>>,
-    fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<try_snk_monitor>>,
-    fsm::final<partner_detected>,
-    fsm::final<phase_expired>> {};
+struct try_snk_table
+    : fsm::transition_table<
+          // the CC pins are not monitored during the initial tDRPTry wait
+                           fsm::internal_transition<fsm::from<try_snk_wait<TIMING>>, fsm::on<event::cc_changed>>,
+                           fsm::transition<fsm::from<try_snk_wait<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<rp_in_context>, fsm::to<try_snk_debounce<TIMING>>>,
+                           fsm::transition<fsm::from<try_snk_wait<TIMING>>, fsm::on<fsm::timeout>, fsm::to<try_snk_monitor>>,
+                           fsm::transition<fsm::from<try_snk_monitor>, fsm::on<event::cc_changed>, fsm::guard<rp_on_event>, fsm::to<try_snk_debounce<TIMING>>>,
+                           fsm::internal_transition<fsm::from<try_snk_monitor>, fsm::on<event::cc_changed>>,
+                           fsm::transition<fsm::from<try_snk_monitor>, fsm::on<event::vbus_present>, fsm::guard<rp_in_context>, fsm::to<try_snk_debounce<TIMING>>>,
+          // a CC change keeping the Rp restarts the debounce, losing it
+          // resumes monitoring - or ends the phase once its budget is spent
+                           fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<event::cc_changed>, fsm::guard<rp_on_event>, fsm::to<try_snk_debounce<TIMING>>>,
+                           fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<event::cc_changed>, fsm::guard<try_expired>, fsm::to<phase_expired>>,
+                           fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<event::cc_changed>, fsm::to<try_snk_monitor>>,
+                           fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<rp_in_context, vbus_present_in_context>, fsm::to<partner_detected>>,
+                           fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<try_expired>, fsm::to<phase_expired>>,
+                           fsm::transition<fsm::from<try_snk_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::to<try_snk_monitor>>,
+          fsm::final<partner_detected>,
+          fsm::final<phase_expired>> {};
 
 // Inside TryWait.SRC: watch for a single Rd, debounce it, and wait for
 // vSafe0V
 template<drp_timing const& TIMING>
-struct try_wait_src_table : fsm::transition_table<
-    fsm::transition<fsm::from<try_wait_src_monitor>, fsm::on<event::cc_changed>,
-                    fsm::to<try_wait_src_debounce<TIMING>>, fsm::guard<rd_on_event>>,
-    fsm::internal_transition<fsm::from<try_wait_src_monitor>, fsm::on<event::cc_changed>>,
-    fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<event::cc_changed>,
-                    fsm::to<try_wait_src_debounce<TIMING>>>,
-    fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<partner_detected>,
-                    fsm::guard<rd_in_context, vbus_safe0v_in_context>>,
-    fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<try_wait_src_safe0v>, fsm::guard<rd_in_context>>,
-    fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<phase_expired>, fsm::guard<try_expired>>,
-    fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<try_wait_src_monitor>>,
-    fsm::transition<fsm::from<try_wait_src_safe0v>, fsm::on<event::vbus_reached_safe0v>,
-                    fsm::to<partner_detected>>,
-    // the Rd went away after its debounce: the phase starts over
-    fsm::transition<fsm::from<try_wait_src_safe0v>, fsm::on<event::cc_changed>,
-                    fsm::to<termination_lost>>,
-    fsm::final<partner_detected>,
-    fsm::final<phase_expired>,
-    fsm::final<termination_lost>> {};
+struct try_wait_src_table
+    : fsm::transition_table<
+                                fsm::transition<fsm::from<try_wait_src_monitor>, fsm::on<event::cc_changed>, fsm::guard<rd_on_event>, fsm::to<try_wait_src_debounce<TIMING>>>,
+                                fsm::internal_transition<fsm::from<try_wait_src_monitor>, fsm::on<event::cc_changed>>,
+                                fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<event::cc_changed>, fsm::to<try_wait_src_debounce<TIMING>>>,
+                                fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<rd_in_context, vbus_safe0v_in_context>, fsm::to<partner_detected>>,
+                                fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<rd_in_context>, fsm::to<try_wait_src_safe0v>>,
+                                fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<try_expired>, fsm::to<phase_expired>>,
+                                fsm::transition<fsm::from<try_wait_src_debounce<TIMING>>, fsm::on<fsm::timeout>, fsm::to<try_wait_src_monitor>>,
+                                fsm::transition<fsm::from<try_wait_src_safe0v>, fsm::on<event::vbus_reached_safe0v>, fsm::to<partner_detected>>,
+          // the Rd went away after its debounce: the phase starts over
+                                fsm::transition<fsm::from<try_wait_src_safe0v>, fsm::on<event::cc_changed>, fsm::to<termination_lost>>,
+          fsm::final<partner_detected>,
+          fsm::final<phase_expired>,
+          fsm::final<termination_lost>> {};
 
 template<drp_timing const& TIMING>
 using try_snk_flow = mtl::typelist<
     // tTryTimeout is up: recorded while an Rp is under debounce, else
     // stop trying
-    fsm::internal_transition<fsm::from<try_snk<TIMING>>, fsm::on<fsm::timeout>,
-                             fsm::guard<termination_seen>>,
-    fsm::transition<fsm::from<try_snk<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<try_wait_src<TIMING>>>,
-    fsm::transition<fsm::from<try_snk<TIMING>>, fsm::on<try_succeeded>,
-                    fsm::to<state::attached_snk>>,
-    fsm::transition<fsm::from<try_snk<TIMING>>, fsm::on<try_failed>,
-                    fsm::to<try_wait_src<TIMING>>>,
+    fsm::internal_transition<fsm::from<try_snk<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<termination_seen>>,
+    fsm::transition<fsm::from<try_snk<TIMING>>, fsm::on<fsm::timeout>, fsm::to<try_wait_src<TIMING>>>,
+    fsm::transition<fsm::from<try_snk<TIMING>>, fsm::on<try_succeeded>, fsm::to<state::attached_snk>>,
+    fsm::transition<fsm::from<try_snk<TIMING>>, fsm::on<try_failed>, fsm::to<try_wait_src<TIMING>>>,
     fsm::internal_transition<fsm::from<try_snk<TIMING>>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<try_snk<TIMING>>, fsm::on<event::vbus_removed>>,
     // tDRPTryWait is up: recorded while an Rd is under debounce or
     // waits for vSafe0V, else resume toggling
-    fsm::internal_transition<fsm::from<try_wait_src<TIMING>>, fsm::on<fsm::timeout>,
-                             fsm::guard<termination_seen>>,
-    fsm::transition<fsm::from<try_wait_src<TIMING>>, fsm::on<fsm::timeout>,
-                    fsm::to<unattached_snk<TIMING>>>,
-    fsm::transition<fsm::from<try_wait_src<TIMING>>, fsm::on<try_succeeded>,
-                    fsm::to<state::attached_src>>,
-    fsm::transition<fsm::from<try_wait_src<TIMING>>, fsm::on<try_failed>,
-                    fsm::to<unattached_snk<TIMING>>>,
-    fsm::transition<fsm::from<try_wait_src<TIMING>>, fsm::on<try_restarted>,
-                    fsm::to<try_wait_src<TIMING>>>,
-    fsm::internal_transition<fsm::from<try_wait_src<TIMING>>,
-                             fsm::on<event::vbus_reached_safe0v>>,
+    fsm::internal_transition<fsm::from<try_wait_src<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<termination_seen>>,
+    fsm::transition<fsm::from<try_wait_src<TIMING>>, fsm::on<fsm::timeout>, fsm::to<unattached_snk<TIMING>>>,
+    fsm::transition<fsm::from<try_wait_src<TIMING>>, fsm::on<try_succeeded>, fsm::to<state::attached_src>>,
+    fsm::transition<fsm::from<try_wait_src<TIMING>>, fsm::on<try_failed>, fsm::to<unattached_snk<TIMING>>>,
+    fsm::transition<fsm::from<try_wait_src<TIMING>>, fsm::on<try_restarted>, fsm::to<try_wait_src<TIMING>>>,
+    fsm::internal_transition<fsm::from<try_wait_src<TIMING>>, fsm::on<event::vbus_reached_safe0v>>,
     fsm::internal_transition<fsm::from<try_wait_src<TIMING>>, fsm::on<event::vbus_left_safe0v>>>;
 
 // PD-directed role swaps (spec: Attached.SNK <-> Attached.SRC "as
@@ -714,25 +687,17 @@ using try_snk_flow = mtl::typelist<
 // policy observers
 template<drp_timing const& TIMING>
 using swap_flow = mtl::typelist<
-    fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::swap_to_source>,
-                    fsm::to<swap_standby_to_src>>,
-    fsm::transition<fsm::from<state::attached_src>, fsm::on<event::swap_to_sink>,
-                    fsm::to<swap_standby_to_snk>>,
-    fsm::transition<fsm::from<swap_standby_to_src>, fsm::on<event::swap_complete>,
-                    fsm::to<state::attached_src>>,
-    fsm::transition<fsm::from<swap_standby_to_src>, fsm::on<event::swap_abort>,
-                    fsm::to<state::attached_snk>>,
-    fsm::transition<fsm::from<swap_standby_to_src>, fsm::on<fsm::timeout>,
-                    fsm::to<unattached_snk<TIMING>>>,
+    fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::swap_to_source>, fsm::to<swap_standby_to_src>>,
+    fsm::transition<fsm::from<state::attached_src>, fsm::on<event::swap_to_sink>, fsm::to<swap_standby_to_snk>>,
+    fsm::transition<fsm::from<swap_standby_to_src>, fsm::on<event::swap_complete>, fsm::to<state::attached_src>>,
+    fsm::transition<fsm::from<swap_standby_to_src>, fsm::on<event::swap_abort>, fsm::to<state::attached_snk>>,
+    fsm::transition<fsm::from<swap_standby_to_src>, fsm::on<fsm::timeout>, fsm::to<unattached_snk<TIMING>>>,
     fsm::internal_transition<fsm::from<swap_standby_to_src>, fsm::on<event::cc_changed>>,
     fsm::internal_transition<fsm::from<swap_standby_to_src>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<swap_standby_to_src>, fsm::on<event::vbus_removed>>,
-    fsm::transition<fsm::from<swap_standby_to_snk>, fsm::on<event::swap_complete>,
-                    fsm::to<state::attached_snk>>,
-    fsm::transition<fsm::from<swap_standby_to_snk>, fsm::on<event::swap_abort>,
-                    fsm::to<state::attached_src>>,
-    fsm::transition<fsm::from<swap_standby_to_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<unattached_snk<TIMING>>>,
+    fsm::transition<fsm::from<swap_standby_to_snk>, fsm::on<event::swap_complete>, fsm::to<state::attached_snk>>,
+    fsm::transition<fsm::from<swap_standby_to_snk>, fsm::on<event::swap_abort>, fsm::to<state::attached_src>>,
+    fsm::transition<fsm::from<swap_standby_to_snk>, fsm::on<fsm::timeout>, fsm::to<unattached_snk<TIMING>>>,
     fsm::internal_transition<fsm::from<swap_standby_to_snk>, fsm::on<event::cc_changed>>,
     fsm::internal_transition<fsm::from<swap_standby_to_snk>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<swap_standby_to_snk>, fsm::on<event::vbus_removed>>,
@@ -742,24 +707,21 @@ using swap_flow = mtl::typelist<
 // The port rests in the sink layer's Disabled state and goes live
 // toggling at Rd
 template<drp_timing const& TIMING>
-using entry_flow = mtl::typelist<
-    fsm::initial<state::disabled_snk>,
-    fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>,
-                    fsm::to<unattached_snk<TIMING>>>>;
+using entry_flow = mtl::typelist<fsm::initial<state::disabled_snk>, fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>, fsm::to<unattached_snk<TIMING>>>>;
 
 // Named structs, not aliases: the short name replaces the fully
 // spelled table type in every mangled symbol. Timeout bounds and
 // reachability are checked in test/compliance.cpp
 template<drp_timing const& TIMING, drp_preference PREFERENCE>
-struct table_for
-    : mtl::rebind_t<
-          mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
-                                         sink_flow<TIMING, state::attached_snk>,
-                                         source_flow<TIMING, state::attached_src>,
-                                         swap_flow<TIMING>,
-                                         error_recovery_flow<unattached_snk<TIMING>>,
-                                         hard_reset_flow<unattached_snk<TIMING>>>>,
-          fsm::transition_table> {
+struct table_for : mtl::rebind_t<
+                       mtl::linearize_t<mtl::typelist<
+                           entry_flow<TIMING>,
+                           sink_flow<TIMING, state::attached_snk>,
+                           source_flow<TIMING, state::attached_src>,
+                           swap_flow<TIMING>,
+                           error_recovery_flow<unattached_snk<TIMING>>,
+                           hard_reset_flow<unattached_snk<TIMING>>>>,
+                       fsm::transition_table> {
     static_assert(timingWithinSpec<TIMING>());
 };
 
@@ -769,21 +731,21 @@ struct table_for
 // lock's no falls through to the plain sink attach
 template<drp_timing const& TIMING>
 using try_src_entry = mtl::typelist<
-    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>,
-                    fsm::to<try_src<TIMING>>,
-                    fsm::guard<stable_rp, vbus_present_in_context, sourcing_allowed>>,
-    fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_present>,
-                    fsm::to<try_src<TIMING>>, fsm::guard<sourcing_allowed>>>;
+    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::guard<stable_rp, vbus_present_in_context, sourcing_allowed>, fsm::to<try_src<TIMING>>>,
+    fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_present>, fsm::guard<sourcing_allowed>, fsm::to<try_src<TIMING>>>>;
 
 template<drp_timing const& TIMING>
 struct table_for<TIMING, drp_preference::source>
     : mtl::rebind_t<
-          mtl::linearize_t<mtl::typelist<entry_flow<TIMING>, try_src_entry<TIMING>,
-                                         sink_flow<TIMING, state::attached_snk>,
-                                         source_flow<TIMING, state::attached_src>,
-                                         try_src_flow<TIMING>, swap_flow<TIMING>,
-                                         error_recovery_flow<unattached_snk<TIMING>>,
-                                         hard_reset_flow<unattached_snk<TIMING>>>>,
+          mtl::linearize_t<mtl::typelist<
+              entry_flow<TIMING>,
+              try_src_entry<TIMING>,
+              sink_flow<TIMING, state::attached_snk>,
+              source_flow<TIMING, state::attached_src>,
+              try_src_flow<TIMING>,
+              swap_flow<TIMING>,
+              error_recovery_flow<unattached_snk<TIMING>>,
+              hard_reset_flow<unattached_snk<TIMING>>>>,
           fsm::transition_table> {
     static_assert(timingWithinSpec<TIMING>());
 };
@@ -791,12 +753,14 @@ struct table_for<TIMING, drp_preference::source>
 template<drp_timing const& TIMING>
 struct table_for<TIMING, drp_preference::sink>
     : mtl::rebind_t<
-          mtl::linearize_t<mtl::typelist<entry_flow<TIMING>,
-                                         sink_flow<TIMING, state::attached_snk>,
-                                         source_flow<TIMING, try_snk<TIMING>>,
-                                         try_snk_flow<TIMING>, swap_flow<TIMING>,
-                                         error_recovery_flow<unattached_snk<TIMING>>,
-                                         hard_reset_flow<unattached_snk<TIMING>>>>,
+          mtl::linearize_t<mtl::typelist<
+              entry_flow<TIMING>,
+              sink_flow<TIMING, state::attached_snk>,
+              source_flow<TIMING, try_snk<TIMING>>,
+              try_snk_flow<TIMING>,
+              swap_flow<TIMING>,
+              error_recovery_flow<unattached_snk<TIMING>>,
+              hard_reset_flow<unattached_snk<TIMING>>>>,
           fsm::transition_table> {
     static_assert(timingWithinSpec<TIMING>());
 };
@@ -823,10 +787,14 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
     template<fsm::concepts::transition_table TABLE>
     static constexpr void validate()
     {
-        static_assert(fsm::all_states_carry_v<TABLE, cc_termination>,
-                      "drp_hw_driver: every state must annotate its CC termination");
-        static_assert(fsm::all_states_carry_v<TABLE, vbus_power>,
-                      "drp_hw_driver: every state must annotate its VBUS power path");
+        static_assert(
+            fsm::all_states_carry_v<TABLE, cc_termination>,
+            "drp_hw_driver: every state must annotate its CC termination"
+        );
+        static_assert(
+            fsm::all_states_carry_v<TABLE, vbus_power>,
+            "drp_hw_driver: every state must annotate its VBUS power path"
+        );
     }
 
     void notifyEntry(cc_termination termination) { tcpc.setCc(termination.pull, rp); }
@@ -854,12 +822,16 @@ struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
 
 } // namespace tc
 
-template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         drp_timing const& TIMING = default_drp_timing,
-         drp_preference PREFERENCE = drp_preference::none, typename... OBSERVERs>
+template<
+    concepts::tcpc TCPC,
+    concepts::vbus VBUS,
+    fsm::concepts::timer TIMER,
+    drp_timing const& TIMING = default_drp_timing,
+    drp_preference PREFERENCE = drp_preference::none,
+    typename... OBSERVERs>
 class TypeCDrp
-    : public tc::port_frontend<
-          TypeCDrp<TCPC, VBUS, TIMER, TIMING, PREFERENCE, OBSERVERs...>, TCPC, VBUS> {
+    : public tc::
+          port_frontend<TypeCDrp<TCPC, VBUS, TIMER, TIMING, PREFERENCE, OBSERVERs...>, TCPC, VBUS> {
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). The advertisement is the Rp presented
@@ -876,8 +848,14 @@ public:
     // tDRPTryWait) among them; try_timer runs the timeouts inside a
     // Try phase (its debounces) alongside - a preference-none port
     // never arms it
-    TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, TIMER& try_timer, rp_value advertisement,
-             OBSERVERs&... observers)
+    TypeCDrp(
+        TCPC& tcpc,
+        VBUS& vbus,
+        TIMER& timer,
+        TIMER& try_timer,
+        rp_value advertisement,
+        OBSERVERs&... observers
+    )
         : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), timer_(timer),
           try_timer_(try_timer), timed_(TypeCDrp::timerPerLevel(timer_, try_timer_)),
           observers_(observers...), sm_(timed_, hw_, vbus_, observers...)
@@ -921,10 +899,7 @@ public:
     // swap_standby annotation tracking replaces the old process()
     // return (the queued machine reports acceptance, not whether a
     // transition fired)
-    bool completeSwap()
-    {
-        return hw_.in_swap_standby && sm_.process(tc::event::swap_complete{});
-    }
+    bool completeSwap() { return hw_.in_swap_standby && sm_.process(tc::event::swap_complete{}); }
 
     bool abortSwap() { return hw_.in_swap_standby && sm_.process(tc::event::swap_abort{}); }
 
@@ -955,8 +930,10 @@ public:
         }
         sm_.process(tc::event::swap_data_role{});
         auto const swapped = *dataRole();
-        std::apply([&](auto&... observer) { (forwardDataRole(observer, swapped), ...); },
-                   observers_);
+        std::apply(
+            [&](auto&... observer) { (forwardDataRole(observer, swapped), ...); },
+            observers_
+        );
         return true;
     }
 
@@ -974,11 +951,11 @@ public:
         }
         constexpr bool any_policy =
             (concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, ROLE> || ...);
-        return any_policy && std::apply(
-                                 [role](auto&... observer) {
-                                     return (allowsSwap(observer, role) && ...);
-                                 },
-                                 observers_);
+        return any_policy &&
+               std::apply(
+                   [role](auto&... observer) { return (allowsSwap(observer, role) && ...); },
+                   observers_
+               );
     }
 
     // The role lock's answer (tc::drp::sourcing_allowed): the injected
@@ -986,8 +963,10 @@ public:
     // stands without one - the same resolution the machine applies
     bool sourcingAllowed()
     {
-        return std::apply([](auto&... observer) { return (allowsSourcing(observer) && ...); },
-                          observers_);
+        return std::apply(
+            [](auto&... observer) { return (allowsSourcing(observer) && ...); },
+            observers_
+        );
     }
 
     // The attached pair's power role, as the Attached states annotate
@@ -1028,8 +1007,7 @@ private:
     template<typename ROLE>
     static bool allowsSwap(auto& observer, ROLE role)
     {
-        if constexpr (concepts::drp_swap_policy<std::remove_cvref_t<decltype(observer)>,
-                                                ROLE>) {
+        if constexpr (concepts::drp_swap_policy<std::remove_cvref_t<decltype(observer)>, ROLE>) {
             return observer.allowSwap(role);
         } else {
             return true;
@@ -1045,8 +1023,9 @@ private:
 
     static bool allowsSourcing(auto& observer)
     {
-        if constexpr (fsm::concepts::answers_stateless_guard<std::remove_cvref_t<decltype(observer)>,
-                                                             tc::drp::sourcing_allowed>) {
+        if constexpr (fsm::concepts::answers_stateless_guard<
+                          std::remove_cvref_t<decltype(observer)>,
+                          tc::drp::sourcing_allowed>) {
             return observer.check(tc::drp::sourcing_allowed{});
         } else {
             return true;
@@ -1055,12 +1034,12 @@ private:
 
     // One timer per machine level: the connection states', and the
     // Try phases' sub-states' where the preference brings them in
-    using table        = tc::drp::table_for_t<TIMING, PREFERENCE>;
+    using table = tc::drp::table_for_t<TIMING, PREFERENCE>;
     using queued_timer = fsm::QueuedTimer<TIMER>;
-    using timeouts     = fsm::timed<queued_timer&, fsm::levels_v<table>>;
+    using timeouts = fsm::timed<queued_timer&, fsm::levels_v<table>>;
 
-    static timeouts timerPerLevel(queued_timer& state_timer,
-                                  [[maybe_unused]] queued_timer& sub_state_timer)
+    static timeouts
+    timerPerLevel(queued_timer& state_timer, [[maybe_unused]] queued_timer& sub_state_timer)
     {
         if constexpr (fsm::levels_v<table> == 1) {
             return timeouts{state_timer};
@@ -1076,8 +1055,15 @@ private:
     queued_timer try_timer_;
     timeouts timed_;
     std::tuple<OBSERVERs&...> observers_;
-    fsm::QueuedMachine<table, 4, fsm::inline_work, fsm::no_lock, timeouts,
-                       tc::drp_hw_driver<TCPC, VBUS>, tc::vbus_watcher<VBUS>, OBSERVERs...>
+    fsm::QueuedMachine<
+        table,
+        4,
+        fsm::inline_work,
+        fsm::no_lock,
+        timeouts,
+        tc::drp_hw_driver<TCPC, VBUS>,
+        tc::vbus_watcher<VBUS>,
+        OBSERVERs...>
         sm_;
 };
 

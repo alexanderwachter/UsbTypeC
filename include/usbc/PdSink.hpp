@@ -44,29 +44,37 @@ struct pd_sink_timers {
     TIMER pe;
 };
 
-template<concepts::tcpc TCPC, concepts::vbus VBUS, fsm::concepts::timer TIMER,
-         concepts::sink_policy POLICY, typename POWER, typename... OBSERVERs>
+template<
+    concepts::tcpc TCPC,
+    concepts::vbus VBUS,
+    fsm::concepts::timer TIMER,
+    concepts::sink_policy POLICY,
+    typename POWER,
+    typename... OBSERVERs>
 class PdSink {
     // The single-role facade wires none of the tag-enabled features:
     // an enabling observer here would be silently ignored
-    static_assert(((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
-                                            pe::pr_swap_feature> &&
-                    !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
-                                            pe::dr_swap_feature> &&
-                    !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>,
-                                            pe::vconn_feature>) &&
-                   ...),
-                  "PdSink does not wire the optional features (swaps, VCONN); "
-                  "a port offering them is a PdDrp");
+    static_assert(
+        ((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::pr_swap_feature> &&
+          !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::dr_swap_feature> &&
+          !fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::vconn_feature>) &&
+         ...),
+        "PdSink does not wire the optional features (swaps, VCONN); "
+        "a port offering them is a PdDrp"
+    );
 
 public:
-    PdSink(TCPC& tcpc, VBUS& vbus, pd_sink_timers<TIMER>& timers,
-           std::span<sink_capability const> capabilities, POLICY& policy, POWER& power,
-           OBSERVERs&... observers)
-        : watch_{*this},
-          engine_(tcpc, timers.prl, timers.pe, capabilities, policy, power, watch_),
-          router_{*this},
-          sink_(tcpc, vbus, timers.tc, router_, observers...)
+    PdSink(
+        TCPC& tcpc,
+        VBUS& vbus,
+        pd_sink_timers<TIMER>& timers,
+        std::span<sink_capability const> capabilities,
+        POLICY& policy,
+        POWER& power,
+        OBSERVERs&... observers
+    )
+        : watch_{*this}, engine_(tcpc, timers.prl, timers.pe, capabilities, policy, power, watch_),
+          router_{*this}, sink_(tcpc, vbus, timers.tc, router_, observers...)
     {
     }
 

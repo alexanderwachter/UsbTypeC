@@ -90,7 +90,9 @@ struct source_role {
 namespace state {
 
 struct vconn_off {
-    static constexpr auto annotations = fsm::annotate(vconn_switch{false});
+    static constexpr auto annotations = fsm::annotate(
+        vconn_switch{false}
+    );
 
     // a source attach without Ra: nothing to power, stay off
     void handle(event::attached_source const&) {}
@@ -98,29 +100,40 @@ struct vconn_off {
 
 // The VCONN Source (spec term): sourcing steadily until a swap
 struct vconn_source {
-    static constexpr auto annotations = fsm::annotate(vconn_switch{true}, source_role{});
+    static constexpr auto annotations = fsm::annotate(
+        vconn_switch{true},
+        source_role{}
+    );
 };
 
 // PE_VCS_Turn_On_VCONN: the switch is on; the port announces it with
 // PS_RDY through the active engine
 struct pe_vcs_turn_on_vconn {
-    static constexpr auto annotations =
-        fsm::annotate(vconn_switch{true}, pe::announce_vconn_on{});
+    static constexpr auto annotations = fsm::annotate(
+        vconn_switch{true},
+        pe::announce_vconn_on{}
+    );
 };
 
 // PE_VCS_Wait_For_VCONN: we relinquish - still sourcing until the new
 // VCONN source's PS_RDY, due within tVCONNSourceTimeout
 struct pe_vcs_wait_for_vconn {
-    static constexpr auto annotations = fsm::annotate(vconn_switch{true}, source_role{});
-    static constexpr auto timeout     = t_source_timeout; // VCONNOnTimer
+    static constexpr auto annotations = fsm::annotate(
+        vconn_switch{true},
+        source_role{}
+    );
+    static constexpr auto timeout = t_source_timeout; // VCONNOnTimer
 };
 
 // The spec's timeout outcome is a hard reset (PE_VCS_Wait_For_VCONN
 // -> Hard_Reset): the port-level integration executes it and
 // acknowledges; VCONN stays with us
 struct pe_vcs_timeout {
-    static constexpr auto annotations =
-        fsm::annotate(vconn_switch{true}, pe::request_hard_reset{}, source_role{});
+    static constexpr auto annotations = fsm::annotate(
+        vconn_switch{true},
+        pe::request_hard_reset{},
+        source_role{}
+    );
 };
 
 } // namespace state
@@ -132,31 +145,24 @@ struct ra_present {
     }
 };
 
-using vconn_timer_ranges = mtl::typelist<
-    fsm::timed_by<state::pe_vcs_wait_for_vconn, spec::t_vconn_source_timeout>>;
+using vconn_timer_ranges =
+    mtl::typelist<fsm::timed_by<state::pe_vcs_wait_for_vconn, spec::t_vconn_source_timeout>>;
 
 // A named struct, not an alias: the short name replaces the fully
 // spelled table type in every mangled symbol
-struct vconn_table : fsm::transition_table<
-    fsm::initial<state::vconn_off>,
-    fsm::transition<fsm::from<state::vconn_off>, fsm::on<event::attached_source>,
-                    fsm::to<state::vconn_source>, fsm::guard<ra_present>>,
-    fsm::internal_transition<fsm::from<state::vconn_off>, fsm::on<event::attached_source>>,
-    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::detached>,
-                    fsm::to<state::vconn_off>>,
-    // the agreed swap: take when off, relinquish when sourcing
-    fsm::transition<fsm::from<state::vconn_off>, fsm::on<event::swap_agreed>,
-                    fsm::to<state::pe_vcs_turn_on_vconn>>,
-    fsm::transition<fsm::from<state::vconn_source>, fsm::on<event::swap_agreed>,
-                    fsm::to<state::pe_vcs_wait_for_vconn>>,
-    fsm::transition<fsm::from<state::pe_vcs_turn_on_vconn>, fsm::on<event::ps_rdy_sent>,
-                    fsm::to<state::vconn_source>>,
-    fsm::transition<fsm::from<state::pe_vcs_wait_for_vconn>, fsm::on<event::partner_ps_rdy>,
-                    fsm::to<state::vconn_off>>,
-    fsm::transition<fsm::from<state::pe_vcs_wait_for_vconn>, fsm::on<fsm::timeout>,
-                    fsm::to<state::pe_vcs_timeout>>,
-    fsm::transition<fsm::from<state::pe_vcs_timeout>, fsm::on<event::swap_failed_handled>,
-                    fsm::to<state::vconn_source>>> {};
+struct vconn_table
+    : fsm::transition_table<
+          fsm::initial<state::vconn_off>,
+                         fsm::transition<fsm::from<state::vconn_off>, fsm::on<event::attached_source>, fsm::guard<ra_present>, fsm::to<state::vconn_source>>,
+                         fsm::internal_transition<fsm::from<state::vconn_off>, fsm::on<event::attached_source>>,
+                         fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::detached>, fsm::to<state::vconn_off>>,
+          // the agreed swap: take when off, relinquish when sourcing
+                         fsm::transition<fsm::from<state::vconn_off>, fsm::on<event::swap_agreed>, fsm::to<state::pe_vcs_turn_on_vconn>>,
+                         fsm::transition<fsm::from<state::vconn_source>, fsm::on<event::swap_agreed>, fsm::to<state::pe_vcs_wait_for_vconn>>,
+                         fsm::transition<fsm::from<state::pe_vcs_turn_on_vconn>, fsm::on<event::ps_rdy_sent>, fsm::to<state::vconn_source>>,
+                         fsm::transition<fsm::from<state::pe_vcs_wait_for_vconn>, fsm::on<event::partner_ps_rdy>, fsm::to<state::vconn_off>>,
+                         fsm::transition<fsm::from<state::pe_vcs_wait_for_vconn>, fsm::on<fsm::timeout>, fsm::to<state::pe_vcs_timeout>>,
+                         fsm::transition<fsm::from<state::pe_vcs_timeout>, fsm::on<event::swap_failed_handled>, fsm::to<state::vconn_source>>> {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's switch annotation through the injected
@@ -201,10 +207,7 @@ public:
     // Whether this port holds the VCONN Source role, as the states
     // annotate it (an accepted swap away from giving it up still
     // counts - VCONN is on until the hand-off)
-    bool isVconnSource() const
-    {
-        return sm_.template annotation<vconn::source_role>().has_value();
-    }
+    bool isVconnSource() const { return sm_.template annotation<vconn::source_role>().has_value(); }
 
 private:
     vconn::vconn_driver<VCONN_PORT> driver_;
@@ -213,9 +216,14 @@ private:
     // Queued: the tVCONNSourceTimeout expiry's hard-reset request is
     // acted on from the observing hook, which feeds back into this
     // machine (swapFailureHandled) - ordered delivery, no facade pump
-    fsm::QueuedMachine<vconn::vconn_table, 2, fsm::inline_work, fsm::no_lock,
-                       fsm::timed<fsm::QueuedTimer<TIMER>&>,
-                       vconn::vconn_driver<VCONN_PORT>, OBSERVERs...>
+    fsm::QueuedMachine<
+        vconn::vconn_table,
+        2,
+        fsm::inline_work,
+        fsm::no_lock,
+        fsm::timed<fsm::QueuedTimer<TIMER>&>,
+        vconn::vconn_driver<VCONN_PORT>,
+        OBSERVERs...>
         sm_;
 };
 

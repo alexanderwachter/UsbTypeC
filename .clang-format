@@ -1,0 +1,40 @@
+# Copyright (c) 2026 Alexander Wachter
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++20
+
+ColumnLimit: 100
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ConstructorInitializerIndentWidth: 4
+AccessModifierOffset: -4
+NamespaceIndentation: None
+
+BreakBeforeBraces: WebKit
+PointerAlignment: Left
+SpaceAfterTemplateKeyword: false
+BreakTemplateDeclarations: Yes
+
+AlignAfterOpenBracket: BlockIndent
+BinPackArguments: false
+BinPackParameters: OnePerLine
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+
+# Two constructs are left exactly as written:
+# - one transition is one line: a line holding fsm::from<> is a row of
+#   a transition table, whatever its length
+# - every annotation set shows the same pattern, one element per line
+#   and the closing bracket on its own line, however short the set is:
+#   the line opening fsm::annotate( and the elements up to its bracket
+OneLineFormatOffRegex: ^(from|annotate)$
+WhitespaceSensitiveMacros: [annotate]
+
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortEnumsOnASingleLine: true
+
+IncludeBlocks: Preserve

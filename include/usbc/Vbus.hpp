@@ -51,8 +51,7 @@ using vbus_callback = void (*)(void* context, bool met);
 namespace concepts {
 
 template<typename T>
-concept vbus = requires(T v, vbus_level level, vbus_callback callback, void* context,
-                        bool enable) {
+concept vbus = requires(T v, vbus_level level, vbus_callback callback, void* context, bool enable) {
     { v.enable(enable) } -> std::same_as<bool>;
     v.setCallback(callback, context);
     { v.monitor(level) } -> std::same_as<bool>;

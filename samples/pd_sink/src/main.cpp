@@ -29,9 +29,11 @@ LOG_MODULE_REGISTER(pd_sink_sample, LOG_LEVEL_INF);
 namespace {
 
 // What this sink can take; also the Sink_Capabilities answer
-constexpr std::array sink_capabilities{usbc::sink_capability{5000, 3000},
-                                       usbc::sink_capability{9000, 3000},
-                                       usbc::sink_capability{15000, 3000}};
+constexpr std::array sink_capabilities{
+    usbc::sink_capability{5000, 3000},
+    usbc::sink_capability{9000, 3000},
+    usbc::sink_capability{15000, 3000}
+};
 
 // The power side of the engine, injected as an observer. The board has
 // no real input regulator to program: log what one would do
@@ -57,8 +59,13 @@ struct AttachLogger : fsm::observing<AttachLogger> {
     void notifyExit(usbc::tc::attach_info) { LOG_INF("detached"); }
 };
 
-using Port = usbc::PdSink<usbc::zephyr::Tcpc, usbc::zephyr::Vbus, usbc::zephyr::Timer,
-                          usbc::PowerPolicy, Power, AttachLogger>;
+using Port = usbc::PdSink<
+    usbc::zephyr::Tcpc,
+    usbc::zephyr::Vbus,
+    usbc::zephyr::Timer,
+    usbc::PowerPolicy,
+    Power,
+    AttachLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};

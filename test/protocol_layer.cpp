@@ -26,15 +26,15 @@ namespace {
 struct manual_timer {
     std::chrono::milliseconds duration{};
     fsm::timer_callback callback = nullptr;
-    void* context                = nullptr;
-    bool armed                   = false;
+    void* context = nullptr;
+    bool armed = false;
 
     void start(std::chrono::milliseconds d, fsm::timer_callback cb, void* ctx)
     {
         duration = d;
         callback = cb;
-        context  = ctx;
-        armed    = true;
+        context = ctx;
+        armed = true;
     }
     void stop() { armed = false; }
     void expire()
@@ -50,10 +50,10 @@ static_assert(fsm::concepts::timer<manual_timer>);
 // --- policy engine test double ----------------------------------------------
 struct mock_client {
     std::vector<usbc::pd_message> messages;
-    int tx_done          = 0;
-    int tx_discarded     = 0;
-    int tx_error         = 0;
-    int hard_resets      = 0;
+    int tx_done = 0;
+    int tx_discarded = 0;
+    int tx_error = 0;
+    int hard_resets = 0;
     int hard_resets_sent = 0;
 
     void onMessage(usbc::pd_message const& message) { messages.push_back(message); }
@@ -69,19 +69,24 @@ static_assert(usbc::concepts::prl_client<mock_client>);
 namespace compile_time {
 
 // header codec round-trip, and MessageID stamping leaves the rest alone
-constexpr usbc::pd_header request_header{.message_type     = 0x02, // Request
-                                         .port_data_role   = usbc::data_role::ufp,
-                                         .revision         = usbc::pd_revision::rev_3_x,
-                                         .port_power_role  = usbc::power_role::sink,
-                                         .message_id       = 5,
-                                         .num_data_objects = 1,
-                                         .extended         = false};
+constexpr usbc::pd_header request_header{
+    .message_type = 0x02, // Request
+    .port_data_role = usbc::data_role::ufp,
+    .revision = usbc::pd_revision::rev_3_x,
+    .port_power_role = usbc::power_role::sink,
+    .message_id = 5,
+    .num_data_objects = 1,
+    .extended = false
+};
 static_assert(usbc::pd_header::decode(request_header.encode()) == request_header);
-static_assert(usbc::pd_header::decode(0x0000u) ==
-              usbc::pd_header{.message_type    = 0,
-                              .port_data_role  = usbc::data_role::ufp,
-                              .revision        = usbc::pd_revision::rev_1_0,
-                              .port_power_role = usbc::power_role::sink});
+static_assert(
+    usbc::pd_header::decode(0x0000u) == usbc::pd_header{
+                                            .message_type = 0,
+                                            .port_data_role = usbc::data_role::ufp,
+                                            .revision = usbc::pd_revision::rev_1_0,
+                                            .port_power_role = usbc::power_role::sink
+                                        }
+);
 static_assert(usbc::pd_header::decode(request_header.encode()).message_id == 5);
 
 struct no_hard_reset_hook : mock_client {
@@ -105,10 +110,13 @@ void check(bool condition, std::source_location location = std::source_location:
 usbc::pd_message makeRequest(usbc::sop_type sop = usbc::sop_type::sop)
 {
     usbc::pd_message message{.sop = sop, .payload_size = 4, .payload = {0x2c, 0x91, 0x01, 0x13}};
-    message.header = usbc::pd_header{.message_type     = 0x02,
-                                     .port_power_role  = usbc::power_role::sink,
-                                     .num_data_objects = 1}
-                         .encode();
+    message.header =
+        usbc::pd_header{
+            .message_type = 0x02,
+            .port_power_role = usbc::power_role::sink,
+            .num_data_objects = 1
+        }
+            .encode();
     return message;
 }
 
@@ -235,10 +243,13 @@ int protocolLayerTests()
     // revision 2.0 brings the link down to it, and a request without
     // GoodCRC now retries three times instead of two
     usbc::pd_message rev2{.sop = usbc::sop_type::sop, .payload_size = 0};
-    rev2.header = usbc::pd_header{.message_type = 0x03,
-                                  .revision     = usbc::pd_revision::rev_2_0,
-                                  .message_id   = 6}
-                      .encode();
+    rev2.header =
+        usbc::pd_header{
+            .message_type = 0x03,
+            .revision = usbc::pd_revision::rev_2_0,
+            .message_id = 6
+        }
+            .encode();
     tcpc.injectMessage(rev2);
     prl.onAlert(*tcpc.readAlert());
     check(prl.revision() == usbc::pd_revision::rev_2_0);

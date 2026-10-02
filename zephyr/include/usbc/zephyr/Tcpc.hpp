@@ -35,7 +35,7 @@ namespace usbc::zephyr {
 class Tcpc {
 public:
     explicit Tcpc(device const* dev);
-    Tcpc(Tcpc const&)            = delete;
+    Tcpc(Tcpc const&) = delete;
     Tcpc& operator=(Tcpc const&) = delete;
 
     void setAlertHandler(alert_callback callback, void* context);
@@ -65,9 +65,9 @@ private:
     device const* dev_;
     k_work alert_work_{};
     alert_callback callback_ = nullptr;
-    void* context_           = nullptr;
-    atomic_t pending_        = ATOMIC_INIT(0);
-    cc_pull pull_            = cc_pull::open;
+    void* context_ = nullptr;
+    atomic_t pending_ = ATOMIC_INIT(0);
+    cc_pull pull_ = cc_pull::open;
 };
 
 static_assert(concepts::tcpc<Tcpc>);

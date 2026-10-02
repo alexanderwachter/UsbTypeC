@@ -28,15 +28,15 @@ namespace {
 struct manual_timer {
     std::chrono::milliseconds duration{};
     fsm::timer_callback callback = nullptr;
-    void* context                = nullptr;
-    bool armed                   = false;
+    void* context = nullptr;
+    bool armed = false;
 
     void start(std::chrono::milliseconds d, fsm::timer_callback cb, void* ctx)
     {
         duration = d;
         callback = cb;
-        context  = ctx;
-        armed    = true;
+        context = ctx;
+        armed = true;
     }
     void stop() { armed = false; }
     void expire()
@@ -52,12 +52,12 @@ static_assert(fsm::concepts::timer<manual_timer>);
 // --- application test double: the power side as one observer -----------------
 struct mock_power : usbc::SinkPower<mock_power> {
     usbc::millivolt limit_voltage = 5000; // the sink load limit
-    usbc::milliamp limit_current  = 0;
-    int changes                   = 0;
-    usbc::millivolt voltage       = 0; // the reported contract
-    usbc::milliamp current        = 0;
-    int contracts                 = 0;
-    int lost                      = 0;
+    usbc::milliamp limit_current = 0;
+    int changes = 0;
+    usbc::millivolt voltage = 0; // the reported contract
+    usbc::milliamp current = 0;
+    int contracts = 0;
+    int lost = 0;
 
     bool setLimit(usbc::millivolt expected_voltage, usbc::milliamp max_current)
     {
@@ -87,15 +87,19 @@ static_assert(usbc::pdo::kindOf(nine_volt) == usbc::pdo::kind::fixed_supply);
 static_assert(usbc::pdo::fixedVoltage(nine_volt) == 9000);
 static_assert(usbc::pdo::fixedMaxCurrent(nine_volt) == 3000);
 
-constexpr std::array offered{makeFixedSink(5000, 3000),   // 15 W
-                             makeFixedSink(9000, 3000),   // 27 W
-                             makeFixedSink(12000, 1500),  // 18 W
-                             makeFixedSink(20000, 2250)}; // 45 W
+constexpr std::array offered{
+    makeFixedSink(5000, 3000),  // 15 W
+    makeFixedSink(9000, 3000),  // 27 W
+    makeFixedSink(12000, 1500), // 18 W
+    makeFixedSink(20000, 2250)
+}; // 45 W
 
-constexpr std::array sink_all{usbc::sink_capability{5000, 3000},
-                              usbc::sink_capability{9000, 3000},
-                              usbc::sink_capability{12000, 3000},
-                              usbc::sink_capability{20000, 3000}};
+constexpr std::array sink_all{
+    usbc::sink_capability{5000, 3000},
+    usbc::sink_capability{9000, 3000},
+    usbc::sink_capability{12000, 3000},
+    usbc::sink_capability{20000, 3000}
+};
 
 // no PDO reaches 100 W: the most powerful one wins
 constexpr usbc::PowerPolicy wide{5000, 100000};
@@ -119,8 +123,7 @@ static_assert(min20.select(offered, sink_all)->position == 4);
 
 // voltages the sink does not list are off limits, and the sink
 // capability also caps the current
-constexpr std::array sink_low{usbc::sink_capability{5000, 3000},
-                              usbc::sink_capability{9000, 2000}};
+constexpr std::array sink_low{usbc::sink_capability{5000, 3000}, usbc::sink_capability{9000, 2000}};
 static_assert(wide.select(offered, sink_low)->position == 2); // 20 V excluded
 static_assert(wide.select(offered, sink_low)->operating_current == 2000);
 static_assert(wide.select(offered, sink_low)->voltage == 9000);
@@ -131,40 +134,69 @@ using namespace usbc::pe;
 using enum power_level;
 using enum pd_status;
 
-static_assert(state::pe_snk_startup::power == default_power &&
-              state::pe_snk_startup::pd == connected_or_not_connected);
-static_assert(state::pe_snk_discovery::power == default_power &&
-              state::pe_snk_discovery::pd == connected_or_not_connected);
-static_assert(state::pe_snk_wait_for_capabilities::power == default_power &&
-              state::pe_snk_wait_for_capabilities::pd == connected_or_not_connected);
-static_assert(state::pe_snk_evaluate_capability::power == default_power &&
-              state::pe_snk_evaluate_capability::pd == connected);
-static_assert(state::pe_snk_select_capability::power == default_power &&
-              state::pe_snk_select_capability::pd == connected);
-static_assert(state::pe_snk_transition_sink::power == transition &&
-              state::pe_snk_transition_sink::pd == connected);
-static_assert(state::pe_snk_ready::power == explicit_contract && state::pe_snk_ready::pd == connected);
-static_assert(state::pe_snk_give_sink_cap::power == explicit_contract &&
-              state::pe_snk_give_sink_cap::pd == connected);
-static_assert(state::pe_snk_send_not_supported::power == explicit_contract &&
-              state::pe_snk_send_not_supported::pd == connected);
-static_assert(state::pe_snk_chunk_received::power == explicit_contract &&
-              state::pe_snk_chunk_received::pd == connected);
-static_assert(state::pe_snk_soft_reset::power == contract_or_default &&
-              state::pe_snk_soft_reset::pd == connected);
-static_assert(state::pe_snk_send_soft_reset::power == contract_or_default &&
-              state::pe_snk_send_soft_reset::pd == connected);
-static_assert(state::pe_snk_hard_reset::power == contract_or_default &&
-              state::pe_snk_hard_reset::pd == connected_or_not_connected);
-static_assert(state::pe_snk_transition_to_default::power == transition &&
-              state::pe_snk_transition_to_default::pd == not_connected);
+static_assert(
+    state::pe_snk_startup::power == default_power &&
+    state::pe_snk_startup::pd == connected_or_not_connected
+);
+static_assert(
+    state::pe_snk_discovery::power == default_power &&
+    state::pe_snk_discovery::pd == connected_or_not_connected
+);
+static_assert(
+    state::pe_snk_wait_for_capabilities::power == default_power &&
+    state::pe_snk_wait_for_capabilities::pd == connected_or_not_connected
+);
+static_assert(
+    state::pe_snk_evaluate_capability::power == default_power &&
+    state::pe_snk_evaluate_capability::pd == connected
+);
+static_assert(
+    state::pe_snk_select_capability::power == default_power &&
+    state::pe_snk_select_capability::pd == connected
+);
+static_assert(
+    state::pe_snk_transition_sink::power == transition &&
+    state::pe_snk_transition_sink::pd == connected
+);
+static_assert(
+    state::pe_snk_ready::power == explicit_contract && state::pe_snk_ready::pd == connected
+);
+static_assert(
+    state::pe_snk_give_sink_cap::power == explicit_contract &&
+    state::pe_snk_give_sink_cap::pd == connected
+);
+static_assert(
+    state::pe_snk_send_not_supported::power == explicit_contract &&
+    state::pe_snk_send_not_supported::pd == connected
+);
+static_assert(
+    state::pe_snk_chunk_received::power == explicit_contract &&
+    state::pe_snk_chunk_received::pd == connected
+);
+static_assert(
+    state::pe_snk_soft_reset::power == contract_or_default &&
+    state::pe_snk_soft_reset::pd == connected
+);
+static_assert(
+    state::pe_snk_send_soft_reset::power == contract_or_default &&
+    state::pe_snk_send_soft_reset::pd == connected
+);
+static_assert(
+    state::pe_snk_hard_reset::power == contract_or_default &&
+    state::pe_snk_hard_reset::pd == connected_or_not_connected
+);
+static_assert(
+    state::pe_snk_transition_to_default::power == transition &&
+    state::pe_snk_transition_to_default::pd == not_connected
+);
 
 // the note derives from the enums: single source of truth
 static_assert(state::pe_snk_ready::dot_note == "Power: Explicit Contract | PD: Connected");
-static_assert(state::pe_snk_startup::dot_note ==
-              "Power: Default | PD: Connected/not Connected");
-static_assert(state::pe_snk_soft_reset::dot_note ==
-              "Power: Default/implicit or explicit contract | PD: Connected");
+static_assert(state::pe_snk_startup::dot_note == "Power: Default | PD: Connected/not Connected");
+static_assert(
+    state::pe_snk_soft_reset::dot_note ==
+    "Power: Default/implicit or explicit contract | PD: Connected"
+);
 } // namespace spec_notation
 
 // extended header round-trip
@@ -192,12 +224,14 @@ std::uint8_t next_id = 0;
 
 std::uint16_t makeHeader(std::uint8_t type, std::uint8_t objects)
 {
-    return usbc::pd_header{.message_type     = type,
-                           .port_data_role   = usbc::data_role::dfp,
-                           .revision         = usbc::pd_revision::rev_3_x,
-                           .port_power_role  = usbc::power_role::source,
-                           .message_id       = static_cast<std::uint8_t>(next_id++ & 0x7u),
-                           .num_data_objects = objects}
+    return usbc::pd_header{
+        .message_type = type,
+        .port_data_role = usbc::data_role::dfp,
+        .revision = usbc::pd_revision::rev_3_x,
+        .port_power_role = usbc::power_role::source,
+        .message_id = static_cast<std::uint8_t>(next_id++ & 0x7u),
+        .num_data_objects = objects
+    }
         .encode();
 }
 
@@ -209,9 +243,12 @@ usbc::pd_message makeControl(usbc::control_message_type type)
 usbc::pd_message makeSourceCaps(std::span<std::uint32_t const> objects)
 {
     usbc::pd_message message{
-        .sop    = usbc::sop_type::sop,
-        .header = makeHeader(static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities),
-                             static_cast<std::uint8_t>(objects.size()))};
+        .sop = usbc::sop_type::sop,
+        .header = makeHeader(
+            static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities),
+            static_cast<std::uint8_t>(objects.size())
+        )
+    };
     for (auto const object : objects) {
         message.payload[message.payload_size + 0] = static_cast<std::uint8_t>(object);
         message.payload[message.payload_size + 1] = static_cast<std::uint8_t>(object >> 8u);
@@ -225,7 +262,7 @@ usbc::pd_message makeSourceCaps(std::span<std::uint32_t const> objects)
 std::uint32_t transmittedObject(mock_tcpc const& tcpc, std::uint8_t index = 0)
 {
     auto const& payload = tcpc.last_transmitted.payload;
-    auto const offset   = static_cast<std::size_t>(index) * 4;
+    auto const offset = static_cast<std::size_t>(index) * 4;
     return static_cast<std::uint32_t>(payload[offset + 0]) |
            (static_cast<std::uint32_t>(payload[offset + 1]) << 8u) |
            (static_cast<std::uint32_t>(payload[offset + 2]) << 16u) |
@@ -258,19 +295,22 @@ struct swap_capable_policy : usbc::PowerPolicy {
 usbc::pd_message makeExtended(bool chunked)
 {
     usbc::pd_message message{
-        .sop    = usbc::sop_type::sop,
-        .header = usbc::pd_header{.message_type     = 0x0f, // some extended type
-                                  .port_data_role   = usbc::data_role::dfp,
-                                  .revision         = usbc::pd_revision::rev_3_x,
-                                  .port_power_role  = usbc::power_role::source,
-                                  .message_id       = static_cast<std::uint8_t>(next_id++ & 0x7u),
-                                  .num_data_objects = 1,
-                                  .extended         = true}
-                      .encode()};
-    auto const extended =
-        usbc::extended_header{.chunked = chunked, .data_size = 100}.encode();
-    message.payload[0]   = static_cast<std::uint8_t>(extended);
-    message.payload[1]   = static_cast<std::uint8_t>(extended >> 8u);
+        .sop = usbc::sop_type::sop,
+        .header =
+            usbc::pd_header{
+                .message_type = 0x0f, // some extended type
+                .port_data_role = usbc::data_role::dfp,
+                .revision = usbc::pd_revision::rev_3_x,
+                .port_power_role = usbc::power_role::source,
+                .message_id = static_cast<std::uint8_t>(next_id++ & 0x7u),
+                .num_data_objects = 1,
+                .extended = true
+            }
+                .encode()
+    };
+    auto const extended = usbc::extended_header{.chunked = chunked, .data_size = 100}.encode();
+    message.payload[0] = static_cast<std::uint8_t>(extended);
+    message.payload[1] = static_cast<std::uint8_t>(extended >> 8u);
     message.payload_size = 4;
     return message;
 }
@@ -279,8 +319,10 @@ usbc::pd_message makeExtended(bool chunked)
 
 int policyEngineTests()
 {
-    constexpr std::array sink_caps{usbc::sink_capability{5000, 3000},
-                                   usbc::sink_capability{9000, 3000}};
+    constexpr std::array sink_caps{
+        usbc::sink_capability{5000, 3000},
+        usbc::sink_capability{9000, 3000}
+    };
 
     mock_tcpc tcpc;
     manual_timer prl_timer;
@@ -305,9 +347,11 @@ int policyEngineTests()
     check(pe_timer.armed);
 
     // source capabilities: the policy picks 9 V / 3 A (position 2)
-    constexpr std::array offered{usbc::pdo::makeFixedSink(5000, 3000),
-                                 usbc::pdo::makeFixedSink(9000, 3000),
-                                 usbc::pdo::makeFixedSink(20000, 2250)};
+    constexpr std::array offered{
+        usbc::pdo::makeFixedSink(5000, 3000),
+        usbc::pdo::makeFixedSink(9000, 3000),
+        usbc::pdo::makeFixedSink(20000, 2250)
+    };
     deliver(makeSourceCaps(offered));
     check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
     check(transmittedObject(tcpc) == usbc::pdo::makeFixedRequest(2, 3000, 3000, false));
@@ -327,18 +371,21 @@ int policyEngineTests()
 
     // Get_Sink_Cap answered with the injected capabilities span
     deliver(makeControl(usbc::control_message_type::get_sink_cap));
-    check(transmittedType(tcpc) ==
-          static_cast<std::uint8_t>(usbc::data_message_type::sink_capabilities));
+    check(
+        transmittedType(tcpc) ==
+        static_cast<std::uint8_t>(usbc::data_message_type::sink_capabilities)
+    );
     check(usbc::pd_header::decode(tcpc.last_transmitted.header).num_data_objects == 2);
     check(transmittedObject(tcpc, 1) == usbc::pdo::makeFixedSink(9000, 3000));
     txSuccess();
 
     // BIST is honored only under a vSafe5V contract - ignored at 9 V
     usbc::pd_message bist_at_9v{
-        .sop    = usbc::sop_type::sop,
-        .header = makeHeader(static_cast<std::uint8_t>(usbc::data_message_type::bist), 1)};
-    bist_at_9v.payload[3]    = 5u << 4; // Carrier Mode 2 BDO, bits 31..28
-    bist_at_9v.payload_size  = 4;
+        .sop = usbc::sop_type::sop,
+        .header = makeHeader(static_cast<std::uint8_t>(usbc::data_message_type::bist), 1)
+    };
+    bist_at_9v.payload[3] = 5u << 4; // Carrier Mode 2 BDO, bits 31..28
+    bist_at_9v.payload_size = 4;
     deliver(bist_at_9v);
     check(!tcpc.last_signal.has_value()); // no carrier commanded
     check(!pe_timer.armed);
@@ -347,11 +394,10 @@ int policyEngineTests()
     // and fires when the source's Rp flips to SinkTxOk
     pe.sinkTxChanged(false); // SinkTxNG seen
     auto const tx_before_park = tcpc.transmit_count;
-    check(pe.requestDataSwap());                    // accepted, parked
-    check(tcpc.transmit_count == tx_before_park);   // nothing sent yet
-    pe.sinkTxChanged(true);                         // SinkTxOk
-    check(transmittedType(tcpc) ==
-          static_cast<std::uint8_t>(usbc::control_message_type::dr_swap));
+    check(pe.requestDataSwap());                  // accepted, parked
+    check(tcpc.transmit_count == tx_before_park); // nothing sent yet
+    pe.sinkTxChanged(true);                       // SinkTxOk
+    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::dr_swap));
     txSuccess();
     deliver(makeControl(usbc::control_message_type::reject)); // back to Ready
 
@@ -413,8 +459,10 @@ int policyEngineTests()
 
     // an unsupported control message is answered with Not_Supported
     deliver(makeControl(usbc::control_message_type::get_source_cap));
-    check(transmittedType(tcpc) ==
-          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    check(
+        transmittedType(tcpc) ==
+        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+    );
     txSuccess();
 
     // the partner's swap requests are the table's questions: the
@@ -432,8 +480,10 @@ int policyEngineTests()
 
     // an unchunked extended message is answered immediately
     deliver(makeExtended(false));
-    check(transmittedType(tcpc) ==
-          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    check(
+        transmittedType(tcpc) ==
+        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+    );
     txSuccess();
 
     // a chunked extended message: the sender runs into its chunking
@@ -443,8 +493,10 @@ int policyEngineTests()
     check(tcpc.transmit_count == attempts_before_chunk); // no immediate answer
     check(pe_timer.armed);
     pe_timer.expire();
-    check(transmittedType(tcpc) ==
-          static_cast<std::uint8_t>(usbc::control_message_type::not_supported));
+    check(
+        transmittedType(tcpc) ==
+        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+    );
     check(tcpc.transmit_count == attempts_before_chunk + 1);
     txSuccess();
 
@@ -461,8 +513,9 @@ int policyEngineTests()
     prl_timer.expire(); // retry 1
     prl_timer.expire(); // retry 2
     prl_timer.expire(); // retries exhausted -> protocol error
-    check(transmittedType(tcpc) ==
-          static_cast<std::uint8_t>(usbc::control_message_type::soft_reset));
+    check(
+        transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::soft_reset)
+    );
     check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id == 0); // PRL reset
     check(pe_timer.armed);
     txSuccess();
@@ -491,10 +544,17 @@ int policyEngineTests()
         manual_timer silent_pe_timer;
         mock_power silent_power;
         recovery_watch watch;
-        usbc::SinkPolicyEngine<mock_tcpc, manual_timer, usbc::PowerPolicy, mock_power,
-                               recovery_watch>
-            silent{silent_tcpc, silent_prl_timer, silent_pe_timer, sink_caps, policy,
-                   silent_power, watch};
+        usbc::
+            SinkPolicyEngine<mock_tcpc, manual_timer, usbc::PowerPolicy, mock_power, recovery_watch>
+                silent{
+                    silent_tcpc,
+                    silent_prl_timer,
+                    silent_pe_timer,
+                    sink_caps,
+                    policy,
+                    silent_power,
+                    watch
+                };
         auto confirm = [&] { silent.onAlert(usbc::alert_status::transmit_success); };
 
         silent.vbusPresent();
@@ -506,7 +566,7 @@ int policyEngineTests()
             silent.vbusPresent();
             check(watch.requests == 0);
         }
-        silent_pe_timer.expire(); // the counter is spent
+        silent_pe_timer.expire();                    // the counter is spent
         check(!silent_tcpc.last_signal.has_value()); // no further hard reset
         check(watch.requests == 1);                  // Error Recovery requested
     }
