@@ -77,6 +77,7 @@ struct error_recovery_src {
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::unwatched}
     );
+
     static constexpr auto timeout = t_error_recovery;
 };
 
@@ -85,25 +86,18 @@ struct error_recovery_src {
 struct source_state {
     explicit source_state(line_status& line_ref) : line(line_ref) {}
 
+    using contexts = mtl::typelist<line_status>;
+
     void handle(event::cc_changed const& event) { line.cc = event.cc; }
     void handle(event::vbus_reached_safe0v const&) { line.vbus_safe0v = true; }
     void handle(event::vbus_left_safe0v const&) { line.vbus_safe0v = false; }
 
-    using contexts = mtl::typelist<line_status>;
     line_status& line;
 };
 
 // The resting state resets the connection's attachment: the next
 // attach resolves afresh
 struct unattached_src : source_state {
-    // resting: nothing measured - AttachWait re-arms vSafe0V on entry,
-    // and the driver's arm-report refreshes the line's latch there
-    static constexpr auto annotations = fsm::annotate(
-        cc_termination{cc_pull::rp},
-        vbus_power{vbus_path::open},
-        vbus_level{vbus_level::unwatched}
-    );
-
     // entering on the discharge-complete event records what it means -
     // a transition does not run the internal handlers
     unattached_src(event::vbus_reached_safe0v const&, line_status& line_ref, attachment& attached)
@@ -116,45 +110,45 @@ struct unattached_src : source_state {
         attached = {};
     }
 
+    // resting: nothing measured - AttachWait re-arms vSafe0V on entry,
+    // and the driver's arm-report refreshes the line's latch there
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::unwatched}
+    );
+
     using contexts = mtl::typelist<line_status, attachment>;
 };
 
 struct attach_wait_src : source_state {
-    static constexpr auto annotations = fsm::annotate(
-        cc_termination{cc_pull::rp},
-        vbus_power{vbus_path::open},
-        vbus_level{vbus_level::safe0v}
-    );
-    static constexpr auto timeout = t_cc_debounce; // CCDebounceTimer
-
     attach_wait_src(event::cc_changed const& event, line_status& line_ref) : source_state(line_ref)
     {
         line.cc = event.cc;
     }
     using source_state::source_state;
-};
 
-// AttachWait.SRC with a stable single Rd, waiting for VBUS at vSafe0V
-struct attach_wait_src_debounced : source_state {
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rp},
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe0v}
     );
 
+    static constexpr auto timeout = t_cc_debounce; // CCDebounceTimer
+};
+
+// AttachWait.SRC with a stable single Rd, waiting for VBUS at vSafe0V
+struct attach_wait_src_debounced : source_state {
     using source_state::source_state;
+
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::safe0v}
+    );
 };
 
 struct attached_src : source_state {
-    // sourcing: detach detection is CC-based, the comparator rests
-    static constexpr auto annotations = fsm::annotate(
-        cc_termination{cc_pull::rp},
-        vbus_power{vbus_path::safe5v},
-        vbus_level{vbus_level::unwatched},
-        attached_role{power_role::source},
-        pd_connection{}
-    );
-
     // entered from the debounced wait on the vSafe0V event
     attached_src(event::vbus_reached_safe0v const&, line_status& line_ref, attachment& attached_ref)
         : attached_src(line_ref, attached_ref)
@@ -182,12 +176,15 @@ struct attached_src : source_state {
             {.orientation = srcOrientationOf(line.cc), .data = data_role::dfp, .resolved = true};
     }
 
-    using source_state::handle;
-    // a DR_Swap flips the data role in place (DRP only)
-    void handle(event::swap_data_role const&) { attached.data = otherDataRole(attached.data); }
+    // sourcing: detach detection is CC-based, the comparator rests
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::safe5v},
+        vbus_level{vbus_level::unwatched},
+        attached_role{power_role::source},
+        pd_connection{}
+    );
 
-    plug_orientation orientation() const { return attached.orientation; }
-    data_role dataRole() const { return attached.data; }
     // the attach report, the CC polarity and the partner, observed as
     // instance values: clients consume the orientation (a source
     // reports no more), the hw driver applies the polarity, the PD
@@ -203,6 +200,13 @@ struct attached_src : source_state {
     }
 
     using contexts = mtl::typelist<line_status, attachment>;
+
+    using source_state::handle;
+    // a DR_Swap flips the data role in place (DRP only)
+    void handle(event::swap_data_role const&) { attached.data = otherDataRole(attached.data); }
+
+    plug_orientation orientation() const { return attached.orientation; }
+    data_role dataRole() const { return attached.data; }
     attachment& attached;
 
 private:
@@ -211,18 +215,18 @@ private:
 
 // Discharges VBUS to vSafe0V before presenting Rp for a new attach
 struct unattached_wait_src : source_state {
-    static constexpr auto annotations = fsm::annotate(
-        cc_termination{cc_pull::rp},
-        vbus_power{vbus_path::safe0v},
-        vbus_level{vbus_level::safe0v}
-    );
-
     unattached_wait_src(event::cc_changed const& event, line_status& line_ref)
         : source_state(line_ref)
     {
         line.cc = event.cc;
     }
     using source_state::source_state;
+
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::safe0v},
+        vbus_level{vbus_level::safe0v}
+    );
 };
 
 } // namespace state

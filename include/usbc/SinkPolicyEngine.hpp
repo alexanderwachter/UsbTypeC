@@ -225,16 +225,6 @@ namespace state {
 // default power restore covers the detach entry (after a hard reset,
 // Transition_to_default already restored and suppression elides it)
 struct pe_snk_startup {
-    static constexpr auto annotations = fsm::annotate(
-        prl::reset_action{},
-        restore_default_action{}
-    );
-    static constexpr power_level power = power_level::default_power;
-    static constexpr pd_status pd = pd_status::connected_or_not_connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action =
-        "resets the protocol layer, restores default power";
-
     // detach forgets everything (the next partner meets a UFP); a reset
     // within the connection ends the negotiation only
     pe_snk_startup(
@@ -252,64 +242,80 @@ struct pe_snk_startup {
     {
         this->negotiation = {};
     }
+
+    static constexpr power_level power = power_level::default_power;
+    static constexpr pd_status pd = pd_status::connected_or_not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action =
+        "resets the protocol layer, restores default power";
+
+    static constexpr auto annotations = fsm::annotate(
+        prl::reset_action{},
+        restore_default_action{}
+    );
+
     using contexts = mtl::typelist<pe_connection, pe_negotiation>;
+
     pe_connection& connection;
     pe_negotiation& negotiation;
 };
 
 // Waits for the Type-C layer to report VBUS
 struct pe_snk_discovery {
+    explicit pe_snk_discovery(pe_connection& connection) : connection(connection) {}
+
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
-    explicit pe_snk_discovery(pe_connection& connection) : connection(connection) {}
     using contexts = mtl::typelist<pe_connection>; // the guard reads the counter
+
     pe_connection& connection;
 };
 
 struct pe_snk_wait_for_capabilities {
-    static constexpr auto timeout = t_sink_wait_cap; // SinkWaitCapTimer
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto timeout = t_sink_wait_cap; // SinkWaitCapTimer
 };
 
 // PE_SNK_Wait_for_Capabilities after a hard reset: the governing
 // deadline is NoResponseTimer - its expiry hard-resets again while
 // HardResetCounter allows, then gives up into Type-C Error Recovery
 struct pe_snk_wait_no_response {
-    static constexpr auto timeout = t_no_response; // NoResponseTimer
+    explicit pe_snk_wait_no_response(pe_connection& connection) : connection(connection) {}
+
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
-    explicit pe_snk_wait_no_response(pe_connection& connection) : connection(connection) {}
     using contexts = mtl::typelist<pe_connection>; // the guard reads the counter
+
+    static constexpr auto timeout = t_no_response; // NoResponseTimer
+
     pe_connection& connection;
 };
 
 // The engine evaluates through the injected policy and advances with
 // capabilities_evaluated
 struct pe_snk_evaluate_capability {
-    static constexpr power_level power = power_level::default_power;
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-
     explicit pe_snk_evaluate_capability(pe_connection& connection) : connection(connection)
     {
         connection.hard_resets = 0; // spec: reset on Source_Capabilities
     }
-    using contexts = mtl::typelist<pe_connection>;
-    pe_connection& connection;
-};
 
-struct pe_snk_select_capability {
-    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
+    using contexts = mtl::typelist<pe_connection>;
+
+    pe_connection& connection;
+};
+
+struct pe_snk_select_capability {
     // the proposal stays pending: only an Accept promotes it, so a
     // Reject cannot leak the proposed terms into the active contract
     pe_snk_select_capability(
@@ -336,9 +342,16 @@ struct pe_snk_select_capability {
     {
     }
 
+    static constexpr power_level power = power_level::default_power;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection, pe_negotiation>;
+
+    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+
     pe_connection& connection;
     pe_negotiation& negotiation;
 
@@ -365,11 +378,6 @@ private:
 };
 
 struct pe_snk_transition_sink {
-    static constexpr auto timeout = t_ps_transition; // PSTransitionTimer
-    static constexpr power_level power = power_level::transition;
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-
     // entered on Accept: the pending proposal becomes the contract
     pe_snk_transition_sink(event::accept const&, pe_negotiation& negotiation)
         : negotiation(negotiation)
@@ -378,25 +386,33 @@ struct pe_snk_transition_sink {
     }
     explicit pe_snk_transition_sink(pe_negotiation& negotiation) : negotiation(negotiation) {}
 
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     standby_limit values() const { return {negotiation.request.voltage}; }
 
     using contexts = mtl::typelist<pe_negotiation>;
+
+    static constexpr auto timeout = t_ps_transition; // PSTransitionTimer
+
     pe_negotiation& negotiation;
 };
 
 struct pe_snk_ready {
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power,
-        ready_for_atomic_message_sequence{}
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-
     explicit pe_snk_ready(pe_negotiation& negotiation) : negotiation(negotiation)
     {
         negotiation.explicit_contract = true;
     }
+
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power,
+        ready_for_atomic_message_sequence{}
+    );
 
     active_contract values() const
     {
@@ -404,6 +420,7 @@ struct pe_snk_ready {
     }
 
     using contexts = mtl::typelist<pe_negotiation>;
+
     pe_negotiation& negotiation;
 };
 
@@ -411,27 +428,29 @@ struct pe_snk_ready {
 // Request: the same Request goes out again after tSinkRequest; new
 // capabilities from the source preempt the retry
 struct pe_snk_request_wait {
-    static constexpr auto timeout = t_sink_request; // SinkRequestTimer
     static constexpr power_level power = power_level::contract_or_default;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto timeout = t_sink_request; // SinkRequestTimer
 };
 
 // PE_DR_SNK_Give_Source_Cap: a DRP answers Get_Source_Cap with its
 // source-role capabilities, then returns to Ready
 struct pe_dr_snk_give_source_cap {
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-
     pe_dr_snk_give_source_cap() = default;
     explicit pe_dr_snk_give_source_cap(event::send_source_caps const& event)
         : message_(event.message)
     {
     }
+
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     pd_message const& values() const { return message_; }
 
@@ -446,33 +465,38 @@ private:
 // source owns the schedule)
 struct pe_snk_request_gate {
     static constexpr power_level power = power_level::contract_or_default;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         retry_gated{atomic_message_sequence::request}
     );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 struct pe_snk_dr_swap_gate {
     using feature = dr_swap_feature;
+
     static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         power,
         retry_gated{atomic_message_sequence::data_role_swap}
     );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 struct pe_snk_pr_swap_gate {
     using feature = pr_swap_feature;
+
     static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         power,
         retry_gated{atomic_message_sequence::power_role_swap}
     );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 // PE_PRS_SNK_SRC_Transition_to_off: draw drops to standby while the
@@ -481,6 +505,7 @@ struct pe_snk_pr_swap_gate {
 // (the spec's Error Recovery outcome) if the PS_RDY never comes
 struct pe_snk_swap_transition_to_off {
     using feature = pr_swap_feature;
+
     static constexpr power_level power = power_level::transition;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
@@ -498,6 +523,7 @@ struct pe_snk_swap_transition_to_off {
 // termination now and continues as the new source
 struct pe_snk_swap_assert_rp {
     using feature = pr_swap_feature;
+
     static constexpr power_level power = power_level::transition;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
@@ -513,10 +539,6 @@ struct pe_snk_swap_assert_rp {
 // holds the tPSSourceOn deadline and restarts resolution on timeout)
 struct pe_snk_swap_wait_source_on {
     using feature = pr_swap_feature;
-    static constexpr power_level power = power_level::transition;
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends PS_RDY, awaits the new source's";
 
     pe_snk_swap_wait_source_on(event::swap_wait_source_on const& event, pe_connection& connection)
         : connection(connection)
@@ -527,9 +549,15 @@ struct pe_snk_swap_wait_source_on {
     }
     explicit pe_snk_swap_wait_source_on(pe_connection& connection) : connection(connection) {}
 
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends PS_RDY, awaits the new source's";
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
     pe_connection& connection;
 
 private:
@@ -540,6 +568,7 @@ private:
 // Attached.SNK, then the normal sink flow resumes
 struct pe_snk_swap_source_on_seen {
     using feature = pr_swap_feature;
+
     static constexpr power_level power = power_level::transition;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
@@ -552,24 +581,26 @@ struct pe_snk_swap_source_on_seen {
 // PE_SNK_Transition_to_default: back to vSafe5V defaults; the engine
 // then advances through Startup and Discovery
 struct pe_snk_transition_to_default {
-    // the restore for the power side, the window for the port: the
-    // connection layer must hold the attach while VBUS cycles
-    static constexpr auto annotations = fsm::annotate(
-        restore_default_action{},
-        hard_reset_window{}
-    );
-    static constexpr power_level power = power_level::transition;
-    static constexpr pd_status pd = pd_status::not_connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = restore_default_action::note;
-
     // the connection persists, the negotiation ends
     explicit pe_snk_transition_to_default(pe_negotiation& negotiation) : negotiation(negotiation)
     {
         this->negotiation = {};
     }
 
+    static constexpr power_level power = power_level::transition;
+    static constexpr pd_status pd = pd_status::not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = restore_default_action::note;
+
+    // the restore for the power side, the window for the port: the
+    // connection layer must hold the attach while VBUS cycles
+    static constexpr auto annotations = fsm::annotate(
+        restore_default_action{},
+        hard_reset_window{}
+    );
+
     using contexts = mtl::typelist<pe_negotiation>;
+
     pe_negotiation& negotiation;
 };
 

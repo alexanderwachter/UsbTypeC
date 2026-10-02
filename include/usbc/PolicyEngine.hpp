@@ -376,13 +376,6 @@ namespace state {
 // returns to Ready
 template<power_role ROLE>
 struct pe_send_not_supported {
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-
     pe_send_not_supported(event::unsupported const&, pe_connection& connection_ref)
         : pe_send_not_supported(connection_ref)
     {
@@ -400,9 +393,18 @@ struct pe_send_not_supported {
     {
     }
 
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
     pe_connection& connection;
 
 private:
@@ -412,43 +414,48 @@ private:
 // PE_SNK_/PE_SRC_Chunk_Received: a non-chunking device lets the sender
 // run into its chunking timeout before answering Not_Supported
 struct pe_chunk_received {
-    static constexpr auto timeout = t_chunking_not_supported; // ChunkingNotSupportedTimer
     static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         power
     );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto timeout = t_chunking_not_supported; // ChunkingNotSupportedTimer
 };
 
 // PE_SNK_/PE_SRC_BIST_Carrier_Mode: the tester's carrier runs for
 // tBISTContMode (the engine commanded the TCPC on entry), then normal
 // operation resumes
 struct pe_bist_carrier {
-    static constexpr auto timeout = t_bist_cont_mode; // BISTContModeTimer
     static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "transmits the BIST carrier";
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
+    static constexpr auto timeout = t_bist_cont_mode; // BISTContModeTimer
 };
 
 // PE_SNK_Give_Sink_Cap / PE_DR_SRC_Give_Sink_Cap: Get_Sink_Cap answered
 // with the sink-role capabilities, then back to Ready
 struct pe_give_sink_cap {
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-
     pe_give_sink_cap() = default;
     explicit pe_give_sink_cap(event::send_sink_capabilities const& event) : message_(event.message)
     {
     }
+
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     pd_message const& values() const { return message_; }
 
@@ -461,14 +468,6 @@ private:
 template<power_role ROLE>
 struct pe_drs_send_swap {
     using feature = dr_swap_feature;
-    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends DR_Swap";
 
     pe_drs_send_swap(event::send_dr_swap const&, pe_connection& connection_ref)
         : pe_drs_send_swap(connection_ref)
@@ -481,9 +480,21 @@ struct pe_drs_send_swap {
     {
     }
 
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends DR_Swap";
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
+    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+
     pe_connection& connection;
 
 private:
@@ -494,13 +505,6 @@ private:
 template<power_role ROLE>
 struct pe_drs_accept_swap {
     using feature = dr_swap_feature;
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends Accept";
 
     pe_drs_accept_swap(event::dr_swap_received const&, pe_connection& connection_ref)
         : pe_drs_accept_swap(connection_ref)
@@ -512,9 +516,19 @@ struct pe_drs_accept_swap {
     {
     }
 
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends Accept";
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
     pe_connection& connection;
 
 private:
@@ -525,14 +539,6 @@ private:
 // report lets the port update the TCPC header and the Type-C context
 struct pe_drs_change_data_role {
     using feature = dr_swap_feature;
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power,
-        swap_transient{}
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = "flips the data role";
 
     pe_drs_change_data_role(event::accept const&, pe_connection& connection_ref)
         : pe_drs_change_data_role(connection_ref)
@@ -547,9 +553,20 @@ struct pe_drs_change_data_role {
         connection.data = otherDataRole(connection.data);
     }
 
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "flips the data role";
+
+    static constexpr auto annotations = fsm::annotate(
+        power,
+        swap_transient{}
+    );
+
     data_role_changed values() const { return {.role = connection.data}; }
 
     using contexts = mtl::typelist<pe_connection>;
+
     pe_connection& connection;
 };
 
@@ -557,14 +574,6 @@ struct pe_drs_change_data_role {
 template<power_role ROLE>
 struct pe_vcs_send_swap {
     using feature = vconn_feature;
-    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends VCONN_Swap";
 
     pe_vcs_send_swap(event::send_vconn_swap const&, pe_connection& connection_ref)
         : pe_vcs_send_swap(connection_ref)
@@ -576,9 +585,21 @@ struct pe_vcs_send_swap {
     {
     }
 
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends VCONN_Swap";
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
+    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+
     pe_connection& connection;
 
 private:
@@ -589,13 +610,6 @@ private:
 template<power_role ROLE>
 struct pe_vcs_accept_swap {
     using feature = vconn_feature;
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends Accept";
 
     pe_vcs_accept_swap(event::vconn_swap_received const&, pe_connection& connection_ref)
         : pe_vcs_accept_swap(connection_ref)
@@ -607,9 +621,19 @@ struct pe_vcs_accept_swap {
     {
     }
 
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends Accept";
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
     pe_connection& connection;
 
 private:
@@ -621,26 +645,21 @@ private:
 // traffic and stays here until its side is done
 struct pe_vcs_active {
     using feature = vconn_feature;
+
     static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         power,
         vconn_swap_agreed{}
     );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 // PE_VCS_Send_PS_RDY: the vconn machine turned the switch on
 template<power_role ROLE>
 struct pe_vcs_send_ps_rdy {
     using feature = vconn_feature;
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends PS_RDY";
 
     pe_vcs_send_ps_rdy(event::send_vconn_ps_rdy const&, pe_connection& connection_ref)
         : pe_vcs_send_ps_rdy(connection_ref)
@@ -652,9 +671,19 @@ struct pe_vcs_send_ps_rdy {
     {
     }
 
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends PS_RDY";
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
     pe_connection& connection;
 
 private:
@@ -664,40 +693,36 @@ private:
 // Transients reporting the hand-off progress to the vconn machine
 struct pe_vcs_partner_on {
     using feature = vconn_feature;
+
     static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         power,
         vconn_partner_on{},
         swap_transient{}
     );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 struct pe_vcs_ps_rdy_sent {
     using feature = vconn_feature;
+
     static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         power,
         vconn_ps_rdy_sent{},
         swap_transient{}
     );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
 };
 
 // PE_PRS_*_Send_Swap: our PR_Swap is out
 template<power_role ROLE>
 struct pe_prs_send_swap {
     using feature = pr_swap_feature;
-    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends PR_Swap";
 
     pe_prs_send_swap(event::send_pr_swap const&, pe_connection& connection_ref)
         : pe_prs_send_swap(connection_ref)
@@ -710,9 +735,21 @@ struct pe_prs_send_swap {
     {
     }
 
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends PR_Swap";
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
+    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+
     pe_connection& connection;
 
 private:
@@ -723,13 +760,6 @@ private:
 template<power_role ROLE>
 struct pe_prs_accept_swap {
     using feature = pr_swap_feature;
-    static constexpr power_level power = power_level::explicit_contract;
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = "sends Accept";
 
     pe_prs_accept_swap(event::pr_swap_received const&, pe_connection& connection_ref)
         : pe_prs_accept_swap(connection_ref)
@@ -741,9 +771,19 @@ struct pe_prs_accept_swap {
     {
     }
 
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = "sends Accept";
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
     pe_connection& connection;
 
 private:
@@ -754,24 +794,30 @@ private:
 // spec's pause (still Ready, spec-wise)
 struct pe_dr_swap_wait {
     using feature = dr_swap_feature;
-    static constexpr auto timeout = t_dr_swap_wait; // tDRSwapWait
+
     static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         power
     );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto timeout = t_dr_swap_wait; // tDRSwapWait
 };
 
 struct pe_pr_swap_wait {
     using feature = pr_swap_feature;
-    static constexpr auto timeout = t_pr_swap_wait; // tPRSwapWait
+
     static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         power
     );
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto timeout = t_pr_swap_wait; // tPRSwapWait
 };
 
 // PE_SNK_/PE_SRC_Soft_Reset: accepts a received Soft_Reset; the
@@ -779,14 +825,6 @@ struct pe_pr_swap_wait {
 // order)
 template<power_role ROLE>
 struct pe_soft_reset {
-    static constexpr auto annotations = fsm::annotate(
-        prl::reset_action{}
-    );
-    static constexpr power_level power = power_level::contract_or_default;
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = prl::reset_action::note;
-
     pe_soft_reset(event::soft_reset_received const&, pe_connection& connection_ref)
         : pe_soft_reset(connection_ref)
     {
@@ -797,9 +835,19 @@ struct pe_soft_reset {
     {
     }
 
+    static constexpr power_level power = power_level::contract_or_default;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = prl::reset_action::note;
+
+    static constexpr auto annotations = fsm::annotate(
+        prl::reset_action{}
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
     pe_connection& connection;
 
 private:
@@ -810,24 +858,27 @@ private:
 // reset; the protocol layer is reset before the Soft_Reset goes out
 template<power_role ROLE>
 struct pe_send_soft_reset {
-    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
-    static constexpr auto annotations = fsm::annotate(
-        prl::reset_action{}
-    );
-    static constexpr power_level power = power_level::contract_or_default;
-    static constexpr pd_status pd = pd_status::connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = prl::reset_action::note;
-
     explicit pe_send_soft_reset(pe_connection& connection_ref)
         : connection(connection_ref),
           message_(makeControlMessage(control_message_type::soft_reset, ROLE, connection.data))
     {
     }
 
+    static constexpr power_level power = power_level::contract_or_default;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = prl::reset_action::note;
+
+    static constexpr auto annotations = fsm::annotate(
+        prl::reset_action{}
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = mtl::typelist<pe_connection>;
+
+    static constexpr auto timeout = t_sender_response; // SenderResponseTimer
+
     pe_connection& connection;
 
 private:
@@ -836,20 +887,22 @@ private:
 
 // PE_SNK_/PE_SRC_Hard_Reset: the signal goes out, HardResetCounter counts
 struct pe_hard_reset {
-    static constexpr auto annotations = fsm::annotate(
-        prl::hard_reset_action{}
-    );
-    static constexpr power_level power = power_level::contract_or_default;
-    static constexpr pd_status pd = pd_status::connected_or_not_connected;
-    static constexpr std::string_view dot_note = specNote(power, pd);
-    static constexpr std::string_view dot_action = prl::hard_reset_action::note;
-
     explicit pe_hard_reset(pe_connection& connection_ref) : connection(connection_ref)
     {
         ++connection.hard_resets; // HardResetCounter
     }
 
+    static constexpr power_level power = power_level::contract_or_default;
+    static constexpr pd_status pd = pd_status::connected_or_not_connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+    static constexpr std::string_view dot_action = prl::hard_reset_action::note;
+
+    static constexpr auto annotations = fsm::annotate(
+        prl::hard_reset_action{}
+    );
+
     using contexts = mtl::typelist<pe_connection>;
+
     pe_connection& connection;
 };
 
@@ -857,12 +910,13 @@ struct pe_hard_reset {
 // integration commands Type-C Error Recovery, whose teardown resets
 // the engine
 struct pe_error_recovery {
-    static constexpr auto annotations = fsm::annotate(
-        request_error_recovery{}
-    );
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        request_error_recovery{}
+    );
 };
 
 } // namespace state

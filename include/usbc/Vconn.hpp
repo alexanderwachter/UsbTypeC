@@ -122,6 +122,7 @@ struct pe_vcs_wait_for_vconn {
         vconn_switch{true},
         source_role{}
     );
+
     static constexpr auto timeout = t_source_timeout; // VCONNOnTimer
 };
 

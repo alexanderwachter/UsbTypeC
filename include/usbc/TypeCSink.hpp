@@ -103,6 +103,7 @@ struct error_recovery {
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::unwatched}
     );
+
     static constexpr auto timeout = t_error_recovery;
 };
 
@@ -111,66 +112,60 @@ struct error_recovery {
 struct sink_state {
     explicit sink_state(line_status& line_ref) : line(line_ref) {}
 
+    using contexts = mtl::typelist<line_status>;
+
     void handle(event::cc_changed const& event) { line.cc = event.cc; }
     void handle(event::vbus_present const&) { line.vbus_present = true; }
     void handle(event::vbus_removed const&) { line.vbus_present = false; }
 
-    using contexts = mtl::typelist<line_status>;
     line_status& line;
 };
 
 // The resting state resets the connection's attachment: the next
 // attach resolves afresh
 struct unattached_snk : sink_state {
-    static constexpr auto annotations = fsm::annotate(
-        cc_termination{cc_pull::rd},
-        vbus_power{vbus_path::open},
-        vbus_level{vbus_level::safe5v}
-    );
-
     unattached_snk(line_status& line_ref, attachment& attached) : sink_state(line_ref)
     {
         attached = {};
     }
 
-    using contexts = mtl::typelist<line_status, attachment>;
-};
-
-struct attach_wait_snk : sink_state {
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe5v}
     );
-    static constexpr auto timeout = t_cc_debounce; // CCDebounceTimer
 
+    using contexts = mtl::typelist<line_status, attachment>;
+};
+
+struct attach_wait_snk : sink_state {
     attach_wait_snk(event::cc_changed const& event, line_status& line_ref) : sink_state(line_ref)
     {
         line.cc = event.cc;
     }
     using sink_state::sink_state;
-};
 
-// AttachWait.SNK with a stable single Rp, waiting for VBUS
-struct attach_wait_snk_debounced : sink_state {
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe5v}
     );
 
+    static constexpr auto timeout = t_cc_debounce; // CCDebounceTimer
+};
+
+// AttachWait.SNK with a stable single Rp, waiting for VBUS
+struct attach_wait_snk_debounced : sink_state {
     using sink_state::sink_state;
+
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rd},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::safe5v}
+    );
 };
 
 struct attached_snk : sink_state {
-    static constexpr auto annotations = fsm::annotate(
-        cc_termination{cc_pull::rd},
-        vbus_power{vbus_path::sink},
-        vbus_level{vbus_level::sink_disconnect},
-        attached_role{power_role::sink},
-        pd_connection{}
-    );
-
     // the debounce timed out with VBUS already present: a fresh attach
     attached_snk(line_status& line_ref, attachment& attached_ref)
         : sink_state(line_ref), attached(attached_ref)
@@ -212,12 +207,14 @@ struct attached_snk : sink_state {
     {
     }
 
-    using sink_state::handle;
-    // a DR_Swap flips the data role in place (DRP only)
-    void handle(event::swap_data_role const&) { attached.data = otherDataRole(attached.data); }
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rd},
+        vbus_power{vbus_path::sink},
+        vbus_level{vbus_level::sink_disconnect},
+        attached_role{power_role::sink},
+        pd_connection{}
+    );
 
-    plug_orientation orientation() const { return attached.orientation; }
-    data_role dataRole() const { return attached.data; }
     // the attach result, the CC polarity and the partner, observed as
     // instance values: the hw driver applies the polarity, the clients
     // and loggers consume the attach info, the PD layer above acts on
@@ -233,6 +230,13 @@ struct attached_snk : sink_state {
     }
 
     using contexts = mtl::typelist<line_status, attachment>;
+
+    using sink_state::handle;
+    // a DR_Swap flips the data role in place (DRP only)
+    void handle(event::swap_data_role const&) { attached.data = otherDataRole(attached.data); }
+
+    plug_orientation orientation() const { return attached.orientation; }
+    data_role dataRole() const { return attached.data; }
     attachment& attached;
 
 private:
@@ -255,28 +259,30 @@ private:
 // capabilities). The policy engine's NoResponseTimer owns the give-up;
 // the timeout here only terminates a dead port
 struct hard_reset_snk : sink_state {
+    using sink_state::sink_state;
+
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe5v},
         pd_connection{}
     );
-    static constexpr auto timeout = t_hard_reset_window;
 
-    using sink_state::sink_state;
+    static constexpr auto timeout = t_hard_reset_window;
 };
 
 // ... second phase: VBUS is down, its return resumes Attached.SNK
 struct hard_reset_recover_snk : sink_state {
+    using sink_state::sink_state;
+
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe5v},
         pd_connection{}
     );
-    static constexpr auto timeout = t_hard_reset_window;
 
-    using sink_state::sink_state;
+    static constexpr auto timeout = t_hard_reset_window;
 };
 
 } // namespace state

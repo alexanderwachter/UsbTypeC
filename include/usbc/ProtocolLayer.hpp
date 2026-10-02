@@ -152,8 +152,6 @@ struct wait_for_message_request {
 };
 
 struct wait_for_phy_response {
-    static constexpr auto timeout = t_receive; // CRCReceiveTimer
-
     wait_for_phy_response(event::tx_request const& event, tx_context& ctx) : context(ctx)
     {
         context.message = event.message;
@@ -166,33 +164,37 @@ struct wait_for_phy_response {
     pd_message const& values() const { return context.message; }
 
     using contexts = mtl::typelist<tx_context>;
+
+    static constexpr auto timeout = t_receive; // CRCReceiveTimer
+
     tx_context& context;
 };
 
 // PRL_Tx_Transmission_Error folded with the idle wait: reported on
 // entry, rests until the policy engine transmits again or resets
 struct transmission_error {
+    explicit transmission_error(tx_context& ctx) : context(ctx) {}
+
     static constexpr auto annotations = fsm::annotate(
         tx_ready{}
     );
-
-    explicit transmission_error(tx_context& ctx) : context(ctx) {}
 
     // the failed message's SOP*, observed by the client reporter
     sop_type values() const { return context.message.sop; }
 
     using contexts = mtl::typelist<tx_context>;
+
     tx_context& context;
 };
 
 struct wait_for_hard_reset_complete {
-    static constexpr auto timeout = t_hard_reset_complete; // HardResetCompleteTimer
-
     // leaving this state completes the hard reset, whichever edge takes
     // it out; observed on exit by the client reporter
     static constexpr auto annotations = fsm::annotate(
         hard_reset_sent{}
     );
+
+    static constexpr auto timeout = t_hard_reset_complete; // HardResetCompleteTimer
 };
 
 } // namespace state

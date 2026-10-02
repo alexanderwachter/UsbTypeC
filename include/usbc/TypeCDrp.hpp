@@ -169,32 +169,25 @@ inline constexpr std::chrono::milliseconds t_src_slice = TIMING.t_drp * TIMING.d
 // resolves afresh
 template<drp_timing const& TIMING>
 struct unattached_snk : state::sink_state {
-    static constexpr auto annotations = fsm::annotate(
-        cc_termination{cc_pull::rd},
-        vbus_power{vbus_path::open},
-        vbus_level{vbus_level::safe5v}
-    );
-    static constexpr auto timeout = TIMING.t_drp - t_src_slice<TIMING>;
-
     unattached_snk(line_status& line_ref, attachment& attached) : sink_state(line_ref)
     {
         attached = {};
     }
 
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rd},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::safe5v}
+    );
+
     using contexts = mtl::typelist<line_status, attachment>;
+
+    static constexpr auto timeout = TIMING.t_drp - t_src_slice<TIMING>;
 };
 
 // Unattached.SRC of a DRP: Rp presented for the source slice of tDRP
 template<drp_timing const& TIMING>
 struct unattached_src : state::source_state {
-    // toggling: nothing measured - AttachWait re-arms vSafe0V on entry
-    static constexpr auto annotations = fsm::annotate(
-        cc_termination{cc_pull::rp},
-        vbus_power{vbus_path::open},
-        vbus_level{vbus_level::unwatched}
-    );
-    static constexpr auto timeout = t_src_slice<TIMING>;
-
     // entering on the discharge-complete event records what it means
     unattached_src(event::vbus_reached_safe0v const&, line_status& line_ref, attachment& attached)
         : unattached_src(line_ref, attached)
@@ -206,7 +199,16 @@ struct unattached_src : state::source_state {
         attached = {};
     }
 
+    // toggling: nothing measured - AttachWait re-arms vSafe0V on entry
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::unwatched}
+    );
+
     using contexts = mtl::typelist<line_status, attachment>;
+
+    static constexpr auto timeout = t_src_slice<TIMING>;
 };
 
 // --- the Try phases ------------------------------------------------------------
@@ -224,12 +226,13 @@ struct try_phase_state : ROLE_STATE {
         phase = {};
     }
 
+    using contexts = mtl::typelist<line_status, try_phase>;
+    using parent_contexts = mtl::typelist<line_status, try_phase>;
+
     using ROLE_STATE::handle;
     // the budget ran out while the termination is being debounced
     void handle(fsm::timeout const&) { phase.expired = true; }
 
-    using contexts = mtl::typelist<line_status, try_phase>;
-    using parent_contexts = mtl::typelist<line_status, try_phase>;
     try_phase& phase;
 };
 
@@ -266,6 +269,7 @@ struct debouncing_termination : ROLE_STATE {
     }
 
     using contexts = mtl::typelist<line_status, try_phase>;
+
     try_phase& phase;
 };
 
@@ -305,9 +309,9 @@ struct try_src_monitor : awaiting_termination<state::source_state> {
 // A single Rd appeared in Try.SRC: stable for tTryCCDebounce attaches
 template<drp_timing const& TIMING>
 struct try_src_debounce : debouncing_termination<state::source_state> {
-    static constexpr auto timeout = TIMING.t_try_cc_debounce;
-
     using debouncing_termination<state::source_state>::debouncing_termination;
+
+    static constexpr auto timeout = TIMING.t_try_cc_debounce;
 };
 
 template<drp_timing const& TIMING>
@@ -319,28 +323,30 @@ template<drp_timing const& TIMING>
 struct try_src : try_phase_state<state::source_state> {
     using submachine = try_src_table<TIMING>;
 
+    using try_phase_state<state::source_state>::try_phase_state;
+
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rp},
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe0v}
     );
-    static constexpr auto timeout = TIMING.t_drp_try;
 
-    using try_phase_state<state::source_state>::try_phase_state;
+    static constexpr auto timeout = TIMING.t_drp_try;
 };
 
 // The partner did not present Rd: back to Rd for tDRPTryWait, attaching
 // as sink when the partner sources VBUS
 template<drp_timing const& TIMING>
 struct try_wait_snk : state::sink_state {
+    using state::sink_state::sink_state;
+
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe5v}
     );
-    static constexpr auto timeout = TIMING.t_drp_try_wait;
 
-    using state::sink_state::sink_state;
+    static constexpr auto timeout = TIMING.t_drp_try_wait;
 };
 
 // --- Try.SNK / TryWait.SRC (drp_preference::sink) ----------------------------
@@ -349,9 +355,9 @@ struct try_wait_snk : state::sink_state {
 // monitored
 template<drp_timing const& TIMING>
 struct try_snk_wait : awaiting_termination<state::sink_state> {
-    static constexpr auto timeout = TIMING.t_drp_try;
-
     using awaiting_termination<state::sink_state>::awaiting_termination;
+
+    static constexpr auto timeout = TIMING.t_drp_try;
 };
 
 struct try_snk_monitor : awaiting_termination<state::sink_state> {
@@ -362,8 +368,6 @@ struct try_snk_monitor : awaiting_termination<state::sink_state> {
 // present attaches
 template<drp_timing const& TIMING>
 struct try_snk_debounce : debouncing_termination<state::sink_state> {
-    static constexpr auto timeout = TIMING.t_pd_debounce;
-
     // the partner's VBUS came up with its Rp already seen: the report
     // counts in the debounce it starts
     try_snk_debounce(event::vbus_present const&, line_status& line_ref, try_phase& phase_ref)
@@ -372,6 +376,8 @@ struct try_snk_debounce : debouncing_termination<state::sink_state> {
         line.vbus_present = true;
     }
     using debouncing_termination<state::sink_state>::debouncing_termination;
+
+    static constexpr auto timeout = TIMING.t_pd_debounce;
 };
 
 template<drp_timing const& TIMING>
@@ -383,14 +389,15 @@ template<drp_timing const& TIMING>
 struct try_snk : try_phase_state<state::sink_state> {
     using submachine = try_snk_table<TIMING>;
 
+    using try_phase_state<state::sink_state>::try_phase_state;
+
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe5v}
     );
-    static constexpr auto timeout = TIMING.t_try_timeout;
 
-    using try_phase_state<state::sink_state>::try_phase_state;
+    static constexpr auto timeout = TIMING.t_try_timeout;
 };
 
 struct try_wait_src_monitor : awaiting_termination<state::source_state> {
@@ -401,9 +408,9 @@ struct try_wait_src_monitor : awaiting_termination<state::source_state> {
 // attaches once VBUS is at vSafe0V
 template<drp_timing const& TIMING>
 struct try_wait_src_debounce : debouncing_termination<state::source_state> {
-    static constexpr auto timeout = TIMING.t_try_cc_debounce;
-
     using debouncing_termination<state::source_state>::debouncing_termination;
+
+    static constexpr auto timeout = TIMING.t_try_cc_debounce;
 };
 
 // Rd debounced but VBUS not yet at vSafe0V: attach follows the report.
@@ -422,14 +429,15 @@ template<drp_timing const& TIMING>
 struct try_wait_src : try_phase_state<state::source_state> {
     using submachine = try_wait_src_table<TIMING>;
 
+    using try_phase_state<state::source_state>::try_phase_state;
+
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rp},
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe0v}
     );
-    static constexpr auto timeout = TIMING.t_drp_try_wait;
 
-    using try_phase_state<state::source_state>::try_phase_state;
+    static constexpr auto timeout = TIMING.t_drp_try_wait;
 };
 
 // --- PR_Swap standby ---------------------------------------------------------
@@ -456,6 +464,8 @@ struct swap_standby {
 
 // The old sink, waiting for the old source's PS_RDY before taking over
 struct swap_standby_to_src : state::sink_state {
+    using state::sink_state::sink_state;
+
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
@@ -463,13 +473,14 @@ struct swap_standby_to_src : state::sink_state {
         swap_standby{power_role::source},
         pd_connection{}
     );
-    static constexpr auto timeout = t_ps_source_off;
 
-    using state::sink_state::sink_state;
+    static constexpr auto timeout = t_ps_source_off;
 };
 
 // The old source, its PS_RDY sent, waiting for the new source's
 struct swap_standby_to_snk : state::sink_state {
+    using state::sink_state::sink_state;
+
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
@@ -477,9 +488,8 @@ struct swap_standby_to_snk : state::sink_state {
         swap_standby{power_role::sink},
         pd_connection{}
     );
-    static constexpr auto timeout = t_ps_source_on;
 
-    using state::sink_state::sink_state;
+    static constexpr auto timeout = t_ps_source_on;
 };
 
 // --- guards ------------------------------------------------------------------
