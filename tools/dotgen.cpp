@@ -49,6 +49,10 @@ int main(int argc, char* argv[])
         directory, "tc_drp_try_src");
     write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::sink>>(
         directory, "tc_drp_try_snk");
+    // the Try phases are composite states: one graph per submachine
+    write<usbc::tc::drp::try_src_table<drp_timing>>(directory, "tc_try_src");
+    write<usbc::tc::drp::try_snk_table<drp_timing>>(directory, "tc_try_snk");
+    write<usbc::tc::drp::try_wait_src_table<drp_timing>>(directory, "tc_try_wait_src");
     write<usbc::pe::sink_table>(directory, "pe_sink");
     write<usbc::pe::source_table>(directory, "pe_source");
 

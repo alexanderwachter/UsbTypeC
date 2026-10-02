@@ -62,19 +62,23 @@ namespace state {
 // The spec's Disabled state: the port is not operating, terminations
 // removed, nothing monitored. start() fires the started event
 struct disabled_src {
-    static constexpr vbus_level vbus_watch = vbus_level::unwatched;
-    static constexpr auto annotations     = fsm::annotate(cc_termination{cc_pull::open},
-                                                          vbus_power{vbus_path::open}, vbus_watch);
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::open},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::unwatched}
+    );
 };
 
 // The spec's ErrorRecovery state, source flavor: both terminations
 // removed for at least tErrorRecovery, then connection resolution
 // restarts. Entered on the PD layer's command
 struct error_recovery_src {
-    static constexpr vbus_level vbus_watch = vbus_level::unwatched;
-    static constexpr auto annotations     = fsm::annotate(cc_termination{cc_pull::open},
-                                                          vbus_power{vbus_path::open}, vbus_watch);
-    static constexpr auto timeout     = t_error_recovery;
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::open},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::unwatched}
+    );
+    static constexpr auto timeout = t_error_recovery;
 };
 
 // The sensed line plus the internal-transition handlers keeping it
@@ -95,9 +99,11 @@ struct source_state {
 struct unattached_src : source_state {
     // resting: nothing measured - AttachWait re-arms vSafe0V on entry,
     // and the driver's arm-report refreshes the line's latch there
-    static constexpr vbus_level vbus_watch = vbus_level::unwatched;
-    static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::unwatched}
+    );
 
     // entering on the discharge-complete event records what it means -
     // a transition does not run the internal handlers
@@ -116,10 +122,12 @@ struct unattached_src : source_state {
 };
 
 struct attach_wait_src : source_state {
-    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
-    static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
-    static constexpr auto timeout     = t_cc_debounce; // CCDebounceTimer
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::safe0v}
+    );
+    static constexpr auto timeout = t_cc_debounce; // CCDebounceTimer
 
     attach_wait_src(event::cc_changed const& event, line_status& line_ref) : source_state(line_ref)
     {
@@ -130,19 +138,24 @@ struct attach_wait_src : source_state {
 
 // AttachWait.SRC with a stable single Rd, waiting for VBUS at vSafe0V
 struct attach_wait_src_debounced : source_state {
-    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
-    static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::open}, vbus_watch);
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::safe0v}
+    );
 
     using source_state::source_state;
 };
 
 struct attached_src : source_state {
     // sourcing: detach detection is CC-based, the comparator rests
-    static constexpr vbus_level vbus_watch = vbus_level::unwatched;
-    static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::safe5v}, vbus_watch,
-                      attached_role{power_role::source}, pd_connection{});
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::safe5v},
+        vbus_level{vbus_level::unwatched},
+        attached_role{power_role::source},
+        pd_connection{}
+    );
 
     // entered from the debounced wait on the vSafe0V event
     attached_src(event::vbus_reached_safe0v const&, line_status& line_ref,
@@ -199,9 +212,11 @@ private:
 
 // Discharges VBUS to vSafe0V before presenting Rp for a new attach
 struct unattached_wait_src : source_state {
-    static constexpr vbus_level vbus_watch = vbus_level::safe0v;
-    static constexpr auto annotations =
-        fsm::annotate(cc_termination{cc_pull::rp}, vbus_power{vbus_path::safe0v}, vbus_watch);
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rp},
+        vbus_power{vbus_path::safe0v},
+        vbus_level{vbus_level::safe0v}
+    );
 
     unattached_wait_src(event::cc_changed const& event, line_status& line_ref)
         : source_state(line_ref)

@@ -114,7 +114,9 @@ static_assert(usbc::tc::srcOrientationOf(cc_status{cc_state::src_open, cc_state:
 // a watching state whose table drops a family event is rejected
 namespace inconsistent {
     struct deaf {
-        static constexpr usbc::vbus_level vbus_watch = usbc::vbus_level::safe5v;
+        static constexpr auto annotations = fsm::annotate(
+            usbc::vbus_level{usbc::vbus_level::safe5v}
+        );
     };
     struct poke {};
     using table = fsm::transition_table<

@@ -64,7 +64,7 @@ namespace usbc {
 template<fsm::concepts::timer TIMER>
 struct pd_drp_timers {
     TIMER tc;
-    TIMER tc_deadline; // the Try phases' hard walls (preference != none)
+    TIMER tc_try; // the timeouts inside a Try phase (preference != none)
     TIMER sink_prl;
     TIMER sink_pe;
     TIMER source_prl;
@@ -93,7 +93,7 @@ public:
                          source_policy_, supply, source_power, watch_),
           vconn_(pickVconnPort(observers...), timers.vconn, watch_),
           router_(tcpc, sink_engine_, source_engine_, *this),
-          drp_(tcpc, vbus, timers.tc, timers.tc_deadline, advertisement, router_,
+          drp_(tcpc, vbus, timers.tc, timers.tc_try, advertisement, router_,
                observers...)
     {
         // a DRP answers Get_Source_Cap/Get_Sink_Cap in either role

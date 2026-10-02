@@ -178,11 +178,14 @@ struct attachment {
     bool resolved                = false;
 };
 
-// One DRP Try phase's budget: the phase deadline expired while a
-// debounce was running - the debounce may still attach, but its
-// failure exits the phase instead of re-arming it
+// One DRP Try phase, shared by its composite state and its sub-states.
+// The phase's time budget applies while the wanted termination has not
+// been detected: once a sub-state has seen it, the budget running out
+// is only recorded - the debounce may still attach, but its failure
+// ends the phase instead of resuming it
 struct try_phase {
-    bool expired = false;
+    bool termination_seen = false;
+    bool expired          = false;
 };
 
 // The one place tying a VBUS level to the events its reports become:
@@ -204,16 +207,18 @@ constexpr bool metMeansPresent(vbus_level level)
 
 // The events a state owes for the VBUS level it watches: both reports
 // of its level's family - a missing transition would silently drop a
-// report (a lost detach at worst). A state without the member, or
+// report (a lost detach at worst). A state without the annotation, or
 // with monitoring off, owes nothing; fsm::all_states_handle is the
 // table-wide proof
 template<typename STATE>
 struct required_vbus_events : std::type_identity<mtl::typelist<>> {};
 
 template<typename STATE>
-    requires requires { STATE::vbus_watch; } && (STATE::vbus_watch != vbus_level::unwatched)
+    requires requires { STATE::annotations.template get<vbus_level>(); } &&
+             (STATE::annotations.template get<vbus_level>() != vbus_level::unwatched)
 struct required_vbus_events<STATE>
-    : std::conditional<familyOf(STATE::vbus_watch) == vbus_family::discharge,
+    : std::conditional<familyOf(STATE::annotations.template get<vbus_level>()) ==
+                           vbus_family::discharge,
                        mtl::typelist<event::vbus_reached_safe0v, event::vbus_left_safe0v>,
                        mtl::typelist<event::vbus_present, event::vbus_removed>> {};
 
@@ -240,7 +245,7 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
     static constexpr void validate()
     {
         static_assert(fsm::all_states_carry_v<TABLE, vbus_level>,
-                      "vbus_watcher: every state must annotate its vbus_watch level "
+                      "vbus_watcher: every state must annotate its vbus_level "
                       "(vbus_level::unwatched switches monitoring off)");
         static_assert(watch_events_consistent_v<TABLE>,
                       "vbus_watcher: a watching state must handle its level's event family");
