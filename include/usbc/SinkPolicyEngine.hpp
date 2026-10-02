@@ -254,7 +254,7 @@ struct pe_snk_startup {
         restore_default_action{}
     );
 
-    using contexts = mtl::typelist<pe_connection, pe_negotiation>;
+    using contexts = fsm::contexts<pe_connection, pe_negotiation>;
 
     pe_connection& connection;
     pe_negotiation& negotiation;
@@ -268,7 +268,7 @@ struct pe_snk_discovery {
     static constexpr pd_status pd = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
-    using contexts = mtl::typelist<pe_connection>; // the guard reads the counter
+    using contexts = fsm::contexts<pe_connection>; // the guard reads the counter
 
     pe_connection& connection;
 };
@@ -291,7 +291,7 @@ struct pe_snk_wait_no_response {
     static constexpr pd_status pd = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
-    using contexts = mtl::typelist<pe_connection>; // the guard reads the counter
+    using contexts = fsm::contexts<pe_connection>; // the guard reads the counter
 
     static constexpr auto timeout = t_no_response; // NoResponseTimer
 
@@ -310,7 +310,7 @@ struct pe_snk_evaluate_capability {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 };
@@ -348,7 +348,7 @@ struct pe_snk_select_capability {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection, pe_negotiation>;
+    using contexts = fsm::contexts<pe_connection, pe_negotiation>;
 
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
 
@@ -392,7 +392,7 @@ struct pe_snk_transition_sink {
 
     standby_limit values() const { return {negotiation.request.voltage}; }
 
-    using contexts = mtl::typelist<pe_negotiation>;
+    using contexts = fsm::contexts<pe_negotiation>;
 
     static constexpr auto timeout = t_ps_transition; // PSTransitionTimer
 
@@ -419,7 +419,7 @@ struct pe_snk_ready {
         return {negotiation.request.voltage, negotiation.request.operating_current};
     }
 
-    using contexts = mtl::typelist<pe_negotiation>;
+    using contexts = fsm::contexts<pe_negotiation>;
 
     pe_negotiation& negotiation;
 };
@@ -556,7 +556,7 @@ struct pe_snk_swap_wait_source_on {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 
@@ -599,7 +599,7 @@ struct pe_snk_transition_to_default {
         hard_reset_window{}
     );
 
-    using contexts = mtl::typelist<pe_negotiation>;
+    using contexts = fsm::contexts<pe_negotiation>;
 
     pe_negotiation& negotiation;
 };
@@ -640,7 +640,7 @@ struct no_hard_reset_yet {
 };
 
 // The spec timer range of every timed state, checked against the table
-using sink_timer_ranges = mtl::typelist<
+using sink_timer_ranges = fsm::timer_ranges<
     fsm::timed_by<state::pe_snk_wait_for_capabilities, spec::t_sink_wait_cap>,
     fsm::timed_by<state::pe_snk_select_capability, spec::t_sender_response>,
     fsm::timed_by<state::pe_snk_transition_sink, spec::t_ps_transition>,
@@ -655,7 +655,7 @@ using sink_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_snk_bist_carrier, spec::t_bist_cont_mode>,
     fsm::timed_by<state::pe_snk_vcs_send_swap, spec::t_sender_response>>;
 
-using sink_transitions = mtl::typelist<
+using sink_transitions = fsm::transition_table<
     fsm::initial<state::pe_snk_startup>,
     fsm::transition<fsm::from<state::pe_snk_startup>, fsm::on<event::started>, fsm::to<state::pe_snk_discovery>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::vbus_removed>, fsm::to<state::pe_snk_startup>>,
@@ -768,7 +768,7 @@ using sink_transitions = mtl::typelist<
 // struct, not an alias: the short name replaces the fully spelled
 // table type in every mangled symbol - megabytes per object file,
 // measured
-struct sink_table : mtl::rebind_t<sink_transitions, fsm::transition_table> {};
+struct sink_table : sink_transitions {};
 
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them

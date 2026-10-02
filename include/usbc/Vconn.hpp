@@ -147,23 +147,24 @@ struct ra_present {
 };
 
 using vconn_timer_ranges =
-    mtl::typelist<fsm::timed_by<state::pe_vcs_wait_for_vconn, spec::t_vconn_source_timeout>>;
+    fsm::timer_ranges<fsm::timed_by<state::pe_vcs_wait_for_vconn, spec::t_vconn_source_timeout>>;
+
+using vconn_transitions = fsm::transition_table<
+    fsm::initial<state::vconn_off>,
+    fsm::transition<fsm::from<state::vconn_off>, fsm::on<event::attached_source>, fsm::guard<ra_present>, fsm::to<state::vconn_source>>,
+    fsm::internal_transition<fsm::from<state::vconn_off>, fsm::on<event::attached_source>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::detached>, fsm::to<state::vconn_off>>,
+    // the agreed swap: take when off, relinquish when sourcing
+    fsm::transition<fsm::from<state::vconn_off>, fsm::on<event::swap_agreed>, fsm::to<state::pe_vcs_turn_on_vconn>>,
+    fsm::transition<fsm::from<state::vconn_source>, fsm::on<event::swap_agreed>, fsm::to<state::pe_vcs_wait_for_vconn>>,
+    fsm::transition<fsm::from<state::pe_vcs_turn_on_vconn>, fsm::on<event::ps_rdy_sent>, fsm::to<state::vconn_source>>,
+    fsm::transition<fsm::from<state::pe_vcs_wait_for_vconn>, fsm::on<event::partner_ps_rdy>, fsm::to<state::vconn_off>>,
+    fsm::transition<fsm::from<state::pe_vcs_wait_for_vconn>, fsm::on<fsm::timeout>, fsm::to<state::pe_vcs_timeout>>,
+    fsm::transition<fsm::from<state::pe_vcs_timeout>, fsm::on<event::swap_failed_handled>, fsm::to<state::vconn_source>>>;
 
 // A named struct, not an alias: the short name replaces the fully
 // spelled table type in every mangled symbol
-struct vconn_table
-    : fsm::transition_table<
-          fsm::initial<state::vconn_off>,
-                         fsm::transition<fsm::from<state::vconn_off>, fsm::on<event::attached_source>, fsm::guard<ra_present>, fsm::to<state::vconn_source>>,
-                         fsm::internal_transition<fsm::from<state::vconn_off>, fsm::on<event::attached_source>>,
-                         fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::detached>, fsm::to<state::vconn_off>>,
-          // the agreed swap: take when off, relinquish when sourcing
-                         fsm::transition<fsm::from<state::vconn_off>, fsm::on<event::swap_agreed>, fsm::to<state::pe_vcs_turn_on_vconn>>,
-                         fsm::transition<fsm::from<state::vconn_source>, fsm::on<event::swap_agreed>, fsm::to<state::pe_vcs_wait_for_vconn>>,
-                         fsm::transition<fsm::from<state::pe_vcs_turn_on_vconn>, fsm::on<event::ps_rdy_sent>, fsm::to<state::vconn_source>>,
-                         fsm::transition<fsm::from<state::pe_vcs_wait_for_vconn>, fsm::on<event::partner_ps_rdy>, fsm::to<state::vconn_off>>,
-                         fsm::transition<fsm::from<state::pe_vcs_wait_for_vconn>, fsm::on<fsm::timeout>, fsm::to<state::pe_vcs_timeout>>,
-                         fsm::transition<fsm::from<state::pe_vcs_timeout>, fsm::on<event::swap_failed_handled>, fsm::to<state::vconn_source>>> {};
+struct vconn_table : vconn_transitions {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's switch annotation through the injected

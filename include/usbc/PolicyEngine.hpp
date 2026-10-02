@@ -403,7 +403,7 @@ struct pe_send_not_supported {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 
@@ -491,7 +491,7 @@ struct pe_drs_send_swap {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
 
@@ -527,7 +527,7 @@ struct pe_drs_accept_swap {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 
@@ -565,7 +565,7 @@ struct pe_drs_change_data_role {
 
     data_role_changed values() const { return {.role = connection.data}; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 };
@@ -596,7 +596,7 @@ struct pe_vcs_send_swap {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
 
@@ -632,7 +632,7 @@ struct pe_vcs_accept_swap {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 
@@ -682,7 +682,7 @@ struct pe_vcs_send_ps_rdy {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 
@@ -746,7 +746,7 @@ struct pe_prs_send_swap {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
 
@@ -782,7 +782,7 @@ struct pe_prs_accept_swap {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 
@@ -846,7 +846,7 @@ struct pe_soft_reset {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 
@@ -875,7 +875,7 @@ struct pe_send_soft_reset {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
 
@@ -901,7 +901,7 @@ struct pe_hard_reset {
         prl::hard_reset_action{}
     );
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 };

@@ -252,8 +252,8 @@ private:
     };
 
     // The vconn-enabling observer is the port; the stand-in without one
-    using vconn_enabler_t =
-        fsm::feature_enabler_t<pe::vconn_feature, mtl::typelist<std::remove_cvref_t<OBSERVERs>...>>;
+    using vconn_enabler_t = fsm::
+        feature_enabler_t<pe::vconn_feature, fsm::observers<std::remove_cvref_t<OBSERVERs>...>>;
     using vconn_port_t = std::conditional_t<
         std::is_same_v<vconn_enabler_t, mtl::nil_type>,
         no_vconn_port,
@@ -425,7 +425,7 @@ private:
         {
         }
 
-        using observes = mtl::typelist<
+        using observes = fsm::annotations<
             tc::pd_connection,
             tc::attached_role,
             tc::drp::swap_standby,

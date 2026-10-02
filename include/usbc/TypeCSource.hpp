@@ -86,7 +86,7 @@ struct error_recovery_src {
 struct source_state {
     explicit source_state(line_status& line_ref) : line(line_ref) {}
 
-    using contexts = mtl::typelist<line_status>;
+    using contexts = fsm::contexts<line_status>;
 
     void handle(event::cc_changed const& event) { line.cc = event.cc; }
     void handle(event::vbus_reached_safe0v const&) { line.vbus_safe0v = true; }
@@ -118,7 +118,7 @@ struct unattached_src : source_state {
         vbus_level{vbus_level::unwatched}
     );
 
-    using contexts = mtl::typelist<line_status, attachment>;
+    using contexts = fsm::contexts<line_status, attachment>;
 };
 
 struct attach_wait_src : source_state {
@@ -199,7 +199,7 @@ struct attached_src : source_state {
         );
     }
 
-    using contexts = mtl::typelist<line_status, attachment>;
+    using contexts = fsm::contexts<line_status, attachment>;
 
     using source_state::handle;
     // a DR_Swap flips the data role in place (DRP only)
@@ -255,8 +255,8 @@ struct rd_removed {
 // anchors it (the source's resting state, or the DRP's toggling Rp
 // phase) and ATTACH is where a successful attach leads (Attached.SRC,
 // or Try.SNK for a sink-preferring DRP)
-template<typename UNATTACHED, typename ATTACH>
-using source_attach_flow = mtl::typelist<
+template<fsm::concepts::state UNATTACHED, fsm::concepts::state ATTACH>
+using source_attach_flow = fsm::transition_table<
     fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_src>>,
     fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_reached_safe0v>>,
     fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_left_safe0v>>,
@@ -286,23 +286,23 @@ using source_attach_flow = mtl::typelist<
 // The spec timer range of every timed state of the source flow; the
 // DRP concatenates this map with its own, like the flows themselves
 using source_timer_ranges =
-    mtl::typelist<fsm::timed_by<state::attach_wait_src, spec::t_cc_debounce>>;
+    fsm::timer_ranges<fsm::timed_by<state::attach_wait_src, spec::t_cc_debounce>>;
+
+using source_transitions = fsm::transition_table<
+    fsm::initial<state::disabled_src>,
+    fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>, fsm::to<state::unattached_src>>,
+    source_attach_flow<state::unattached_src, state::attached_src>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>, fsm::to<state::error_recovery_src>>,
+    fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>, fsm::to<state::unattached_src>>>;
 
 // A named struct, not an alias: the short name replaces the fully
 // spelled table type in every mangled symbol
-struct source_table : mtl::rebind_t<
-                          mtl::linearize_t<mtl::typelist<
-                              fsm::initial<state::disabled_src>,
-                              fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>, fsm::to<state::unattached_src>>,
-                              source_attach_flow<state::unattached_src, state::attached_src>,
-                              fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>, fsm::to<state::error_recovery_src>>,
-                              fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>, fsm::to<state::unattached_src>>>>,
-                          fsm::transition_table> {};
+struct source_table : source_transitions {};
 
 // error_recovery_src is not part of source_timer_ranges: the DRP
 // composes that map without carrying this table's private state
 using source_recovery_timer_range =
-    mtl::typelist<fsm::timed_by<state::error_recovery_src, spec::t_error_recovery>>;
+    fsm::timer_ranges<fsm::timed_by<state::error_recovery_src, spec::t_error_recovery>>;
 
 // timeout bounds and reachability checked in test/compliance.cpp
 

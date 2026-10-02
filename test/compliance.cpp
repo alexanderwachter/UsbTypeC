@@ -36,22 +36,20 @@ static_assert(fsm::all_states_reachable_v<prl::tx_table>);
 
 static_assert(fsm::timeouts_within_bounds_v<
               tc::sink_table,
-              mtl::linearize_t<mtl::typelist<
+              fsm::timer_ranges<
                   tc::sink_timer_ranges,
                   tc::error_recovery_timer_range,
-                  tc::hard_reset_timer_ranges>>>);
+                  tc::hard_reset_timer_ranges>>);
 static_assert(fsm::all_states_reachable_v<tc::sink_table>);
 
-static_assert(
-    fsm::timeouts_within_bounds_v<
-        tc::source_table,
-        mtl::linearize_t<mtl::typelist<tc::source_timer_ranges, tc::source_recovery_timer_range>>>
-);
+static_assert(fsm::timeouts_within_bounds_v<
+              tc::source_table,
+              fsm::timer_ranges<tc::source_timer_ranges, tc::source_recovery_timer_range>>);
 static_assert(fsm::all_states_reachable_v<tc::source_table>);
 
 // The Try phases are composite states: the proofs cover their
 // submachines' states too
-template<drp_preference PREFERENCE, typename RANGES>
+template<drp_preference PREFERENCE, mtl::concepts::typelist RANGES>
 constexpr bool drpTableChecked()
 {
     using table = tc::drp::table_for_t<default_drp_timing, PREFERENCE>;
@@ -65,14 +63,14 @@ static_assert(
 );
 static_assert(drpTableChecked<
               drp_preference::source,
-              mtl::linearize_t<mtl::typelist<
+              fsm::timer_ranges<
                   tc::drp::core_timer_ranges<default_drp_timing>,
-                  tc::drp::try_src_timer_ranges<default_drp_timing>>>>());
+                  tc::drp::try_src_timer_ranges<default_drp_timing>>>());
 static_assert(drpTableChecked<
               drp_preference::sink,
-              mtl::linearize_t<mtl::typelist<
+              fsm::timer_ranges<
                   tc::drp::core_timer_ranges<default_drp_timing>,
-                  tc::drp::try_snk_timer_ranges<default_drp_timing>>>>());
+                  tc::drp::try_snk_timer_ranges<default_drp_timing>>>());
 static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::none>> == 1);
 static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::source>> == 2);
 
@@ -91,13 +89,18 @@ using features = fsm::feature_switch<
     fsm::enabled<pe::dr_swap_feature, DR>,
     fsm::enabled<pe::vconn_feature, VCONN>>;
 
-template<typename TABLE, typename TIMER_RANGES, bool PR, bool DR, bool VCONN>
+template<
+    fsm::concepts::transition_table TABLE,
+    mtl::concepts::typelist TIMER_RANGES,
+    bool PR,
+    bool DR,
+    bool VCONN>
 inline constexpr bool variant_ok =
     fsm::timeouts_within_bounds_v<
-        fsm::enabled_table_t<TABLE, mtl::typelist<features<PR, DR, VCONN>>>,
+        fsm::enabled_table_t<TABLE, fsm::observers<features<PR, DR, VCONN>>>,
         fsm::remove_disabled_features_t<TIMER_RANGES, features<PR, DR, VCONN>>> &&
     fsm::all_states_reachable_v<
-        fsm::enabled_table_t<TABLE, mtl::typelist<features<PR, DR, VCONN>>>>;
+        fsm::enabled_table_t<TABLE, fsm::observers<features<PR, DR, VCONN>>>>;
 
 template<bool PR, bool DR, bool VCONN>
 inline constexpr bool sink_variant_ok =

@@ -111,7 +111,7 @@ private:
     struct router : fsm::observing<router> {
         explicit router(PdSink& port_ref) : port(port_ref) {}
 
-        using observes = mtl::typelist<tc::pd_connection, tc::attached_partner>;
+        using observes = fsm::annotations<tc::pd_connection, tc::attached_partner>;
 
         // the one real detach: the window timing out included
         void notifyExit(tc::pd_connection) { port.engine_.vbusRemoved(); }

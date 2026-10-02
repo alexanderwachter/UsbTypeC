@@ -163,7 +163,7 @@ struct wait_for_phy_response {
     // the message in flight, observed by the phy driver
     pd_message const& values() const { return context.message; }
 
-    using contexts = mtl::typelist<tx_context>;
+    using contexts = fsm::contexts<tx_context>;
 
     static constexpr auto timeout = t_receive; // CRCReceiveTimer
 
@@ -182,7 +182,7 @@ struct transmission_error {
     // the failed message's SOP*, observed by the client reporter
     sop_type values() const { return context.message.sop; }
 
-    using contexts = mtl::typelist<tx_context>;
+    using contexts = fsm::contexts<tx_context>;
 
     tx_context& context;
 };
@@ -205,28 +205,30 @@ struct wait_for_hard_reset_complete {
 struct retries_left {};
 
 // The spec timer range of every timed state, checked against the table
-using prl_timer_ranges = mtl::typelist<
+using prl_timer_ranges = fsm::timer_ranges<
     fsm::timed_by<state::wait_for_phy_response, spec::t_receive>,
     fsm::timed_by<state::wait_for_hard_reset_complete, spec::t_hard_reset_complete>>;
 
+using tx_transitions = fsm::transition_table<
+    fsm::initial<state::wait_for_message_request>,
+    fsm::transition<fsm::from<state::wait_for_message_request>, fsm::on<event::tx_request>, fsm::to<state::wait_for_phy_response>>,
+    fsm::transition<fsm::from<state::transmission_error>, fsm::on<event::tx_request>, fsm::to<state::wait_for_phy_response>>,
+    // no GoodCRC in time: retransmit while RetryCounter allows, else error
+    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<fsm::timeout>, fsm::guard<retries_left>, fsm::to<state::wait_for_phy_response>>,
+    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<fsm::timeout>, fsm::to<state::transmission_error>>,
+    // the driver may report a failed attempt before tReceive expires
+    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_failed>, fsm::guard<retries_left>, fsm::to<state::wait_for_phy_response>>,
+    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_failed>, fsm::to<state::transmission_error>>,
+    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_success>, fsm::to<state::wait_for_message_request>>,
+    fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_discarded>, fsm::to<state::wait_for_message_request>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::hard_reset_request>, fsm::to<state::wait_for_hard_reset_complete>>,
+    fsm::transition<fsm::from<state::wait_for_hard_reset_complete>, fsm::on<event::phy_success>, fsm::to<state::wait_for_message_request>>,
+    fsm::transition<fsm::from<state::wait_for_hard_reset_complete>, fsm::on<fsm::timeout>, fsm::to<state::wait_for_message_request>>,
+    fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::reset>, fsm::to<state::wait_for_message_request>>>;
+
 // A named struct, not an alias: the short name replaces the fully
 // spelled table type in every mangled symbol
-struct tx_table : fsm::transition_table<
-                      fsm::initial<state::wait_for_message_request>,
-                      fsm::transition<fsm::from<state::wait_for_message_request>, fsm::on<event::tx_request>, fsm::to<state::wait_for_phy_response>>,
-                      fsm::transition<fsm::from<state::transmission_error>, fsm::on<event::tx_request>, fsm::to<state::wait_for_phy_response>>,
-                      // no GoodCRC in time: retransmit while RetryCounter allows, else error
-                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<fsm::timeout>, fsm::guard<retries_left>, fsm::to<state::wait_for_phy_response>>,
-                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<fsm::timeout>, fsm::to<state::transmission_error>>,
-                      // the driver may report a failed attempt before tReceive expires
-                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_failed>, fsm::guard<retries_left>, fsm::to<state::wait_for_phy_response>>,
-                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_failed>, fsm::to<state::transmission_error>>,
-                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_success>, fsm::to<state::wait_for_message_request>>,
-                      fsm::transition<fsm::from<state::wait_for_phy_response>, fsm::on<event::phy_discarded>, fsm::to<state::wait_for_message_request>>,
-                      fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::hard_reset_request>, fsm::to<state::wait_for_hard_reset_complete>>,
-                      fsm::transition<fsm::from<state::wait_for_hard_reset_complete>, fsm::on<event::phy_success>, fsm::to<state::wait_for_message_request>>,
-                      fsm::transition<fsm::from<state::wait_for_hard_reset_complete>, fsm::on<fsm::timeout>, fsm::to<state::wait_for_message_request>>,
-                      fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::reset>, fsm::to<state::wait_for_message_request>>> {};
+struct tx_table : tx_transitions {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Hands a state's pd_message instance value to the TCPC on entry; a
@@ -237,7 +239,7 @@ template<concepts::pd_transport TCPC>
 struct phy_driver : fsm::observing<phy_driver<TCPC>> {
     explicit phy_driver(TCPC& tcpc_ref) : tcpc(tcpc_ref) {}
 
-    using observes = mtl::typelist<pd_message>;
+    using observes = fsm::annotations<pd_message>;
 
     void notifyEntry(pd_message const& message) { tcpc.transmit(message); }
 

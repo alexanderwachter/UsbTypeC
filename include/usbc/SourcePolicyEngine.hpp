@@ -193,7 +193,7 @@ struct pe_src_startup {
         restore_default_action{}
     );
 
-    using contexts = mtl::typelist<pe_connection, src_negotiation>;
+    using contexts = fsm::contexts<pe_connection, src_negotiation>;
 
     pe_connection& connection;
     src_negotiation& negotiation;
@@ -226,7 +226,7 @@ struct pe_src_send_capabilities {
         send_capabilities_action{}
     );
 
-    using contexts = mtl::typelist<pe_connection, src_negotiation>;
+    using contexts = fsm::contexts<pe_connection, src_negotiation>;
 
     static constexpr auto timeout = t_sender_response; // SenderResponseTimer
 
@@ -245,7 +245,7 @@ struct pe_src_discovery {
     static constexpr pd_status pd = pd_status::not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
-    using contexts = mtl::typelist<src_negotiation>; // the guard reads CapsCounter
+    using contexts = fsm::contexts<src_negotiation>; // the guard reads CapsCounter
 
     static constexpr auto timeout = t_typec_send_source_cap; // SourceCapabilityTimer
 
@@ -272,7 +272,7 @@ struct pe_src_negotiate_capability {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 };
@@ -303,7 +303,7 @@ struct pe_src_transition_supply {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection, src_negotiation>;
+    using contexts = fsm::contexts<pe_connection, src_negotiation>;
 
     pe_connection& connection;
     src_negotiation& negotiation;
@@ -336,7 +336,7 @@ struct pe_src_transition_supply_settle {
 
     supply_target values() const { return negotiation.target; }
 
-    using contexts = mtl::typelist<src_negotiation>;
+    using contexts = fsm::contexts<src_negotiation>;
 
     src_negotiation& negotiation;
 };
@@ -357,7 +357,7 @@ struct pe_src_transition_supply_ps_rdy {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 
@@ -388,7 +388,7 @@ struct pe_src_ready {
         return {negotiation.target.voltage, negotiation.target.current};
     }
 
-    using contexts = mtl::typelist<src_negotiation>;
+    using contexts = fsm::contexts<src_negotiation>;
 
     src_negotiation& negotiation;
 };
@@ -417,7 +417,7 @@ struct pe_src_capability_response {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection, src_negotiation>;
+    using contexts = fsm::contexts<pe_connection, src_negotiation>;
 
     pe_connection& connection;
     src_negotiation& negotiation;
@@ -531,7 +531,7 @@ struct pe_src_swap_source_on {
         supply_target{.voltage = v_safe_5v, .current = i_default_current}
     );
 
-    using contexts = mtl::typelist<pe_connection, src_negotiation>;
+    using contexts = fsm::contexts<pe_connection, src_negotiation>;
 
     pe_connection& connection;
     src_negotiation& negotiation;
@@ -556,7 +556,7 @@ struct pe_src_swap_source_on_ps_rdy {
 
     pd_message const& values() const { return message_; }
 
-    using contexts = mtl::typelist<pe_connection>;
+    using contexts = fsm::contexts<pe_connection>;
 
     pe_connection& connection;
 
@@ -578,7 +578,7 @@ struct pe_src_swap_source_start {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
-    using contexts = mtl::typelist<src_negotiation>;
+    using contexts = fsm::contexts<src_negotiation>;
 
     static constexpr auto timeout = t_source_start; // SwapSourceStartTimer
 
@@ -608,7 +608,7 @@ struct pe_src_transition_to_default {
         supply_target{.voltage = 0, .current = 0}
     );
 
-    using contexts = mtl::typelist<src_negotiation>;
+    using contexts = fsm::contexts<src_negotiation>;
 
     src_negotiation& negotiation;
 };
@@ -636,7 +636,7 @@ struct pe_src_restore_default {
         restore_default_action{}
     );
 
-    using contexts = mtl::typelist<pe_connection>; // the guard asks whether still attached
+    using contexts = fsm::contexts<pe_connection>; // the guard asks whether still attached
 
     pe_connection& connection;
 };
@@ -689,7 +689,7 @@ struct still_attached {
 };
 
 // The spec timer range of every timed state, checked against the table
-using source_timer_ranges = mtl::typelist<
+using source_timer_ranges = fsm::timer_ranges<
     fsm::timed_by<state::pe_src_send_capabilities, spec::t_sender_response>,
     fsm::timed_by<state::pe_src_discovery, spec::t_typec_send_source_cap>,
     fsm::timed_by<state::pe_src_transition_supply_delay, spec::t_src_transition>,
@@ -707,7 +707,7 @@ using source_timer_ranges = mtl::typelist<
     fsm::timed_by<state::pe_src_sink_tx_wait_dr, spec::t_sink_tx>,
     fsm::timed_by<state::pe_src_vcs_send_swap, spec::t_sender_response>>;
 
-using source_transitions = mtl::typelist<
+using source_transitions = fsm::transition_table<
     fsm::initial<state::pe_src_startup>,
     fsm::transition<fsm::from<state::pe_src_startup>, fsm::on<event::attached>, fsm::to<state::pe_src_send_capabilities>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::detached>, fsm::to<state::pe_src_startup>>,
@@ -832,7 +832,7 @@ using source_transitions = mtl::typelist<
 // struct, not an alias: the short name replaces the fully spelled
 // table type in every mangled symbol - megabytes per object file,
 // measured
-struct source_table : mtl::rebind_t<source_transitions, fsm::transition_table> {};
+struct source_table : source_transitions {};
 
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them

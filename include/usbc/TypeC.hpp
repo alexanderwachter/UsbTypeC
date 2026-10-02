@@ -210,19 +210,19 @@ constexpr bool metMeansPresent(vbus_level level)
 // report (a lost detach at worst). A state without the annotation, or
 // with monitoring off, owes nothing; fsm::all_states_handle is the
 // table-wide proof
-template<typename STATE>
-struct required_vbus_events : std::type_identity<mtl::typelist<>> {};
+template<fsm::concepts::state STATE>
+struct required_vbus_events : std::type_identity<fsm::events<>> {};
 
-template<typename STATE>
+template<fsm::concepts::state STATE>
     requires requires { STATE::annotations.template get<vbus_level>(); } &&
              (STATE::annotations.template get<vbus_level>() != vbus_level::unwatched)
 struct required_vbus_events<STATE>
     : std::conditional<
           familyOf(STATE::annotations.template get<vbus_level>()) == vbus_family::discharge,
-          mtl::typelist<event::vbus_reached_safe0v, event::vbus_left_safe0v>,
-          mtl::typelist<event::vbus_present, event::vbus_removed>> {};
+          fsm::events<event::vbus_reached_safe0v, event::vbus_left_safe0v>,
+          fsm::events<event::vbus_present, event::vbus_removed>> {};
 
-template<typename TABLE>
+template<fsm::concepts::transition_table TABLE>
 inline constexpr bool watch_events_consistent_v =
     fsm::all_states_handle_v<TABLE, required_vbus_events>;
 

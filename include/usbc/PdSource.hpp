@@ -133,7 +133,7 @@ private:
     struct router : fsm::observing<router> {
         explicit router(PdSource& port_ref) : port(port_ref) {}
 
-        using observes = mtl::typelist<tc::pd_connection>;
+        using observes = fsm::annotations<tc::pd_connection>;
 
         void notifyEntry(tc::pd_connection) { port.engine_.attached(); }
         void notifyExit(tc::pd_connection) { port.engine_.detached(); }

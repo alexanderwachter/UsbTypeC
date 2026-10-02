@@ -112,7 +112,7 @@ struct error_recovery {
 struct sink_state {
     explicit sink_state(line_status& line_ref) : line(line_ref) {}
 
-    using contexts = mtl::typelist<line_status>;
+    using contexts = fsm::contexts<line_status>;
 
     void handle(event::cc_changed const& event) { line.cc = event.cc; }
     void handle(event::vbus_present const&) { line.vbus_present = true; }
@@ -135,7 +135,7 @@ struct unattached_snk : sink_state {
         vbus_level{vbus_level::safe5v}
     );
 
-    using contexts = mtl::typelist<line_status, attachment>;
+    using contexts = fsm::contexts<line_status, attachment>;
 };
 
 struct attach_wait_snk : sink_state {
@@ -229,7 +229,7 @@ struct attached_snk : sink_state {
         );
     }
 
-    using contexts = mtl::typelist<line_status, attachment>;
+    using contexts = fsm::contexts<line_status, attachment>;
 
     using sink_state::handle;
     // a DR_Swap flips the data role in place (DRP only)
@@ -302,8 +302,8 @@ struct vbus_present_in_context {
 // it (the sink's resting state, or the DRP's toggling Rd phase) and
 // ATTACH is where a successful attach leads (Attached.SNK, or Try.SRC
 // for a source-preferring DRP)
-template<typename UNATTACHED, typename ATTACH>
-using sink_attach_flow = mtl::typelist<
+template<fsm::concepts::state UNATTACHED, fsm::concepts::state ATTACH>
+using sink_attach_flow = fsm::transition_table<
     fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
     fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_removed>>,
@@ -325,22 +325,23 @@ using sink_attach_flow = mtl::typelist<
 
 // The spec timer range of every timed state of the sink flow; the DRP
 // concatenates this map with its own, like the flows themselves
-using sink_timer_ranges = mtl::typelist<fsm::timed_by<state::attach_wait_snk, spec::t_cc_debounce>>;
+using sink_timer_ranges =
+    fsm::timer_ranges<fsm::timed_by<state::attach_wait_snk, spec::t_cc_debounce>>;
 
 // Separate entry: the DRP shares the state, standalone source tables
 // do not - the bidirectional map check rejects entries for absent states
 using error_recovery_timer_range =
-    mtl::typelist<fsm::timed_by<state::error_recovery, spec::t_error_recovery>>;
+    fsm::timer_ranges<fsm::timed_by<state::error_recovery, spec::t_error_recovery>>;
 
-using hard_reset_timer_ranges = mtl::typelist<
+using hard_reset_timer_ranges = fsm::timer_ranges<
     fsm::timed_by<state::hard_reset_snk, spec::t_hard_reset_window>,
     fsm::timed_by<state::hard_reset_recover_snk, spec::t_hard_reset_window>>;
 
 // The hard-reset window, shared with the DRP: attach held while VBUS
 // legitimately cycles through vSafe0V; a window that never completes
 // falls back to the table's unattached anchor
-template<typename UNATTACHED>
-using hard_reset_flow = mtl::typelist<
+template<fsm::concepts::state UNATTACHED>
+using hard_reset_flow = fsm::transition_table<
     fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::hard_reset>, fsm::to<state::hard_reset_snk>>,
     fsm::transition<fsm::from<state::hard_reset_snk>, fsm::on<event::vbus_removed>, fsm::to<state::hard_reset_recover_snk>>,
     fsm::internal_transition<fsm::from<state::hard_reset_snk>, fsm::on<event::vbus_present>>,
@@ -353,21 +354,21 @@ using hard_reset_flow = mtl::typelist<
 
 // ErrorRecovery is anchored per table: open terminations, then back
 // to that table's unattached resting state
-template<typename UNATTACHED>
-using error_recovery_flow = mtl::typelist<
+template<fsm::concepts::state UNATTACHED>
+using error_recovery_flow = fsm::transition_table<
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>, fsm::to<state::error_recovery>>,
     fsm::transition<fsm::from<state::error_recovery>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>>;
 
+using sink_transitions = fsm::transition_table<
+    fsm::initial<state::disabled_snk>,
+    fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>, fsm::to<state::unattached_snk>>,
+    sink_attach_flow<state::unattached_snk, state::attached_snk>,
+    error_recovery_flow<state::unattached_snk>,
+    hard_reset_flow<state::unattached_snk>>;
+
 // A named struct, not an alias: the short name replaces the fully
 // spelled table type in every mangled symbol
-struct sink_table : mtl::rebind_t<
-                        mtl::linearize_t<mtl::typelist<
-                            fsm::initial<state::disabled_snk>,
-                            fsm::transition<fsm::from<state::disabled_snk>, fsm::on<event::started>, fsm::to<state::unattached_snk>>,
-                            sink_attach_flow<state::unattached_snk, state::attached_snk>,
-                            error_recovery_flow<state::unattached_snk>,
-                            hard_reset_flow<state::unattached_snk>>>,
-                        fsm::transition_table> {};
+struct sink_table : sink_transitions {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's hw annotation (suppressed while unchanged) and
