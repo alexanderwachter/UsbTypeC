@@ -19,7 +19,7 @@ manifest:
   projects:
     - name: mtl
       url: https://github.com/alexanderwachter/McuTemplateLibrary
-      revision: d49b48b
+      revision: ca61f16
       path: modules/lib/mtl
       # west fsm_dotgen (DOT graphs of the tables) and west
       # fsm_liveview (watch or replay machines in the browser)
