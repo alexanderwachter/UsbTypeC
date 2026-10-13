@@ -40,8 +40,8 @@ int main(int argc, char* argv[])
     std::filesystem::create_directories(directory);
 
     write<usbc::prl::tx_table>(directory, "prl_tx");
-    write<usbc::tc::sink_table>(directory, "tc_sink");
-    write<usbc::tc::source_table>(directory, "tc_source");
+    write<usbc::tc::tc_sink_table>(directory, "tc_sink");
+    write<usbc::tc::tc_source_table>(directory, "tc_source");
     constexpr auto& drp_timing = usbc::default_drp_timing;
     write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::none>>(directory, "tc_drp");
     write<usbc::tc::drp::table_for_t<drp_timing, usbc::drp_preference::source>>(
@@ -56,8 +56,8 @@ int main(int argc, char* argv[])
     write<usbc::tc::drp::try_src_table<drp_timing>>(directory, "tc_try_src");
     write<usbc::tc::drp::try_snk_table<drp_timing>>(directory, "tc_try_snk");
     write<usbc::tc::drp::try_wait_src_table<drp_timing>>(directory, "tc_try_wait_src");
-    write<usbc::pe::sink_table>(directory, "pe_sink");
-    write<usbc::pe::source_table>(directory, "pe_source");
+    write<usbc::pe::pe_sink_table>(directory, "pe_sink");
+    write<usbc::pe::pe_source_table>(directory, "pe_source");
 
     return 0;
 }

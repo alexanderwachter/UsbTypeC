@@ -296,8 +296,9 @@ using source_transitions = fsm::transition_table<
     fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>, fsm::to<state::unattached_src>>>;
 
 // A named struct, not an alias: the short name replaces the fully
-// spelled table type in every mangled symbol
-struct source_table : source_transitions {};
+// spelled table type in every mangled symbol and is the machine id in
+// trace lines and DOT graphs - unique across the stack
+struct tc_source_table : source_transitions {};
 
 // error_recovery_src is not part of source_timer_ranges: the DRP
 // composes that map without carrying this table's private state
@@ -400,7 +401,7 @@ private:
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     std::tuple<OBSERVERs&...> observers_;
     fsm::QueuedMachine<
-        tc::source_table,
+        tc::tc_source_table,
         4,
         fsm::inline_work,
         fsm::no_lock,

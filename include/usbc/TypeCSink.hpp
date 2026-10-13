@@ -367,8 +367,9 @@ using sink_transitions = fsm::transition_table<
     hard_reset_flow<state::unattached_snk>>;
 
 // A named struct, not an alias: the short name replaces the fully
-// spelled table type in every mangled symbol
-struct sink_table : sink_transitions {};
+// spelled table type in every mangled symbol and is the machine id in
+// trace lines and DOT graphs - unique across the stack
+struct tc_sink_table : sink_transitions {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
 // Applies each state's hw annotation (suppressed while unchanged) and
@@ -447,7 +448,7 @@ private:
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     std::tuple<OBSERVERs&...> observers_;
     fsm::QueuedMachine<
-        tc::sink_table,
+        tc::tc_sink_table,
         4,
         fsm::inline_work,
         fsm::no_lock,

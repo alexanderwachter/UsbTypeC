@@ -767,8 +767,9 @@ using sink_transitions = fsm::transition_table<
 // leaves out the features its policy does not answer for. A named
 // struct, not an alias: the short name replaces the fully spelled
 // table type in every mangled symbol - megabytes per object file,
-// measured
-struct sink_table : sink_transitions {};
+// measured. The short name is the machine id in trace lines and DOT
+// graphs: unique across the stack
+struct pe_sink_table : sink_transitions {};
 
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them
@@ -1135,7 +1136,7 @@ private:
     gate_watch gates_{*this};
     // the policy rides in the pack to answer the table's questions
     fsm::QueuedMachine<
-        pe::sink_table,
+        pe::pe_sink_table,
         4,
         fsm::inline_work,
         fsm::no_lock,

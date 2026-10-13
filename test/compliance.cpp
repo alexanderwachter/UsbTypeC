@@ -35,17 +35,17 @@ static_assert(fsm::all_states_reachable_v<prl::tx_table>);
 // --- Type-C connection layers ------------------------------------------------
 
 static_assert(fsm::timeouts_within_bounds_v<
-              tc::sink_table,
+              tc::tc_sink_table,
               fsm::timer_ranges<
                   tc::sink_timer_ranges,
                   tc::error_recovery_timer_range,
                   tc::hard_reset_timer_ranges>>);
-static_assert(fsm::all_states_reachable_v<tc::sink_table>);
+static_assert(fsm::all_states_reachable_v<tc::tc_sink_table>);
 
 static_assert(fsm::timeouts_within_bounds_v<
-              tc::source_table,
+              tc::tc_source_table,
               fsm::timer_ranges<tc::source_timer_ranges, tc::source_recovery_timer_range>>);
-static_assert(fsm::all_states_reachable_v<tc::source_table>);
+static_assert(fsm::all_states_reachable_v<tc::tc_source_table>);
 
 // The Try phases are composite states: the proofs cover their
 // submachines' states too
@@ -74,8 +74,8 @@ static_assert(drpTableChecked<
 static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::none>> == 1);
 static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::source>> == 2);
 
-static_assert(tc::watch_events_consistent_v<tc::sink_table>);
-static_assert(tc::watch_events_consistent_v<tc::source_table>);
+static_assert(tc::watch_events_consistent_v<tc::tc_sink_table>);
+static_assert(tc::watch_events_consistent_v<tc::tc_source_table>);
 
 // --- policy engines: the everything-on and everything-off corners of the
 // --- optional features (PR_Swap, DR_Swap, VCONN), plus each feature alone
@@ -104,11 +104,11 @@ inline constexpr bool variant_ok =
 
 template<bool PR, bool DR, bool VCONN>
 inline constexpr bool sink_variant_ok =
-    variant_ok<pe::sink_table, pe::sink_timer_ranges, PR, DR, VCONN>;
+    variant_ok<pe::pe_sink_table, pe::sink_timer_ranges, PR, DR, VCONN>;
 
 template<bool PR, bool DR, bool VCONN>
 inline constexpr bool source_variant_ok =
-    variant_ok<pe::source_table, pe::source_timer_ranges, PR, DR, VCONN>;
+    variant_ok<pe::pe_source_table, pe::source_timer_ranges, PR, DR, VCONN>;
 
 static_assert(sink_variant_ok<true, true, true>);
 static_assert(sink_variant_ok<false, false, false>);

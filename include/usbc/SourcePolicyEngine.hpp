@@ -831,8 +831,9 @@ using source_transitions = fsm::transition_table<
 // leaves out the features its policy does not answer for. A named
 // struct, not an alias: the short name replaces the fully spelled
 // table type in every mangled symbol - megabytes per object file,
-// measured
-struct source_table : source_transitions {};
+// measured. The short name is the machine id in trace lines and DOT
+// graphs: unique across the stack
+struct pe_source_table : source_transitions {};
 
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them
@@ -1101,7 +1102,7 @@ private:
     ActionDriver action_driver_{*this};
     // the policy rides in the pack to answer the table's questions
     fsm::QueuedMachine<
-        pe::source_table,
+        pe::pe_source_table,
         4,
         fsm::inline_work,
         fsm::no_lock,
