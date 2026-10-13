@@ -62,6 +62,7 @@ public:
     virtual bool enable(bool on) = 0;
     virtual void setCallback(vbus_callback callback, void* context) = 0;
     virtual bool monitor(vbus_level level) = 0;
+    virtual bool meets(vbus_level level) = 0;
     virtual bool discharge(bool on) = 0;
 };
 static_assert(concepts::vbus<VbusInterface>);

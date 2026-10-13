@@ -1,8 +1,9 @@
 /*
  * Common ground of the USB Type-C connection layers: the CC debounce
  * time, the CC change event, and the vbus_watcher observer arming the
- * vbus driver with each state's watched level. The sink and source
- * layers live in TypeCSink.hpp and TypeCSource.hpp.
+ * vbus driver with each state's watched level and answering the
+ * tables' questions about VBUS now. The sink and source layers live
+ * in TypeCSink.hpp and TypeCSource.hpp.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -158,13 +159,13 @@ struct vbus_power {
 // a state declares only the ones it touches.
 
 // The sensed line, for the port's whole life: the latest CC status
-// (interpreted through the presented pull) and the VBUS reports. Every
-// state keeps it current through its internal-transition handlers,
-// the debounce guards read it
+// (interpreted through the presented pull). Every state keeps it
+// current through its internal-transition handler, the debounce
+// guards decide on it - the status that was stable for the debounce
+// is the reported one, not a fresh read at the timeout. VBUS is not
+// kept: a decision on it asks the driver (vbus_at_safe0v, vbus_at_safe5v)
 struct line_status {
     cc_status cc = {.cc1 = cc_state::snk_open, .cc2 = cc_state::snk_open};
-    bool vbus_present = false;
-    bool vbus_safe0v = false;
 };
 
 // One connection's attachment: the plug orientation and data role a
@@ -205,11 +206,22 @@ constexpr bool metMeansPresent(vbus_level level)
     return level == vbus_level::safe5v;
 }
 
-// The events a state owes for the VBUS level it watches: both reports
-// of its level's family - a missing transition would silently drop a
-// report (a lost detach at worst). A state without the annotation, or
-// with monitoring off, owes nothing; fsm::all_states_handle is the
-// table-wide proof
+// The report the driver delivers when the armed condition is met: the
+// event a state arms the level for
+template<vbus_level LEVEL>
+using met_event_t = std::conditional_t<
+    familyOf(LEVEL) == vbus_family::discharge,
+    fsm::events<event::vbus_reached_safe0v>,
+    std::conditional_t<
+        metMeansPresent(LEVEL),
+        fsm::events<event::vbus_present>,
+        fsm::events<event::vbus_removed>>>;
+
+// The event a state owes for the VBUS level it watches: the met
+// report of its level - a state arming a condition without a
+// transition on its report waits for nothing (a lost detach at worst).
+// A state without the annotation, or with monitoring off, owes
+// nothing; fsm::all_states_handle is the table-wide proof
 template<fsm::concepts::state STATE>
 struct required_vbus_events : std::type_identity<fsm::events<>> {};
 
@@ -217,17 +229,22 @@ template<fsm::concepts::state STATE>
     requires requires { STATE::annotations.template get<vbus_level>(); } &&
              (STATE::annotations.template get<vbus_level>() != vbus_level::unwatched)
 struct required_vbus_events<STATE>
-    : std::conditional<
-          familyOf(STATE::annotations.template get<vbus_level>()) == vbus_family::discharge,
-          fsm::events<event::vbus_reached_safe0v, event::vbus_left_safe0v>,
-          fsm::events<event::vbus_present, event::vbus_removed>> {};
+    : std::type_identity<met_event_t<STATE::annotations.template get<vbus_level>()>> {};
 
 template<fsm::concepts::transition_table TABLE>
 inline constexpr bool watch_events_consistent_v =
     fsm::all_states_handle_v<TABLE, required_vbus_events>;
 
+// Questions about VBUS right now, asked by the debounce outcomes and
+// answered from the driver: the spec requires vSafe0V when a source
+// applies power and VBUS present when a sink attaches, at the moment
+// of the decision - there is nothing to debounce or remember
+struct vbus_at_safe0v {};
+struct vbus_at_safe5v {};
+
 // Arms the vbus driver with each state's watched level; the class maps
-// the callback's meaning through the level it armed last
+// the callback's meaning through the level it armed last, and answers
+// the tables' questions about VBUS now
 template<concepts::vbus VBUS>
 struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
     explicit vbus_watcher(VBUS& vbus_ref) : vbus(vbus_ref) {}
@@ -238,6 +255,9 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
         monitored = level;
         vbus.monitor(level);
     }
+
+    bool check(vbus_at_safe0v) { return vbus.meets(vbus_level::safe0v); }
+    bool check(vbus_at_safe5v) { return vbus.meets(vbus_level::safe5v); }
 
     // Every state declares its level - vbus_level::unwatched is the
     // deliberate "monitoring off", never an omission
@@ -251,7 +271,7 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
         );
         static_assert(
             watch_events_consistent_v<TABLE>,
-            "vbus_watcher: a watching state must handle its level's event family"
+            "vbus_watcher: a watching state must handle its level's met report"
         );
     }
 

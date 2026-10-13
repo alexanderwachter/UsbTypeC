@@ -184,7 +184,7 @@ int typeCDrpTests()
     // start() goes live toggling at Rd with the sink slice armed
     tc.start();
     check(f.tcpc.pull == usbc::cc_pull::rd && !f.tcpc.sinking && !f.tcpc.sourcing);
-    check(f.vbus.monitored == usbc::vbus_level::safe5v);
+    check(f.vbus.monitored == usbc::vbus_level::unwatched); // toggling: nothing measured
     check(f.timer.armed);
 
     // the toggle alternates Rd and Rp with the configured advertisement

@@ -37,6 +37,7 @@ public:
     bool enable(bool on);
     void setCallback(vbus_callback callback, void* context);
     bool monitor(vbus_level level);
+    bool meets(vbus_level level);
     bool discharge(bool on);
 
 private:

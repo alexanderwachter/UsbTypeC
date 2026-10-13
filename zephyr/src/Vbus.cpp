@@ -61,6 +61,11 @@ bool Vbus::monitor(vbus_level level)
     return true;
 }
 
+bool Vbus::meets(vbus_level level)
+{
+    return usbc_vbus_check_level(dev_, toZephyr(level));
+}
+
 bool Vbus::discharge(bool on)
 {
     int const ret = usbc_vbus_discharge(dev_, on);

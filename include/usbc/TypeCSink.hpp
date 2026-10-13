@@ -5,24 +5,25 @@
  * attach/detach, resolves plug orientation and the Rp current
  * advertisement, and switches the sink power path.
  *
- * The machine keeps the latest CC status and VBUS presence in
- * machine-owned context; VBUS and CC updates that must not disturb the
- * running debounce are internal transitions. AttachWait.SNK debounces
- * CC for tCCDebounce (one debounce time is used for attach and detach;
- * the spec's shorter tPDDebounce for detach detection is not used yet).
- * After a stable single-Rp result the machine attaches as soon as VBUS
- * is present - immediately at the debounce timeout or later on the
- * VBUS event. Attached.SNK watches vSinkDisconnect instead of vSafe5V;
- * the watched level is a state annotation and the vbus_watcher observer
- * re-arms the vbus driver on changes.
+ * The machine keeps the latest CC status in machine-owned context; CC
+ * updates that must not disturb the running debounce are internal
+ * transitions. AttachWait.SNK debounces CC for tCCDebounce (one
+ * debounce time is used for attach and detach; the spec's shorter
+ * tPDDebounce for detach detection is not used yet). After a stable
+ * single-Rp result the machine attaches as soon as VBUS is present -
+ * immediately at the debounce timeout, asking the driver, or later on
+ * the VBUS report the debounced wait arms. Attached.SNK watches
+ * vSinkDisconnect instead of vSafe5V; the watched level is a state
+ * annotation and the vbus_watcher observer re-arms the vbus driver on
+ * changes.
  *
  * Integration: hand over initialized drivers and a caller-owned timer
  * policy instance. Construction rests in the spec's Disabled state
  * (open terminations, nothing monitored); start() is the go-live
  * moment - it fires the started event, whose transition applies the
- * Unattached.SNK terminations and monitoring, then registers the tcpc
- * alert handler and the vbus callback and seeds the CC state when a
- * source is already present. The drivers must invoke their callbacks
+ * Unattached.SNK terminations, then registers the tcpc alert handler
+ * and the vbus callback and seeds the CC state when a source is
+ * already present. The drivers must invoke their callbacks
  * from the stack's serialized context (the Zephyr adapters deliver on
  * a workqueue), and the timer is serialized with them by the
  * integrator (mtl timer contract). Attach results reach injected
@@ -107,7 +108,7 @@ struct error_recovery {
     static constexpr auto timeout = t_error_recovery;
 };
 
-// The sensed line plus the internal-transition handlers keeping it
+// The sensed line plus the internal-transition handler keeping it
 // current without disturbing a running debounce
 struct sink_state {
     explicit sink_state(line_status& line_ref) : line(line_ref) {}
@@ -115,8 +116,6 @@ struct sink_state {
     using contexts = fsm::contexts<line_status>;
 
     void handle(event::cc_changed const& event) { line.cc = event.cc; }
-    void handle(event::vbus_present const&) { line.vbus_present = true; }
-    void handle(event::vbus_removed const&) { line.vbus_present = false; }
 
     line_status& line;
 };
@@ -129,10 +128,11 @@ struct unattached_snk : sink_state {
         attached = {};
     }
 
+    // resting: a source connection is detected on CC alone
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
-        vbus_level{vbus_level::safe5v}
+        vbus_level{vbus_level::unwatched}
     );
 
     using contexts = fsm::contexts<line_status, attachment>;
@@ -145,10 +145,12 @@ struct attach_wait_snk : sink_state {
     }
     using sink_state::sink_state;
 
+    // debouncing: the outcome asks the driver whether VBUS is present,
+    // the debounced wait arms the report when it is not
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
-        vbus_level{vbus_level::safe5v}
+        vbus_level{vbus_level::unwatched}
     );
 
     static constexpr auto timeout = t_cc_debounce; // CCDebounceTimer
@@ -256,15 +258,17 @@ private:
 // The hard-reset window, first phase: the source legitimately drops
 // VBUS to vSafe0V - not a detach. Rd stays presented, the sink path
 // is off, the PD connection holds (the engine awaits the source's
-// capabilities). The policy engine's NoResponseTimer owns the give-up;
-// the timeout here only terminates a dead port
+// capabilities), and VBUS going away is watched at the same threshold
+// Attached.SNK detects a detach with. The policy engine's
+// NoResponseTimer owns the give-up; the timeout here only terminates a
+// dead port
 struct hard_reset_snk : sink_state {
     using sink_state::sink_state;
 
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
         vbus_power{vbus_path::open},
-        vbus_level{vbus_level::safe5v},
+        vbus_level{vbus_level::sink_disconnect},
         pd_connection{}
     );
 
@@ -287,15 +291,10 @@ struct hard_reset_recover_snk : sink_state {
 
 } // namespace state
 
-// Guards on the debounce outcome - the line's latest CC status and
-// VBUS report - as primitives the rows combine
+// Guard on the debounce outcome - the line's latest CC status - as a
+// primitive the rows combine with the driver's vbus_at_safe5v
 struct stable_rp {
     static bool check(state::attach_wait_snk const& state) { return singleRp(state.line.cc); }
-};
-
-// VBUS present per the line, in any state (the DRP's Try flows ask too)
-struct vbus_present_in_context {
-    static bool check(auto const& state) { return state.line.vbus_present; }
 };
 
 // The sink attach flow, shared with the DRP layer: UNATTACHED anchors
@@ -305,23 +304,17 @@ struct vbus_present_in_context {
 template<fsm::concepts::state UNATTACHED, fsm::concepts::state ATTACH>
 using sink_attach_flow = fsm::transition_table<
     fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
-    fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_present>>,
-    fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::vbus_removed>>,
     // a CC change during the debounce restarts it
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
-    fsm::internal_transition<fsm::from<state::attach_wait_snk>, fsm::on<event::vbus_present>>,
-    fsm::internal_transition<fsm::from<state::attach_wait_snk>, fsm::on<event::vbus_removed>>,
     // debounce complete: attach, keep waiting for VBUS, or detach
-    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::guard<stable_rp, vbus_present_in_context>, fsm::to<ATTACH>>,
+    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::guard<stable_rp, vbus_at_safe5v>, fsm::to<ATTACH>>,
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::guard<stable_rp>, fsm::to<state::attach_wait_snk_debounced>>,
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>,
     fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_present>, fsm::to<ATTACH>>,
-    fsm::internal_transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_removed>>,
     fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
     // sink detach detection is VBUS-based
     fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::vbus_removed>, fsm::to<UNATTACHED>>,
-    fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::cc_changed>>,
-    fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::vbus_present>>>;
+    fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::cc_changed>>>;
 
 // The spec timer range of every timed state of the sink flow; the DRP
 // concatenates this map with its own, like the flows themselves
@@ -344,11 +337,9 @@ template<fsm::concepts::state UNATTACHED>
 using hard_reset_flow = fsm::transition_table<
     fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::hard_reset>, fsm::to<state::hard_reset_snk>>,
     fsm::transition<fsm::from<state::hard_reset_snk>, fsm::on<event::vbus_removed>, fsm::to<state::hard_reset_recover_snk>>,
-    fsm::internal_transition<fsm::from<state::hard_reset_snk>, fsm::on<event::vbus_present>>,
     fsm::internal_transition<fsm::from<state::hard_reset_snk>, fsm::on<event::cc_changed>>,
     fsm::transition<fsm::from<state::hard_reset_snk>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>,
     fsm::transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<event::vbus_present>, fsm::to<state::attached_snk>>,
-    fsm::internal_transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<event::vbus_removed>>,
     fsm::internal_transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<event::cc_changed>>,
     fsm::transition<fsm::from<state::hard_reset_recover_snk>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>>;
 

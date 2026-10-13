@@ -6,17 +6,21 @@
  * TCPC that senses VBUS itself implements both interfaces in one
  * driver.
  *
- * The interface is event-driven; the stack never polls. It selects the
- * one condition it currently cares about with monitor() - the level
- * VBUS should (or should no longer) be at in the present state - and
- * the driver reports through the registered callback, typically from
- * interrupt context: once with the current condition state as soon as
- * it is known after monitor(), then on every change. A new monitor()
+ * The interface is event-driven. The stack selects the one condition
+ * it currently waits for with monitor() - the level VBUS should (or
+ * should no longer) be at in the present state - and the driver
+ * reports through the registered callback, typically from interrupt
+ * context: once with the current condition state as soon as it is
+ * known after monitor(), then on every change. A new monitor()
  * replaces the previous condition. How the driver detects a crossing
  * (comparator, ADC sampling, TCPC voltage alarm) is its own business.
+ * Where a decision depends on VBUS right now - a debounce ending with
+ * the question whether VBUS is already there - the stack asks
+ * meets(): one measurement, independent of what is monitored.
  *
  * Failure contract as in Tcpc.hpp: bool functions report whether the
- * driver accepted the operation.
+ * driver accepted the operation - except meets(), which answers the
+ * question and says no when the measurement failed.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -55,6 +59,7 @@ concept vbus = requires(T v, vbus_level level, vbus_callback callback, void* con
     { v.enable(enable) } -> std::same_as<bool>;
     v.setCallback(callback, context);
     { v.monitor(level) } -> std::same_as<bool>;
+    { v.meets(level) } -> std::same_as<bool>;
     { v.discharge(enable) } -> std::same_as<bool>;
 };
 

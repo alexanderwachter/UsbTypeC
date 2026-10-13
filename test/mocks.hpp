@@ -144,11 +144,11 @@ struct mock_vbus {
     }
     bool discharging = false;
 
-    // test helpers: simulate the comparator
-    bool met() const
+    // the comparator, asked for one level
+    bool meets(usbc::vbus_level level) const
     {
-        switch (*monitored) {
-        case usbc::vbus_level::unwatched: return false; // nothing armed
+        switch (level) {
+        case usbc::vbus_level::unwatched: return false; // nothing to meet
         case usbc::vbus_level::safe0v: return voltage_mv <= usbc::spec::v_safe_0v_max;
         case usbc::vbus_level::safe5v:
             return voltage_mv >= usbc::spec::v_safe_5v_min &&
@@ -159,6 +159,8 @@ struct mock_vbus {
         }
         return false;
     }
+    // test helpers: the armed condition
+    bool met() const { return meets(*monitored); }
     void report()
     {
         reported_met = met();

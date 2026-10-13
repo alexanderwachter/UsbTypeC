@@ -160,10 +160,10 @@ int typeCTests()
     check(tcpc.callback == nullptr && vbus.monitored == usbc::vbus_level::unwatched);
 
     // start() applies Unattached.SNK: Rd presented, sink path off,
-    // vSafe5V monitored, callbacks registered
+    // nothing measured (a source is detected on CC), callbacks registered
     tc.start();
     check(tcpc.pull == usbc::cc_pull::rd && !tcpc.sinking);
-    check(vbus.monitored == usbc::vbus_level::safe5v);
+    check(vbus.monitored == usbc::vbus_level::unwatched);
     check(tcpc.callback != nullptr);
 
     // a CC alert travels through the alert handler the sink registered
@@ -192,7 +192,7 @@ int typeCTests()
     vbus.setVoltage(0);
     check(!tcpc.sinking);
     check(client.detached == 1);
-    check(vbus.monitored == usbc::vbus_level::safe5v);
+    check(vbus.monitored == usbc::vbus_level::unwatched);
 
     // attach with VBUS arriving after the debounce, flipped orientation
     tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_power_3a0};
