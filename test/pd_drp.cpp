@@ -317,8 +317,8 @@ int pdDrpTests()
         usbc::data_role::dfp
     ));
     check(port.dataRole() == usbc::data_role::ufp); // nothing flipped
-    check(timers.sink_pe.armed);                    // tDRSwapWait runs
-    timers.sink_pe.expire();
+    check(timers.sink_swap.armed);                  // tDRSwapWait runs
+    timers.sink_swap.expire();
     check(transmittedControl(tcpc, usbc::control_message_type::dr_swap)); // retried
     txSuccess();
     deliver(partnerControl(
@@ -549,8 +549,8 @@ int pdDrpTests()
     check(transmittedControl(tcpc, usbc::control_message_type::accept));
     auto const accept_id = usbc::pd_header::decode(tcpc.last_transmitted.header).message_id;
     txSuccess();
-    check(timers.source_pe.armed); // tSrcTransition
-    timers.source_pe.expire();
+    check(timers.source_swap.armed); // tSrcTransition, inside the exchange
+    timers.source_swap.expire();
     check(supply.voltage == 0); // the supply is commanded off
     supply.settle();
     check(tcpc.pull == usbc::cc_pull::rd && !tcpc.sourcing); // Rd asserted

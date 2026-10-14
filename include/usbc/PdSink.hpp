@@ -42,6 +42,7 @@ struct pd_sink_timers {
     TIMER tc;
     TIMER prl;
     TIMER pe;
+    TIMER swap; // the engine's swap exchanges: a single-role port never arms it
 };
 
 template<
@@ -73,7 +74,8 @@ public:
         POWER& power,
         OBSERVERs&... observers
     )
-        : watch_{*this}, engine_(tcpc, timers.prl, timers.pe, capabilities, policy, power, watch_),
+        : watch_{*this},
+          engine_(tcpc, timers.prl, timers.pe, timers.swap, capabilities, policy, power, watch_),
           router_{*this}, sink_(tcpc, vbus, timers.tc, router_, observers...)
     {
     }

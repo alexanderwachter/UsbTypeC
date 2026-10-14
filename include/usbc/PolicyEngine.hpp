@@ -218,8 +218,13 @@ struct swap_wait_source_on { // the port asserted Rd mid PR_Swap: this
 struct attached_swap { // activation continuing a PR_Swap (new source)
     data_role role;
 };
-struct swap_done {};    // advances the transient swap states
-struct bist_carrier {}; // BIST Carrier Mode 2 requested (vSafe5V)
+struct swap_done {}; // advances the PR_Swap handover's transient state
+// A swap exchange's word to the engine's table, emitted by the final
+// states of its submachine (never processed from outside)
+struct swap_refused {};    // our request met Reject, or no answer in time
+struct swap_finished {};   // the exchange is complete: back to Ready
+struct hand_off_failed {}; // the VCONN PS_RDY never left: hard reset
+struct bist_carrier {};    // BIST Carrier Mode 2 requested (vSafe5V)
 
 // VCONN_Swap messaging, shared by both engine roles; the role and
 // switch choreography lives in the vconn machine (Vconn.hpp)
@@ -280,17 +285,12 @@ struct retry_gated {
     constexpr bool operator==(retry_gated const&) const = default;
 };
 
-// Annotation tags the engines' facades query off the machine
+// Annotation tag the engines' facades query off the machine
 // (fsm::annotation<T>) instead of enumerating states: Ready - no
 // Atomic Message Sequence running, one may start (the spec allows
-// swaps only there, under the explicit contract) - and the transients
-// of the swap choreography that swap_done advances once their trigger
-// was processed (the spec chains them without further input)
+// swaps only there, under the explicit contract)
 struct ready_for_atomic_message_sequence {
     constexpr bool operator==(ready_for_atomic_message_sequence const&) const = default;
-};
-struct swap_transient {
-    constexpr bool operator==(swap_transient const&) const = default;
 };
 
 inline pd_message makeControlMessage(control_message_type type, power_role power, data_role data)
@@ -368,7 +368,17 @@ inline pd_message makeSinkCapabilitiesMessage(
 // twins are one state). A state that builds a message is a template on
 // the port's power role; the rest are plain types both tables list.
 // Each engine aliases them under the spec's role-specific names where
-// the spec has them, so its table reads against the spec
+// the spec has them, so its table reads against the spec.
+//
+// The swap states are sub-states: each swap exchange is a composite
+// state of the engine's table (the spec's PE_DRS_/PE_PRS_/PE_VCS_
+// diagram, one composite per entry from Ready - the request we sent,
+// the request we answered), whose submachine runs the exchange and
+// ends in a final state emitting the outcome. Only the composite
+// carries the power element: a child machine notifies its initial
+// state's annotations on construction, so a sub-state carrying it
+// would re-apply the contract at every exchange. A sub-state's
+// protocol_error falls through to the composite's one row
 namespace state {
 
 // PE_SNK_/PE_SRC_Send_Not_Supported: answers a message the port does
@@ -485,10 +495,6 @@ struct pe_drs_send_swap {
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends DR_Swap";
 
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-
     pd_message const& values() const { return message_; }
 
     using contexts = fsm::contexts<pe_connection>;
@@ -521,10 +527,6 @@ struct pe_drs_accept_swap {
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
 
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-
     pd_message const& values() const { return message_; }
 
     using contexts = fsm::contexts<pe_connection>;
@@ -536,9 +538,11 @@ private:
 };
 
 // PE_DRS_*_Change_to_*: the agreed swap flips the data role; the
-// report lets the port update the TCPC header and the Type-C context
+// report lets the port update the TCPC header and the Type-C context.
+// The exchange ends here: the final state's word returns to Ready
 struct pe_drs_change_data_role {
     using feature = dr_swap_feature;
+    using emits = event::swap_finished;
 
     pe_drs_change_data_role(event::accept const&, pe_connection& connection_ref)
         : pe_drs_change_data_role(connection_ref)
@@ -557,11 +561,6 @@ struct pe_drs_change_data_role {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "flips the data role";
-
-    static constexpr auto annotations = fsm::annotate(
-        power,
-        swap_transient{}
-    );
 
     data_role_changed values() const { return {.role = connection.data}; }
 
@@ -589,10 +588,6 @@ struct pe_vcs_send_swap {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends VCONN_Swap";
-
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
 
     pd_message const& values() const { return message_; }
 
@@ -626,10 +621,6 @@ struct pe_vcs_accept_swap {
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
 
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-
     pd_message const& values() const { return message_; }
 
     using contexts = fsm::contexts<pe_connection>;
@@ -651,7 +642,6 @@ struct pe_vcs_active {
     static constexpr std::string_view dot_note = specNote(power, pd);
 
     static constexpr auto annotations = fsm::annotate(
-        power,
         vconn_swap_agreed{}
     );
 };
@@ -676,10 +666,6 @@ struct pe_vcs_send_ps_rdy {
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PS_RDY";
 
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-
     pd_message const& values() const { return message_; }
 
     using contexts = fsm::contexts<pe_connection>;
@@ -690,33 +676,38 @@ private:
     pd_message message_;
 };
 
-// Transients reporting the hand-off progress to the vconn machine
+// The hand-off's ends, reporting its progress to the vconn machine:
+// the final states of the VCONN_Swap exchange
 struct pe_vcs_partner_on {
     using feature = vconn_feature;
+    using emits = event::swap_finished;
 
     static constexpr power_level power = power_level::explicit_contract;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
     static constexpr auto annotations = fsm::annotate(
-        power,
-        vconn_partner_on{},
-        swap_transient{}
+        vconn_partner_on{}
     );
 };
 
 struct pe_vcs_ps_rdy_sent {
     using feature = vconn_feature;
+    using emits = event::swap_finished;
 
     static constexpr power_level power = power_level::explicit_contract;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
     static constexpr auto annotations = fsm::annotate(
-        power,
-        vconn_ps_rdy_sent{},
-        swap_transient{}
+        vconn_ps_rdy_sent{}
     );
+};
+
+// Our VCONN PS_RDY failed to go out: the exchange ends in a hard reset
+struct pe_vcs_hand_off_failed {
+    using feature = vconn_feature;
+    using emits = event::hand_off_failed;
 };
 
 // PE_PRS_*_Send_Swap: our PR_Swap is out
@@ -739,10 +730,6 @@ struct pe_prs_send_swap {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PR_Swap";
-
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
 
     pd_message const& values() const { return message_; }
 
@@ -776,10 +763,6 @@ struct pe_prs_accept_swap {
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends Accept";
 
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-
     pd_message const& values() const { return message_; }
 
     using contexts = fsm::contexts<pe_connection>;
@@ -799,10 +782,6 @@ struct pe_dr_swap_wait {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
-    static constexpr auto annotations = fsm::annotate(
-        power
-    );
-
     static constexpr auto timeout = t_dr_swap_wait; // tDRSwapWait
 };
 
@@ -813,12 +792,91 @@ struct pe_pr_swap_wait {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
+    static constexpr auto timeout = t_pr_swap_wait; // tPRSwapWait
+};
+
+// Our swap request was refused - Reject, or no answer within
+// tSenderResponse (the partner ignored it): the exchange ends, Ready
+// resumes
+struct pe_swap_refused {
+    using emits = event::swap_refused;
+};
+
+// --- the swap exchanges both engines run alike ---------------------------------
+//
+// One sub-table per swap kind - the spec's diagram in one piece, with
+// its two entries - and two composite states over it: the request we
+// sent starts the submachine at its initial state (Send_Swap), the
+// request we answered names Accept_Swap as its initial. A composite
+// carries the feature tag, the power element (an explicit contract
+// holds throughout) and the submachine; the sub-states inherit the
+// connection for the messages they build. The engine's table enters
+// a composite from Ready and takes the outcome the final states emit
+
+// PE_VCS_*: our VCONN_Swap out (Wait is not retried), or the
+// partner's accepted; after the agreement the vconn machine owns the
+// switch and the engine relays the PS_RDY traffic until its side is
+// done
+template<power_role ROLE>
+using pe_vcs_transitions = fsm::transition_table<
+    fsm::initial<pe_vcs_send_swap<ROLE>>,
+    fsm::transition<fsm::from<pe_vcs_send_swap<ROLE>>, fsm::on<event::accept>, fsm::to<pe_vcs_active>>,
+    fsm::transition<fsm::from<pe_vcs_send_swap<ROLE>>, fsm::on<event::reject>, fsm::to<pe_swap_refused>>,
+    fsm::transition<fsm::from<pe_vcs_send_swap<ROLE>>, fsm::on<event::wait>, fsm::to<pe_swap_refused>>,
+    fsm::transition<fsm::from<pe_vcs_send_swap<ROLE>>, fsm::on<fsm::timeout>, fsm::to<pe_swap_refused>>,
+    fsm::transition<fsm::from<pe_vcs_accept_swap<ROLE>>, fsm::on<event::message_sent>, fsm::to<pe_vcs_active>>,
+    fsm::transition<fsm::from<pe_vcs_active>, fsm::on<event::ps_rdy>, fsm::to<pe_vcs_partner_on>>,
+    fsm::transition<fsm::from<pe_vcs_active>, fsm::on<event::send_vconn_ps_rdy>, fsm::to<pe_vcs_send_ps_rdy<ROLE>>>,
+    fsm::transition<fsm::from<pe_vcs_send_ps_rdy<ROLE>>, fsm::on<event::message_sent>, fsm::to<pe_vcs_ps_rdy_sent>>,
+    fsm::transition<fsm::from<pe_vcs_send_ps_rdy<ROLE>>, fsm::on<event::protocol_error>, fsm::to<pe_vcs_hand_off_failed>>,
+    fsm::final<pe_swap_refused>,
+    fsm::final<pe_vcs_partner_on>,
+    fsm::final<pe_vcs_ps_rdy_sent>,
+    fsm::final<pe_vcs_hand_off_failed>>;
+
+template<power_role ROLE>
+struct pe_vcs_table : pe_vcs_transitions<ROLE> {};
+
+template<power_role ROLE>
+struct pe_vcs_initiated {
+    using feature = vconn_feature;
+    using submachine = pe_vcs_table<ROLE>;
+
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
     static constexpr auto annotations = fsm::annotate(
         power
     );
 
-    static constexpr auto timeout = t_pr_swap_wait; // tPRSwapWait
+    using parent_contexts = fsm::contexts<pe_connection>;
 };
+
+template<power_role ROLE>
+struct pe_vcs_responded {
+    using feature = vconn_feature;
+    using submachine = pe_vcs_table<ROLE>;
+    using initial = pe_vcs_accept_swap<ROLE>;
+
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
+    using parent_contexts = fsm::contexts<pe_connection>;
+};
+
+// PE_DRS_*_Accept_Swap and the flip, the answered half of the DR_Swap
+// sub-tables (the sent half differs per role - the sink gates its
+// retry on SinkTxOk - so each engine composes its own)
+template<power_role ROLE>
+using pe_drs_responded_transitions = fsm::transition_table<
+    fsm::transition<fsm::from<pe_drs_accept_swap<ROLE>>, fsm::on<event::message_sent>, fsm::to<pe_drs_change_data_role>>,
+    fsm::final<pe_drs_change_data_role>>;
 
 // PE_SNK_/PE_SRC_Soft_Reset: accepts a received Soft_Reset; the
 // protocol layer resets before the Accept goes out (guaranteed hook
@@ -983,12 +1041,14 @@ struct power_effects : fsm::observing<power_effects<POWER>> {
 // and its client port, the message dispatch with the role's own
 // messages left to the derived engine (dispatchRole), the BIST entry,
 // the Get_Sink_Cap answer, the swap and VCONN requests, and the
-// transient advance. The derived engine owns the machine (its
-// observers are the role's) and befriends this base to let it drive
-// the machine
+// machine's timers - one per level: the engine's states, and the
+// sub-states of the swap exchanges where the policy brings a swap
+// feature in. The derived engine owns the machine (its observers are
+// the role's) and befriends this base to let it drive the machine
 template<
     typename DERIVED,
     power_role ROLE,
+    fsm::concepts::transition_table TABLE,
     concepts::pd_transport TCPC,
     fsm::concepts::timer TIMER,
     typename POLICY>
@@ -1010,15 +1070,6 @@ public:
     prl::message_id_state messageIds() const { return prl_.messageIds(); }
 
 protected:
-    PolicyEngineBase(TCPC& tcpc, TIMER& prl_timer, TIMER& pe_timer)
-        : tcpc_(tcpc), prl_(tcpc, prl_timer, port_), pe_timer_(pe_timer), timed_(pe_timer_)
-    {
-        tcpc_.setMessageHeaderInfo(
-            {.power = ROLE, .data = defaultDataRole(ROLE), .revision = pd_revision::rev_3_x}
-        );
-        tcpc_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
-    }
-
     // The optional features follow the injected policy: the machine
     // keeps a feature's states exactly when the policy answers the
     // feature's question (the facade's proxies answer exactly when an
@@ -1027,6 +1078,23 @@ protected:
     static constexpr bool pr_swap_capable = fsm::feature_enabled_v<pr_swap_feature, POLICY>;
     static constexpr bool dr_swap_capable = fsm::feature_enabled_v<dr_swap_feature, POLICY>;
     static constexpr bool vconn_capable = fsm::feature_enabled_v<vconn_feature, POLICY>;
+
+    // The machine's levels: the swap exchanges are composite states,
+    // the second level is theirs (its timer idles while the policy
+    // brings no swap feature in)
+    using queued_timer = fsm::QueuedTimer<TIMER>;
+    using timeouts = fsm::timed<queued_timer&, fsm::levels_v<TABLE>>;
+
+    // swap_timer runs the timeouts inside a swap exchange
+    PolicyEngineBase(TCPC& tcpc, TIMER& prl_timer, TIMER& pe_timer, TIMER& swap_timer)
+        : tcpc_(tcpc), prl_(tcpc, prl_timer, port_), pe_timer_(pe_timer), swap_timer_(swap_timer),
+          timed_(pe_timer_, swap_timer_)
+    {
+        tcpc_.setMessageHeaderInfo(
+            {.power = ROLE, .data = defaultDataRole(ROLE), .revision = pd_revision::rev_3_x}
+        );
+        tcpc_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
+    }
 
     // The partner's swap request is the table's question (the Ready
     // rows on the *_swap_received events): the injected policy's
@@ -1055,11 +1123,7 @@ protected:
                 {.power = ROLE, .data = engine.dataRole(), .revision = revision}
             );
         }
-        void onTxDone()
-        {
-            engine.derived().sm_.process(event::message_sent{});
-            engine.advanceTransients();
-        }
+        void onTxDone() { engine.derived().sm_.process(event::message_sent{}); }
         void onTxDiscarded() {} // the preempting message drives the engine
         void onTxError() { engine.derived().sm_.process(event::protocol_error{}); }
         void onHardReset()
@@ -1079,17 +1143,6 @@ protected:
     // Hook: what follows a hard reset in the machine, if anything (the
     // sink pumps its transients, the source's supply drives them)
     void afterHardReset() {}
-
-    // A transient state left standing after its trigger was processed
-    // is advanced here (the spec chains them without further input)
-    void advanceTransients()
-    {
-        if constexpr (dr_swap_capable || vconn_capable) { // else no state is a transient
-            if (derived().sm_.template annotation<swap_transient>()) {
-                derived().sm_.process(event::swap_done{});
-            }
-        }
-    }
 
     // A received message becomes the engine's event: the role's own
     // messages (capabilities, Request, Get_Source_Cap) go to the
@@ -1121,14 +1174,12 @@ protected:
             }
         } else if (isControl(header, control_message_type::accept)) {
             derived().sm_.process(event::accept{});
-            advanceTransients();
         } else if (isControl(header, control_message_type::reject)) {
             derived().sm_.process(event::reject{});
         } else if (isControl(header, control_message_type::wait)) {
             derived().sm_.process(event::wait{});
         } else if (isControl(header, control_message_type::ps_rdy)) {
             derived().sm_.process(event::ps_rdy{});
-            advanceTransients(); // a VCONN hand-off completion
         } else if (isControl(header, control_message_type::dr_swap)) {
             derived().sm_.process(event::dr_swap_received{{refusal<dr_swap_capable>}});
         } else if (isControl(header, control_message_type::pr_swap)) {
@@ -1139,8 +1190,10 @@ protected:
             sendSinkCapabilities();
         } else if (isControl(header, control_message_type::soft_reset)) {
             derived().sm_.process(event::soft_reset_received{});
-        } else if (!isControl(header, control_message_type::good_crc) &&
-                   !isControl(header, control_message_type::ping)) {
+        } else if (
+            !isControl(header, control_message_type::good_crc) &&
+            !isControl(header, control_message_type::ping)
+        ) {
             // answered from Ready only; ignored while negotiating
             derived().sm_.process(event::unsupported{});
         }
@@ -1203,8 +1256,9 @@ protected:
     bool bist_test_data_ = false;
     PrlPort port_{*this};
     ProtocolLayer<TCPC, TIMER> prl_; // also an observer of the machine
-    fsm::QueuedTimer<TIMER> pe_timer_;
-    fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
+    queued_timer pe_timer_;
+    queued_timer swap_timer_;
+    timeouts timed_;
 };
 
 } // namespace pe

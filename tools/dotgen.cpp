@@ -58,6 +58,13 @@ int main(int argc, char* argv[])
     write<usbc::tc::drp::try_wait_src_table<drp_timing>>(directory, "tc_try_wait_src");
     write<usbc::pe::pe_sink_table>(directory, "pe_sink");
     write<usbc::pe::pe_source_table>(directory, "pe_source");
+    // the swap exchanges are composite states: one graph per submachine
+    write<usbc::pe::state::pe_snk_dr_swap_table>(directory, "pe_snk_dr_swap");
+    write<usbc::pe::state::pe_snk_pr_swap_table>(directory, "pe_snk_pr_swap");
+    write<usbc::pe::state::pe_vcs_table<usbc::power_role::sink>>(directory, "pe_snk_vconn_swap");
+    write<usbc::pe::state::pe_src_dr_swap_table>(directory, "pe_src_dr_swap");
+    write<usbc::pe::state::pe_src_pr_swap_table>(directory, "pe_src_pr_swap");
+    write<usbc::pe::state::pe_vcs_table<usbc::power_role::source>>(directory, "pe_src_vconn_swap");
 
     return 0;
 }

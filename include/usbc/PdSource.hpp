@@ -41,6 +41,7 @@ struct pd_source_timers {
     TIMER tc;
     TIMER prl;
     TIMER pe;
+    TIMER swap; // the engine's swap exchanges: a single-role port never arms it
 };
 
 template<
@@ -75,8 +76,17 @@ public:
         rp_value advertisement,
         OBSERVERs&... observers
     )
-        : watch_{*this},
-          engine_(tcpc, timers.prl, timers.pe, capabilities, policy, supply, power, watch_),
+        : watch_{*this}, engine_(
+                             tcpc,
+                             timers.prl,
+                             timers.pe,
+                             timers.swap,
+                             capabilities,
+                             policy,
+                             supply,
+                             power,
+                             watch_
+                         ),
           router_{*this}, source_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
     {
     }

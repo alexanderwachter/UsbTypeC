@@ -59,16 +59,19 @@
 namespace usbc {
 
 // The timers the port runs on: the connection layer's, a protocol
-// plus an engine timer per role, and the vconn machine's. One bundle
-// owned by the caller
+// plus an engine timer per role and one for the timeouts inside the
+// engine's swap exchanges, and the vconn machine's. One bundle owned
+// by the caller
 template<fsm::concepts::timer TIMER>
 struct pd_drp_timers {
     TIMER tc;
     TIMER tc_try; // the timeouts inside a Try phase (preference != none)
     TIMER sink_prl;
     TIMER sink_pe;
+    TIMER sink_swap; // the timeouts inside a swap exchange (a swap feature on)
     TIMER source_prl;
     TIMER source_pe;
+    TIMER source_swap;
     TIMER vconn;
 };
 
@@ -105,6 +108,7 @@ public:
               tcpc,
               timers.sink_prl,
               timers.sink_pe,
+              timers.sink_swap,
               sink_capabilities,
               sink_policy_,
               sink_power,
@@ -114,6 +118,7 @@ public:
               tcpc,
               timers.source_prl,
               timers.source_pe,
+              timers.source_swap,
               source_capabilities,
               source_policy_,
               supply,

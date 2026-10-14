@@ -122,6 +122,19 @@ static_assert(source_variant_ok<true, false, false>);
 static_assert(source_variant_ok<false, true, false>);
 static_assert(source_variant_ok<false, false, true>);
 
+// The swap exchanges are composite states: a swap feature brings the
+// second level (and its timer), none leaves the engine flat
+template<fsm::concepts::transition_table TABLE, bool PR, bool DR, bool VCONN>
+inline constexpr std::size_t levels_with =
+    fsm::levels_v<fsm::enabled_table_t<TABLE, fsm::observers<features<PR, DR, VCONN>>>>;
+
+static_assert(levels_with<pe::pe_sink_table, true, true, true> == 2);
+static_assert(levels_with<pe::pe_sink_table, false, false, true> == 2);
+static_assert(levels_with<pe::pe_sink_table, false, false, false> == 1);
+static_assert(levels_with<pe::pe_source_table, true, true, true> == 2);
+static_assert(levels_with<pe::pe_source_table, true, false, false> == 2);
+static_assert(levels_with<pe::pe_source_table, false, false, false> == 1);
+
 // --- vconn machine -----------------------------------------------------------
 
 static_assert(fsm::timeouts_within_bounds_v<vconn::vconn_table, vconn::vconn_timer_ranges>);

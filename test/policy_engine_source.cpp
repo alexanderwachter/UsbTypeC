@@ -248,11 +248,12 @@ int policyEngineSourceTests()
     mock_tcpc tcpc;
     manual_timer prl_timer;
     manual_timer pe_timer;
+    manual_timer swap_timer; // the timeouts inside a swap exchange
     swap_capable_policy policy;
     mock_supply supply;
     mock_power power;
     usbc::SourcePolicyEngine<mock_tcpc, manual_timer, swap_capable_policy, mock_supply, mock_power>
-        pe{tcpc, prl_timer, pe_timer, source_caps, policy, supply, power};
+        pe{tcpc, prl_timer, pe_timer, swap_timer, source_caps, policy, supply, power};
 
     auto deliver = [&](usbc::pd_message const& message) {
         tcpc.injectMessage(message);
@@ -417,6 +418,7 @@ int policyEngineSourceTests()
         mock_tcpc silent_tcpc;
         manual_timer silent_prl_timer;
         manual_timer silent_pe_timer;
+        manual_timer silent_swap_timer;
         mock_supply silent_supply;
         mock_power silent_power;
         recovery_watch watch;
@@ -431,6 +433,7 @@ int policyEngineSourceTests()
                 silent_tcpc,
                 silent_prl_timer,
                 silent_pe_timer,
+                silent_swap_timer,
                 source_caps,
                 policy,
                 silent_supply,

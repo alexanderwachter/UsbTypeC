@@ -481,7 +481,6 @@ struct pe_snk_dr_swap_gate {
     static constexpr std::string_view dot_note = specNote(power, pd);
 
     static constexpr auto annotations = fsm::annotate(
-        power,
         retry_gated{atomic_message_sequence::data_role_swap}
     );
 };
@@ -494,7 +493,6 @@ struct pe_snk_pr_swap_gate {
     static constexpr std::string_view dot_note = specNote(power, pd);
 
     static constexpr auto annotations = fsm::annotate(
-        power,
         retry_gated{atomic_message_sequence::power_role_swap}
     );
 };
@@ -565,7 +563,8 @@ private:
 };
 
 // The new source's PS_RDY arrived: the port completes the swap into
-// Attached.SNK, then the normal sink flow resumes
+// Attached.SNK, then the normal sink flow resumes (swap_done, pumped
+// by the facade)
 struct pe_snk_swap_source_on_seen {
     using feature = pr_swap_feature;
 
@@ -615,11 +614,6 @@ using pe_snk_send_dr_swap = pe_drs_send_swap<power_role::sink>;
 using pe_snk_accept_dr_swap = pe_drs_accept_swap<power_role::sink>;
 using pe_snk_dr_swap_change = pe_drs_change_data_role;
 using pe_snk_vcs_send_swap = pe_vcs_send_swap<power_role::sink>;
-using pe_snk_vcs_accept = pe_vcs_accept_swap<power_role::sink>;
-using pe_snk_vcs_active = pe_vcs_active;
-using pe_snk_vcs_send_ps_rdy = pe_vcs_send_ps_rdy<power_role::sink>;
-using pe_snk_vcs_partner_on = pe_vcs_partner_on;
-using pe_snk_vcs_ps_rdy_sent = pe_vcs_ps_rdy_sent;
 using pe_snk_send_pr_swap = pe_prs_send_swap<power_role::sink>;
 using pe_snk_accept_pr_swap = pe_prs_accept_swap<power_role::sink>;
 using pe_snk_dr_swap_wait = pe_dr_swap_wait;
@@ -627,6 +621,109 @@ using pe_snk_pr_swap_wait = pe_pr_swap_wait;
 using pe_snk_soft_reset = pe_soft_reset<power_role::sink>;
 using pe_snk_send_soft_reset = pe_send_soft_reset<power_role::sink>;
 using pe_snk_hard_reset = pe_hard_reset;
+
+// --- the swap exchanges, composite states of the sink's table ----------------
+//
+// One sub-table per swap kind, two composites over it: the request we
+// sent starts it at Send_Swap, the request we answered at Accept_Swap.
+// The VCONN exchange is the shared one (PolicyEngine.hpp); a sent
+// request's retry after Wait passes the sink's SinkTxOk gate
+using pe_snk_vconn_swap_initiated = pe_vcs_initiated<power_role::sink>;
+using pe_snk_vconn_swap_responded = pe_vcs_responded<power_role::sink>;
+
+// PE_DRS_UFP_DFP_*: Send_Swap and the retry, or Accept_Swap, then the flip
+using pe_snk_dr_swap_transitions = fsm::transition_table<
+    fsm::initial<pe_snk_send_dr_swap>,
+    fsm::transition<fsm::from<pe_snk_send_dr_swap>, fsm::on<event::accept>, fsm::to<pe_snk_dr_swap_change>>,
+    fsm::transition<fsm::from<pe_snk_send_dr_swap>, fsm::on<event::reject>, fsm::to<pe_swap_refused>>,
+    fsm::transition<fsm::from<pe_snk_send_dr_swap>, fsm::on<fsm::timeout>, fsm::to<pe_swap_refused>>,
+    fsm::transition<fsm::from<pe_snk_send_dr_swap>, fsm::on<event::wait>, fsm::to<pe_snk_dr_swap_wait>>,
+    fsm::transition<fsm::from<pe_snk_dr_swap_wait>, fsm::on<fsm::timeout>, fsm::to<pe_snk_dr_swap_gate>>,
+    fsm::transition<fsm::from<pe_snk_dr_swap_gate>, fsm::on<event::send_dr_swap>, fsm::to<pe_snk_send_dr_swap>>,
+    pe_drs_responded_transitions<power_role::sink>,
+    fsm::final<pe_swap_refused>>;
+
+struct pe_snk_dr_swap_table : pe_snk_dr_swap_transitions {};
+
+struct pe_snk_dr_swap_initiated {
+    using feature = dr_swap_feature;
+    using submachine = pe_snk_dr_swap_table;
+
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
+    using parent_contexts = fsm::contexts<pe_connection>;
+};
+
+struct pe_snk_dr_swap_responded {
+    using feature = dr_swap_feature;
+    using submachine = pe_snk_dr_swap_table;
+    using initial = pe_snk_accept_dr_swap;
+
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
+    using parent_contexts = fsm::contexts<pe_connection>;
+};
+
+// PE_PRS_SNK_SRC_*: Send_Swap and the retry, or Accept_Swap; the
+// agreement leads into Transition_to_off, the old source's PS_RDY into
+// the termination flip, where this engine's part ends (the port
+// completes the swap, the source engine takes over)
+using pe_snk_pr_swap_transitions = fsm::transition_table<
+    fsm::initial<pe_snk_send_pr_swap>,
+    fsm::transition<fsm::from<pe_snk_send_pr_swap>, fsm::on<event::accept>, fsm::to<pe_snk_swap_transition_to_off>>,
+    fsm::transition<fsm::from<pe_snk_send_pr_swap>, fsm::on<event::reject>, fsm::to<pe_swap_refused>>,
+    fsm::transition<fsm::from<pe_snk_send_pr_swap>, fsm::on<fsm::timeout>, fsm::to<pe_swap_refused>>,
+    fsm::transition<fsm::from<pe_snk_send_pr_swap>, fsm::on<event::wait>, fsm::to<pe_snk_pr_swap_wait>>,
+    fsm::transition<fsm::from<pe_snk_pr_swap_wait>, fsm::on<fsm::timeout>, fsm::to<pe_snk_pr_swap_gate>>,
+    fsm::transition<fsm::from<pe_snk_pr_swap_gate>, fsm::on<event::send_pr_swap>, fsm::to<pe_snk_send_pr_swap>>,
+    fsm::transition<fsm::from<pe_snk_accept_pr_swap>, fsm::on<event::message_sent>, fsm::to<pe_snk_swap_transition_to_off>>,
+    fsm::transition<fsm::from<pe_snk_swap_transition_to_off>, fsm::on<event::ps_rdy>, fsm::to<pe_snk_swap_assert_rp>>,
+    fsm::final<pe_swap_refused>>;
+
+struct pe_snk_pr_swap_table : pe_snk_pr_swap_transitions {};
+
+struct pe_snk_pr_swap_initiated {
+    using feature = pr_swap_feature;
+    using submachine = pe_snk_pr_swap_table;
+
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
+    using parent_contexts = fsm::contexts<pe_connection>;
+};
+
+struct pe_snk_pr_swap_responded {
+    using feature = pr_swap_feature;
+    using submachine = pe_snk_pr_swap_table;
+    using initial = pe_snk_accept_pr_swap;
+
+    static constexpr power_level power = power_level::explicit_contract;
+    static constexpr pd_status pd = pd_status::connected;
+    static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
+    using parent_contexts = fsm::contexts<pe_connection>;
+};
 
 } // namespace state
 
@@ -646,13 +743,14 @@ using sink_timer_ranges = fsm::timer_ranges<
     fsm::timed_by<state::pe_snk_transition_sink, spec::t_ps_transition>,
     fsm::timed_by<state::pe_snk_chunk_received, spec::t_chunking_not_supported>,
     fsm::timed_by<state::pe_snk_send_soft_reset, spec::t_sender_response>,
-    fsm::timed_by<state::pe_snk_send_dr_swap, spec::t_sender_response>,
-    fsm::timed_by<state::pe_snk_send_pr_swap, spec::t_sender_response>,
     fsm::timed_by<state::pe_snk_request_wait, spec::t_sink_request>,
-    fsm::timed_by<state::pe_snk_dr_swap_wait, spec::t_dr_swap_wait>,
-    fsm::timed_by<state::pe_snk_pr_swap_wait, spec::t_pr_swap_wait>,
     fsm::timed_by<state::pe_snk_wait_no_response, spec::t_no_response>,
     fsm::timed_by<state::pe_snk_bist_carrier, spec::t_bist_cont_mode>,
+    // inside the swap exchanges
+    fsm::timed_by<state::pe_snk_send_dr_swap, spec::t_sender_response>,
+    fsm::timed_by<state::pe_snk_send_pr_swap, spec::t_sender_response>,
+    fsm::timed_by<state::pe_snk_dr_swap_wait, spec::t_dr_swap_wait>,
+    fsm::timed_by<state::pe_snk_pr_swap_wait, spec::t_pr_swap_wait>,
     fsm::timed_by<state::pe_snk_vcs_send_swap, spec::t_sender_response>>;
 
 using sink_transitions = fsm::transition_table<
@@ -697,56 +795,41 @@ using sink_transitions = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_bist_carrier>, fsm::on<fsm::timeout>, fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::chunked_message>, fsm::to<state::pe_snk_chunk_received>>,
     fsm::transition<fsm::from<state::pe_snk_chunk_received>, fsm::on<fsm::timeout>, fsm::to<state::pe_snk_send_not_supported>>,
-    // DR_Swap: sent from Ready, or accepted there; both sides flip on
-    // the agreement, an ignored request falls back to Ready
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_dr_swap>, fsm::to<state::pe_snk_send_dr_swap>>,
-    fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<event::accept>, fsm::to<state::pe_snk_dr_swap_change>>,
-    fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<event::reject>, fsm::to<state::pe_snk_ready>>,
-    fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<event::wait>, fsm::to<state::pe_snk_dr_swap_wait>>,
-    fsm::transition<fsm::from<state::pe_snk_dr_swap_wait>, fsm::on<fsm::timeout>, fsm::to<state::pe_snk_dr_swap_gate>>,
-    fsm::transition<fsm::from<state::pe_snk_dr_swap_gate>, fsm::on<event::send_dr_swap>, fsm::to<state::pe_snk_send_dr_swap>>,
-    fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<fsm::timeout>, fsm::to<state::pe_snk_ready>>,
-    fsm::transition<fsm::from<state::pe_snk_send_dr_swap>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
-    // the partner's DR_Swap: the table asks the injected policy
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::dr_swap_received>, fsm::guard<dr_swap_allowed>, fsm::to<state::pe_snk_accept_dr_swap>>,
+    // The swap exchanges, each a composite state entered from Ready:
+    // the partner's request is the table's question to the injected
+    // policy, a refused one is answered from Send_Not_Supported. The
+    // exchange's end emits its outcome, a sub-state's protocol error
+    // falls through to the composite's row
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_dr_swap>, fsm::to<state::pe_snk_dr_swap_initiated>>,
+    fsm::transition<fsm::from<state::pe_snk_dr_swap_initiated>, fsm::on<event::swap_refused>, fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_dr_swap_initiated>, fsm::on<event::swap_finished>, fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_dr_swap_initiated>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::dr_swap_received>, fsm::guard<dr_swap_allowed>, fsm::to<state::pe_snk_dr_swap_responded>>,
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::dr_swap_received>, fsm::to<state::pe_snk_send_not_supported>>,
-    fsm::transition<fsm::from<state::pe_snk_accept_dr_swap>, fsm::on<event::message_sent>, fsm::to<state::pe_snk_dr_swap_change>>,
-    fsm::transition<fsm::from<state::pe_snk_accept_dr_swap>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_dr_swap_change>, fsm::on<event::swap_done>, fsm::to<state::pe_snk_ready>>,
-    // VCONN_Swap: the messages anchor here, the vconn machine owns
-    // the role, the switch, and the hand-off deadline
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_vconn_swap>, fsm::to<state::pe_snk_vcs_send_swap>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_send_swap>, fsm::on<event::accept>, fsm::to<state::pe_snk_vcs_active>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_send_swap>, fsm::on<event::reject>, fsm::to<state::pe_snk_ready>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_send_swap>, fsm::on<event::wait>, fsm::to<state::pe_snk_ready>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_send_swap>, fsm::on<fsm::timeout>, fsm::to<state::pe_snk_ready>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_send_swap>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::vconn_swap_received>, fsm::guard<vconn_swap_allowed>, fsm::to<state::pe_snk_vcs_accept>>,
+    fsm::transition<fsm::from<state::pe_snk_dr_swap_responded>, fsm::on<event::swap_finished>, fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_dr_swap_responded>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
+    // VCONN_Swap: the vconn machine owns the role, the switch and the
+    // hand-off deadline; its escalation and a lost PS_RDY hard-reset
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_vconn_swap>, fsm::to<state::pe_snk_vconn_swap_initiated>>,
+    fsm::transition<fsm::from<state::pe_snk_vconn_swap_initiated>, fsm::on<event::swap_refused>, fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_vconn_swap_initiated>, fsm::on<event::swap_finished>, fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_vconn_swap_initiated>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_vconn_swap_initiated>, fsm::on<event::hand_off_failed>, fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_vconn_swap_initiated>, fsm::on<event::hard_reset_request>, fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::vconn_swap_received>, fsm::guard<vconn_swap_allowed>, fsm::to<state::pe_snk_vconn_swap_responded>>,
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::vconn_swap_received>, fsm::to<state::pe_snk_send_not_supported>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_accept>, fsm::on<event::message_sent>, fsm::to<state::pe_snk_vcs_active>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_accept>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_active>, fsm::on<event::ps_rdy>, fsm::to<state::pe_snk_vcs_partner_on>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_active>, fsm::on<event::send_vconn_ps_rdy>, fsm::to<state::pe_snk_vcs_send_ps_rdy>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_active>, fsm::on<event::hard_reset_request>, fsm::to<state::pe_snk_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_send_ps_rdy>, fsm::on<event::message_sent>, fsm::to<state::pe_snk_vcs_ps_rdy_sent>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_send_ps_rdy>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_hard_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_partner_on>, fsm::on<event::swap_done>, fsm::to<state::pe_snk_ready>>,
-    fsm::transition<fsm::from<state::pe_snk_vcs_ps_rdy_sent>, fsm::on<event::swap_done>, fsm::to<state::pe_snk_ready>>,
-    // PR_Swap while sinking: the agreement leads into Transition_to_off,
-    // the old source's PS_RDY into the termination flip
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_pr_swap>, fsm::to<state::pe_snk_send_pr_swap>>,
-    fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<event::accept>, fsm::to<state::pe_snk_swap_transition_to_off>>,
-    fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<event::reject>, fsm::to<state::pe_snk_ready>>,
-    fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<event::wait>, fsm::to<state::pe_snk_pr_swap_wait>>,
-    fsm::transition<fsm::from<state::pe_snk_pr_swap_wait>, fsm::on<fsm::timeout>, fsm::to<state::pe_snk_pr_swap_gate>>,
-    fsm::transition<fsm::from<state::pe_snk_pr_swap_gate>, fsm::on<event::send_pr_swap>, fsm::to<state::pe_snk_send_pr_swap>>,
-    fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<fsm::timeout>, fsm::to<state::pe_snk_ready>>,
-    fsm::transition<fsm::from<state::pe_snk_send_pr_swap>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::pr_swap_received>, fsm::guard<pr_swap_allowed>, fsm::to<state::pe_snk_accept_pr_swap>>,
+    fsm::transition<fsm::from<state::pe_snk_vconn_swap_responded>, fsm::on<event::swap_finished>, fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_vconn_swap_responded>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_vconn_swap_responded>, fsm::on<event::hand_off_failed>, fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_vconn_swap_responded>, fsm::on<event::hard_reset_request>, fsm::to<state::pe_snk_hard_reset>>,
+    // PR_Swap while sinking: an agreed exchange ends in the termination
+    // flip, where the port hands over to the source engine
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_pr_swap>, fsm::to<state::pe_snk_pr_swap_initiated>>,
+    fsm::transition<fsm::from<state::pe_snk_pr_swap_initiated>, fsm::on<event::swap_refused>, fsm::to<state::pe_snk_ready>>,
+    fsm::transition<fsm::from<state::pe_snk_pr_swap_initiated>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::pr_swap_received>, fsm::guard<pr_swap_allowed>, fsm::to<state::pe_snk_pr_swap_responded>>,
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::pr_swap_received>, fsm::to<state::pe_snk_send_not_supported>>,
-    fsm::transition<fsm::from<state::pe_snk_accept_pr_swap>, fsm::on<event::message_sent>, fsm::to<state::pe_snk_swap_transition_to_off>>,
-    fsm::transition<fsm::from<state::pe_snk_accept_pr_swap>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_swap_transition_to_off>, fsm::on<event::ps_rdy>, fsm::to<state::pe_snk_swap_assert_rp>>,
+    fsm::transition<fsm::from<state::pe_snk_pr_swap_responded>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
     // PR_Swap's other half: this port was the source and asserted Rd -
     // PS_RDY out, then the new source's PS_RDY completes the swap
     fsm::transition<fsm::from<state::pe_snk_discovery>, fsm::on<event::swap_wait_source_on>, fsm::to<state::pe_snk_swap_wait_source_on>>,
@@ -865,24 +948,34 @@ template<
 class SinkPolicyEngine : public pe::PolicyEngineBase<
                              SinkPolicyEngine<TCPC, TIMER, POLICY, OBSERVERs...>,
                              power_role::sink,
+                             pe::pe_sink_table,
                              TCPC,
                              TIMER,
                              POLICY> {
-    using base = pe::PolicyEngineBase<SinkPolicyEngine, power_role::sink, TCPC, TIMER, POLICY>;
+    using base = pe::PolicyEngineBase<
+        SinkPolicyEngine,
+        power_role::sink,
+        pe::pe_sink_table,
+        TCPC,
+        TIMER,
+        POLICY>;
     friend base;
 
 public:
     // The observers are injected into the engine's machine after the
-    // protocol layer; a SinkPower-derived one supplies the power side
+    // protocol layer; a SinkPower-derived one supplies the power side.
+    // pe_timer runs the engine's states, swap_timer the sub-states of a
+    // swap exchange (never armed without a swap feature)
     SinkPolicyEngine(
         TCPC& tcpc,
         TIMER& prl_timer,
         TIMER& pe_timer,
+        TIMER& swap_timer,
         std::span<sink_capability const> capabilities,
         POLICY& policy,
         OBSERVERs&... observers
     )
-        : base(tcpc, prl_timer, pe_timer), policy_(policy),
+        : base(tcpc, prl_timer, pe_timer, swap_timer), policy_(policy),
           sm_(this->timed_, this->prl_, gates_, policy_, observers...)
     {
         this->sink_capabilities_ = capabilities;
@@ -1140,7 +1233,7 @@ private:
         4,
         fsm::inline_work,
         fsm::no_lock,
-        fsm::timed<fsm::QueuedTimer<TIMER>&>,
+        typename base::timeouts,
         ProtocolLayer<TCPC, TIMER>,
         gate_watch,
         POLICY,
