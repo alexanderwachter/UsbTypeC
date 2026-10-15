@@ -1168,32 +1168,35 @@ protected:
         if (derived().dispatchRole(header, message)) {
             return;
         }
-        if (isData(header, data_message_type::bist)) {
-            if (header.num_data_objects >= 1) {
+        if (header.num_data_objects > 0) {
+            if (header.message_type == static_cast<std::uint8_t>(data_message_type::bist)) {
                 enterBist(dataObjectAt(message, 0));
+            } else {
+                derived().sm_.process(event::unsupported{});
             }
-        } else if (isControl(header, control_message_type::accept)) {
-            derived().sm_.process(event::accept{});
-        } else if (isControl(header, control_message_type::reject)) {
-            derived().sm_.process(event::reject{});
-        } else if (isControl(header, control_message_type::wait)) {
-            derived().sm_.process(event::wait{});
-        } else if (isControl(header, control_message_type::ps_rdy)) {
-            derived().sm_.process(event::ps_rdy{});
-        } else if (isControl(header, control_message_type::dr_swap)) {
+            return;
+        }
+        switch (static_cast<control_message_type>(header.message_type)) {
+        case control_message_type::accept: derived().sm_.process(event::accept{}); break;
+        case control_message_type::reject: derived().sm_.process(event::reject{}); break;
+        case control_message_type::wait: derived().sm_.process(event::wait{}); break;
+        case control_message_type::ps_rdy: derived().sm_.process(event::ps_rdy{}); break;
+        case control_message_type::dr_swap:
             derived().sm_.process(event::dr_swap_received{{refusal<dr_swap_capable>}});
-        } else if (isControl(header, control_message_type::pr_swap)) {
+            break;
+        case control_message_type::pr_swap:
             derived().sm_.process(event::pr_swap_received{{refusal<pr_swap_capable>}});
-        } else if (isControl(header, control_message_type::vconn_swap)) {
+            break;
+        case control_message_type::vconn_swap:
             derived().sm_.process(event::vconn_swap_received{{refusal<vconn_capable>}});
-        } else if (isControl(header, control_message_type::get_sink_cap)) {
-            sendSinkCapabilities();
-        } else if (isControl(header, control_message_type::soft_reset)) {
+            break;
+        case control_message_type::get_sink_cap: sendSinkCapabilities(); break;
+        case control_message_type::soft_reset:
             derived().sm_.process(event::soft_reset_received{});
-        } else if (
-            !isControl(header, control_message_type::good_crc) &&
-            !isControl(header, control_message_type::ping)
-        ) {
+            break;
+        case control_message_type::good_crc:
+        case control_message_type::ping: break;
+        default:
             // answered from Ready only; ignored while negotiating
             derived().sm_.process(event::unsupported{});
         }
