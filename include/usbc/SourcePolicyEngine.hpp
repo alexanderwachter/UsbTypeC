@@ -189,6 +189,7 @@ struct pe_src_startup {
         "resets the protocol layer, restores default power";
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         prl::reset_action{},
         restore_default_action{}
     );
@@ -223,6 +224,7 @@ struct pe_src_send_capabilities {
     static constexpr std::string_view dot_action = send_capabilities_action::note;
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         send_capabilities_action{}
     );
 
@@ -245,6 +247,10 @@ struct pe_src_discovery {
     static constexpr pd_status pd = pd_status::not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     using contexts = fsm::contexts<src_negotiation>; // the guard reads CapsCounter
 
     static constexpr auto timeout = t_typec_send_source_cap; // SourceCapabilityTimer
@@ -258,6 +264,10 @@ struct pe_src_disabled {
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 };
 
 // The engine evaluates the Request through the injected policy and
@@ -271,6 +281,10 @@ struct pe_src_negotiate_capability {
     static constexpr power_level power = power_level::contract_or_default;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     using contexts = fsm::contexts<pe_connection>;
 
@@ -301,6 +315,10 @@ struct pe_src_transition_supply {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = fsm::contexts<pe_connection, src_negotiation>;
@@ -318,6 +336,10 @@ struct pe_src_transition_supply_delay {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     static constexpr auto timeout = t_src_transition; // tSrcTransition
 };
 
@@ -333,6 +355,10 @@ struct pe_src_transition_supply_settle {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "programs the supply";
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     supply_target values() const { return negotiation.target; }
 
@@ -354,6 +380,10 @@ struct pe_src_transition_supply_ps_rdy {
     static constexpr power_level power = power_level::transition;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     pd_message const& values() const { return message_; }
 
@@ -414,6 +444,10 @@ struct pe_src_capability_response {
     static constexpr power_level power = power_level::contract_or_default;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     pd_message const& values() const { return message_; }
 
@@ -528,6 +562,7 @@ struct pe_src_swap_source_on {
     static constexpr std::string_view dot_action = "drives VBUS to vSafe5V";
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         supply_target{.voltage = v_safe_5v, .current = i_default_current}
     );
 
@@ -554,6 +589,10 @@ struct pe_src_swap_source_on_ps_rdy {
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PS_RDY";
 
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = fsm::contexts<pe_connection>;
@@ -577,6 +616,10 @@ struct pe_src_swap_source_start {
     static constexpr power_level power = power_level::transition;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     using contexts = fsm::contexts<src_negotiation>;
 
@@ -604,6 +647,7 @@ struct pe_src_transition_to_default {
 
     // the protocol reset, and VBUS removed - both compile-time facts
     static constexpr auto annotations = fsm::annotate(
+        power,
         prl::reset_action{},
         supply_target{.voltage = 0, .current = 0}
     );
@@ -619,6 +663,10 @@ struct pe_src_recover {
     static constexpr pd_status pd = pd_status::not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     static constexpr auto timeout = t_src_recover; // tSrcRecover
 };
 
@@ -633,6 +681,7 @@ struct pe_src_restore_default {
     static constexpr std::string_view dot_action = restore_default_action::note;
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         restore_default_action{}
     );
 

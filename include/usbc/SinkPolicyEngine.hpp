@@ -250,6 +250,7 @@ struct pe_snk_startup {
         "resets the protocol layer, restores default power";
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         prl::reset_action{},
         restore_default_action{}
     );
@@ -268,6 +269,10 @@ struct pe_snk_discovery {
     static constexpr pd_status pd = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     using contexts = fsm::contexts<pe_connection>; // the guard reads the counter
 
     pe_connection& connection;
@@ -277,6 +282,10 @@ struct pe_snk_wait_for_capabilities {
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     static constexpr auto timeout = t_sink_wait_cap; // SinkWaitCapTimer
 };
@@ -290,6 +299,10 @@ struct pe_snk_wait_no_response {
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::connected_or_not_connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     using contexts = fsm::contexts<pe_connection>; // the guard reads the counter
 
@@ -309,6 +322,10 @@ struct pe_snk_evaluate_capability {
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     using contexts = fsm::contexts<pe_connection>;
 
@@ -345,6 +362,10 @@ struct pe_snk_select_capability {
     static constexpr power_level power = power_level::default_power;
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
+
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
 
     pd_message const& values() const { return message_; }
 
@@ -390,6 +411,10 @@ struct pe_snk_transition_sink {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     standby_limit values() const { return {negotiation.request.voltage}; }
 
     using contexts = fsm::contexts<pe_negotiation>;
@@ -432,6 +457,10 @@ struct pe_snk_request_wait {
     static constexpr pd_status pd = pd_status::connected;
     static constexpr std::string_view dot_note = specNote(power, pd);
 
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     static constexpr auto timeout = t_sink_request; // SinkRequestTimer
 };
 
@@ -469,6 +498,7 @@ struct pe_snk_request_gate {
     static constexpr std::string_view dot_note = specNote(power, pd);
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         retry_gated{atomic_message_sequence::request}
     );
 };
@@ -552,6 +582,10 @@ struct pe_snk_swap_wait_source_on {
     static constexpr std::string_view dot_note = specNote(power, pd);
     static constexpr std::string_view dot_action = "sends PS_RDY, awaits the new source's";
 
+    static constexpr auto annotations = fsm::annotate(
+        power
+    );
+
     pd_message const& values() const { return message_; }
 
     using contexts = fsm::contexts<pe_connection>;
@@ -573,6 +607,7 @@ struct pe_snk_swap_source_on_seen {
     static constexpr std::string_view dot_note = specNote(power, pd);
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         swap_completed{}
     );
 };
@@ -594,6 +629,7 @@ struct pe_snk_transition_to_default {
     // the restore for the power side, the window for the port: the
     // connection layer must hold the attach while VBUS cycles
     static constexpr auto annotations = fsm::annotate(
+        power,
         restore_default_action{},
         hard_reset_window{}
     );

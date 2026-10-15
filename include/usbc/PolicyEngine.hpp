@@ -374,11 +374,13 @@ inline pd_message makeSinkCapabilitiesMessage(
 // state of the engine's table (the spec's PE_DRS_/PE_PRS_/PE_VCS_
 // diagram, one composite per entry from Ready - the request we sent,
 // the request we answered), whose submachine runs the exchange and
-// ends in a final state emitting the outcome. Only the composite
-// carries the power element: a child machine notifies its initial
-// state's annotations on construction, so a sub-state carrying it
-// would re-apply the contract at every exchange. A sub-state's
-// protocol_error falls through to the composite's one row
+// ends in a final state emitting the outcome. Every root state carries
+// the spec's power level in its set; the composite carries it for its
+// sub-states, which keep the plain member for their diagram note (a
+// child machine notifies its initial state's annotations on
+// construction, and an annotation type may not recur below the
+// composite carrying it). A sub-state's protocol_error falls through
+// to the composite's one row
 namespace state {
 
 // PE_SNK_/PE_SRC_Send_Not_Supported: answers a message the port does
@@ -899,6 +901,7 @@ struct pe_soft_reset {
     static constexpr std::string_view dot_action = prl::reset_action::note;
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         prl::reset_action{}
     );
 
@@ -928,6 +931,7 @@ struct pe_send_soft_reset {
     static constexpr std::string_view dot_action = prl::reset_action::note;
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         prl::reset_action{}
     );
 
@@ -956,6 +960,7 @@ struct pe_hard_reset {
     static constexpr std::string_view dot_action = prl::hard_reset_action::note;
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         prl::hard_reset_action{}
     );
 
@@ -973,6 +978,7 @@ struct pe_error_recovery {
     static constexpr std::string_view dot_note = specNote(power, pd);
 
     static constexpr auto annotations = fsm::annotate(
+        power,
         request_error_recovery{}
     );
 };
@@ -1019,16 +1025,21 @@ struct contract_store : fsm::observing<contract_store<POWER>> {
 };
 
 // The power effects, delivered from the states' annotation sets by
-// overload: the stored contract is applied exactly when the power
-// element appears or changes (only Explicit Contract states carry it,
-// so bounces between Ready and its service states stay suppressed and
-// the engines' wildcard transitions stay shareable), and vSafe5V
-// defaults are restored on the states carrying the restore action
+// overload: every root state carries the spec's power level, the
+// stored contract is applied exactly when the level changes to
+// Explicit Contract (bounces between Ready and its service states are
+// suppressed as unchanged), and vSafe5V defaults are restored on the
+// states carrying the restore action
 template<typename POWER>
 struct power_effects : fsm::observing<power_effects<POWER>> {
     explicit power_effects(POWER& power_ref) : power(power_ref) {}
 
-    void notifyEntry(power_level) { power.applyContract(); }
+    void notifyEntry(power_level level)
+    {
+        if (level == power_level::explicit_contract) {
+            power.applyContract();
+        }
+    }
     void notifyEntry(restore_default_action) { power.restoreDefaults(); }
 
     POWER& power;
