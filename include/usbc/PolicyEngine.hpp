@@ -50,10 +50,6 @@ struct sink_capability {
     milliamp current;
 };
 
-// The tag the swap arbitration is asked with: allowSwap(vconn_source_role)
-// says whether this port may take over sourcing VCONN
-struct vconn_source_role {};
-
 namespace pe {
 
 inline constexpr auto t_sender_response = std::chrono::milliseconds{27}; // tSenderResponse
@@ -252,6 +248,10 @@ struct send_sink_capabilities {
 struct pr_swap_allowed {};
 struct dr_swap_allowed {};
 struct vconn_swap_allowed {};
+// Does this port hold the VCONN Source role? Answered by the port
+// from its vconn machine: a holder accepts the partner's VCONN_Swap,
+// giving the role up needs no capability
+struct vconn_source_role_held {};
 
 // The optional features, as tags - the fsm library's feature mechanism:
 // a state declares the feature it belongs to (`using feature =
@@ -266,7 +266,7 @@ struct pr_swap_feature { // contract: allowSwap(power_role)
 struct dr_swap_feature { // contract: allowSwap(data_role)
     using enabled_by = dr_swap_allowed;
 };
-struct vconn_feature { // contract: concepts::vconn_port
+struct vconn_feature { // contract: concepts::vconn_port (the answerer observes the switch)
     using enabled_by = vconn_swap_allowed;
 };
 

@@ -131,18 +131,16 @@ struct ContractMonitor : usbc::SourcePower<ContractMonitor> {
     void onContractLost() { LOG_WRN("source contract lost, back to vSafe5V"); }
 };
 
-// The injected vconn_port: enables the feature by tag, connects the
-// VCONN switch - behind the TCPC driver on this board - and allows
-// taking the role. It brings the VCONN machine and the engines'
-// VCONN_Swap states in; a port without an enabler compiles the
-// feature out
+// The injected vconn_port: connects the VCONN switch - behind the
+// TCPC driver on this board - and answers the engines' question
+// whether the port may take the role. The answer brings the VCONN
+// machine's sourcing states and the engines' VCONN_Swap states in; a
+// port without it compiles the feature out
 struct VconnPolicy : fsm::observing<VconnPolicy> {
-    using enables = usbc::pe::vconn_feature;
-
     explicit VconnPolicy(usbc::zephyr::Tcpc& tcpc_ref) : tcpc(tcpc_ref) {}
 
     void notifyEntry(usbc::vconn::vconn_switch vconn) { tcpc.setVconn(vconn.on); }
-    bool allowSwap(usbc::vconn_source_role) { return true; }
+    bool check(usbc::pe::vconn_swap_allowed) { return true; }
 
     usbc::zephyr::Tcpc& tcpc; // this board's switch sits behind the TCPC
 };

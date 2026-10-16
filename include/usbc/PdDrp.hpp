@@ -9,8 +9,11 @@
  * Role swaps are PD-negotiated (PR_Swap/DR_Swap): swapPowerRole() and
  * swapDataRole() send the request through the active engine, and the
  * partner's requests are the engine tables' questions
- * (pe::pr_swap_allowed and kin), answered by this class's policy
- * proxies from the injected observers' allowSwap hooks. The engines
+ * (pe::pr_swap_allowed and kin): the role swaps answered by this
+ * class's policy proxies from the injected observers' allowSwap
+ * hooks, the VCONN one by the enabling observer itself, and a holder
+ * of the VCONN Source role accepts (pe::vconn_source_role_held,
+ * answered here from the vconn machine). The engines
  * run the message choreography (Accept,
  * Transition_to_off, the PS_RDY exchange); this class watches their
  * swap states and flips the Type-C terminations at the spec's
@@ -199,17 +202,21 @@ public:
                                          : source_engine_.requestDataSwap();
     }
 
-    // Sends a VCONN_Swap; giving the role up needs no capability,
-    // taking it is arbitrated through the injected observers'
-    // allowSwap(vconn_source_role)
+    // Sends a VCONN_Swap: the application's decision (the partner's
+    // request is the enabling observer's, check(pe::vconn_swap_allowed));
+    // refused by a port without the feature
     bool swapVconnRole()
     {
-        auto const role = drp_.powerRole();
-        if (!role || !allowVconnSwap()) {
+        if constexpr (!vconn_enabled) {
             return false;
+        } else {
+            auto const role = drp_.powerRole();
+            if (!role) {
+                return false;
+            }
+            return *role == power_role::sink ? sink_engine_.requestVconnSwap()
+                                             : source_engine_.requestVconnSwap();
         }
-        return *role == power_role::sink ? sink_engine_.requestVconnSwap()
-                                         : source_engine_.requestVconnSwap();
     }
 
     std::optional<power_role> powerRole() const { return drp_.powerRole(); }
@@ -251,7 +258,7 @@ private:
           concepts::vconn_port<std::remove_cvref_t<OBSERVERs>>) &&
          ...),
         "an observer enabling vconn_feature must satisfy concepts::vconn_port "
-        "(notifyEntry(vconn::vconn_switch) + allowSwap(vconn_source_role))"
+        "(notifyEntry(vconn::vconn_switch) + check(pe::vconn_swap_allowed))"
     );
 
     // The user's policies extended with the answers to the engine
@@ -282,11 +289,6 @@ private:
         {
             return port.dataSwapAllowed();
         }
-        bool check(pe::vconn_swap_allowed)
-            requires(vconn_enabled)
-        {
-            return port.allowVconnSwap();
-        }
     };
 
     struct source_policy_proxy {
@@ -308,11 +310,6 @@ private:
         {
             return port.dataSwapAllowed();
         }
-        bool check(pe::vconn_swap_allowed)
-            requires(vconn_enabled)
-        {
-            return port.allowVconnSwap();
-        }
     };
 
     // A data role swap is asked with the role the port would take:
@@ -326,14 +323,6 @@ private:
         return drp_.swapAllowed(*current == data_role::ufp ? data_role::dfp : data_role::ufp);
     }
 
-    // Relinquishing VCONN is always fine; becoming the VCONN source is
-    // board-dependent and must match the VIF's claim - the injected
-    // observers' allowSwap(vconn_source_role) decides, refused with none
-    bool allowVconnSwap()
-    {
-        return vconn_.isVconnSource() || drp_.swapAllowed(vconn_source_role{});
-    }
-
     // Injected into both engines' machines: watches the swap states'
     // annotations, and executes the requested port actions right from
     // the hooks: every machine is queued, so an action that feeds back
@@ -341,6 +330,10 @@ private:
     // acknowledgment) is delivered after the running transition
     struct swap_watch : fsm::observing<swap_watch> {
         explicit swap_watch(PdDrp& port_ref) : port(port_ref) {}
+
+        // the engines' question on the partner's VCONN_Swap: a holder
+        // of the role accepts, relinquishing needs no capability
+        bool check(pe::vconn_source_role_held) { return port.vconn_.isVconnSource(); }
 
         // an agreed DR_Swap only touches the header and the Type-C
         // context

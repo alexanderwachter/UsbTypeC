@@ -924,6 +924,7 @@ using source_transitions = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_src_vconn_swap_initiated>, fsm::on<pe::event::protocol_error>, fsm::to<state::pe_src_send_soft_reset>>,
     fsm::transition<fsm::from<state::pe_src_vconn_swap_initiated>, fsm::on<pe::event::hand_off_failed>, fsm::to<state::pe_src_hard_reset>>,
     fsm::transition<fsm::from<state::pe_src_vconn_swap_initiated>, fsm::on<pe::event::hard_reset_request>, fsm::to<state::pe_src_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::vconn_swap_received>, fsm::guard<pe::vconn_source_role_held>, fsm::to<state::pe_src_vconn_swap_responded>>,
     fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::vconn_swap_received>, fsm::guard<pe::vconn_swap_allowed>, fsm::to<state::pe_src_vconn_swap_responded>>,
     fsm::transition<fsm::from<state::pe_src_ready>, fsm::on<pe::event::vconn_swap_received>, fsm::to<state::pe_src_send_not_supported>>,
     fsm::transition<fsm::from<state::pe_src_vconn_swap_responded>, fsm::on<pe::event::swap_finished>, fsm::to<state::pe_src_ready>>,

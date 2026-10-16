@@ -852,6 +852,7 @@ using sink_transitions = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_vconn_swap_initiated>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
     fsm::transition<fsm::from<state::pe_snk_vconn_swap_initiated>, fsm::on<event::hand_off_failed>, fsm::to<state::pe_snk_hard_reset>>,
     fsm::transition<fsm::from<state::pe_snk_vconn_swap_initiated>, fsm::on<event::hard_reset_request>, fsm::to<state::pe_snk_hard_reset>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::vconn_swap_received>, fsm::guard<vconn_source_role_held>, fsm::to<state::pe_snk_vconn_swap_responded>>,
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::vconn_swap_received>, fsm::guard<vconn_swap_allowed>, fsm::to<state::pe_snk_vconn_swap_responded>>,
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::vconn_swap_received>, fsm::to<state::pe_snk_send_not_supported>>,
     fsm::transition<fsm::from<state::pe_snk_vconn_swap_responded>, fsm::on<event::swap_finished>, fsm::to<state::pe_snk_ready>>,

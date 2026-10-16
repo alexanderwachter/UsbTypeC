@@ -89,16 +89,15 @@ struct mock_source_power : usbc::SourcePower<mock_source_power> {
     void onContractLost() {}
 };
 
-// The injected vconn_port: enables the feature by tag, connects the
-// switch hardware AND allows taking the role (without an enabler the
-// feature is compiled out entirely)
+// The injected vconn_port: connects the switch hardware AND answers
+// the engines' question whether the port may take the role - the
+// answer enables the feature (without it the feature is compiled out
+// entirely)
 struct vconn_allow : fsm::observing<vconn_allow> {
-    using enables = usbc::pe::vconn_feature;
-
     bool on = false;
 
     void notifyEntry(usbc::vconn::vconn_switch vconn) { on = vconn.on; }
-    bool allowSwap(usbc::vconn_source_role) { return true; }
+    bool check(usbc::pe::vconn_swap_allowed) { return true; }
 };
 static_assert(usbc::concepts::vconn_port<vconn_allow>);
 

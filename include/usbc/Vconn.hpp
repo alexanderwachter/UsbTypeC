@@ -81,14 +81,15 @@ struct source_role {
 namespace concepts {
 
 // The one injected object that both connects the VCONN switch
-// hardware - observing the states' switch annotation - and
-// arbitrates taking the role; its presence among a port's observers
-// enables the whole feature
+// hardware - observing the states' switch annotation - and answers
+// the engines' question whether this port may take the role; the
+// answer is what enables the whole feature
 template<typename T>
-concept vconn_port = requires(T port, vconn::vconn_switch vconn, vconn_source_role role) {
-    port.notifyEntry(vconn);
-    { port.allowSwap(role) } -> std::convertible_to<bool>;
-};
+concept vconn_port =
+    requires(T port, vconn::vconn_switch vconn, pe::vconn_swap_allowed question) {
+        port.notifyEntry(vconn);
+        { port.check(question) } -> std::convertible_to<bool>;
+    };
 
 } // namespace concepts
 
