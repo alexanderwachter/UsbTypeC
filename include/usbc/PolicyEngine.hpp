@@ -241,14 +241,14 @@ struct bist_carrier {};    // BIST Carrier Mode 2 requested (vSafe5V)
 
 // VCONN_Swap messaging, shared by both engine roles; the role and
 // switch choreography lives in the vconn machine (Vconn.hpp)
-struct send_vconn_swap {};                    // our VCONN_Swap goes out
+struct send_vconn_swap {};   // our VCONN_Swap goes out
 struct vconn_swap_received { // the partner's VCONN_Swap
     control_message_type refusal;
 };
-struct send_vconn_ps_rdy {};                  // the vconn machine turned the switch on
-struct hard_reset_request {};                 // port-level escalation (vconn timeout)
-struct unsupported {};                        // answered with Not_Supported from Ready
-struct chunked_message {};                    // a chunked extended message arrived
+struct send_vconn_ps_rdy {};  // the vconn machine turned the switch on
+struct hard_reset_request {}; // port-level escalation (vconn timeout)
+struct unsupported {};        // answered with Not_Supported from Ready
+struct chunked_message {};    // a chunked extended message arrived
 struct hard_reset_complete {};
 struct hard_reset_received {};
 // The capability lists live with the engine facade, so their messages
@@ -1020,51 +1020,6 @@ struct explicit_contract_holds {
     static bool check(auto const& state) { return state.negotiation.explicit_contract; }
 };
 
-// --- the power side's observers -----------------------------------------------
-//
-// The member observers behind SinkPower / SourcePower (POWER is that
-// CRTP class), injected together as one fsm::ObserverGroup
-
-// Stores the contract terms the Ready state reports; the power side
-// acts on them when the power annotation edge fires
-template<typename POWER>
-struct contract_store : fsm::observing<contract_store<POWER>> {
-    explicit contract_store(POWER& power_ref) : power(power_ref) {}
-
-    // the derived class's interface is checked once the machine is
-    // built - the CRTP class is complete by then
-    template<typename TABLE>
-    static constexpr void validate()
-    {
-        POWER::validateClient();
-    }
-
-    void notifyEntry(active_contract contract) { power.contract_ = contract; }
-
-    POWER& power;
-};
-
-// The power effects, delivered from the states' annotation sets by
-// overload: every root state carries the spec's power level, the
-// stored contract is applied exactly when the level changes to
-// Explicit Contract (bounces between Ready and its service states are
-// suppressed as unchanged), and vSafe5V defaults are restored on the
-// states carrying the restore action
-template<typename POWER>
-struct power_effects : fsm::observing<power_effects<POWER>> {
-    explicit power_effects(POWER& power_ref) : power(power_ref) {}
-
-    void notifyEntry(power_level level)
-    {
-        if (level == power_level::explicit_contract) {
-            power.applyContract();
-        }
-    }
-    void notifyEntry(restore_default_action) { power.restoreDefaults(); }
-
-    POWER& power;
-};
-
 // --- the engine base ----------------------------------------------------------
 
 // What both engine facades run alike, behind the role-specific
@@ -1222,16 +1177,20 @@ protected:
         case control_message_type::wait: derived().sm_.process(event::wait{}); break;
         case control_message_type::ps_rdy: derived().sm_.process(event::ps_rdy{}); break;
         case control_message_type::dr_swap:
-            derived().sm_.process(event::dr_swap_received{
-                .refusal = refusal<dr_swap_capable>,
-                .to_take = otherDataRole(dataRole()),
-            });
+            derived().sm_.process(
+                event::dr_swap_received{
+                    .refusal = refusal<dr_swap_capable>,
+                    .to_take = otherDataRole(dataRole()),
+                }
+            );
             break;
         case control_message_type::pr_swap:
-            derived().sm_.process(event::pr_swap_received{
-                .refusal = refusal<pr_swap_capable>,
-                .to_take = otherPowerRole(ROLE),
-            });
+            derived().sm_.process(
+                event::pr_swap_received{
+                    .refusal = refusal<pr_swap_capable>,
+                    .to_take = otherPowerRole(ROLE),
+                }
+            );
             break;
         case control_message_type::vconn_swap:
             derived().sm_.process(event::vconn_swap_received{.refusal = refusal<vconn_capable>});

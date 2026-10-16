@@ -987,22 +987,12 @@ struct pe_source_table : source_transitions {};
 // The supply itself is engine-owned; this observer only reports, with
 // onContractLost() fired only when a contract was actually in place
 template<typename DERIVED>
-class SourcePower : public fsm::ObserverGroup<
-                        pe::contract_store<SourcePower<DERIVED>>,
-                        pe::power_effects<SourcePower<DERIVED>>> {
+class SourcePower : public fsm::observing<SourcePower<DERIVED>> {
 public:
-    // store before the effects: the contract terms must be fresh when
-    // the power annotation edge fires on the same entry
-    SourcePower()
-        : fsm::ObserverGroup<pe::contract_store<SourcePower>, pe::power_effects<SourcePower>>(
-              store_,
-              effects_
-          )
-    {
-    }
-
-    // checked once the machine is built, when DERIVED is complete
-    static constexpr void validateClient()
+    // the derived class's interface is checked once the machine is
+    // built - the CRTP class is complete by then
+    template<typename TABLE>
+    static constexpr void validate()
     {
         static_assert(
             concepts::source_power_client<DERIVED>,
@@ -1011,16 +1001,33 @@ public:
         );
     }
 
-private:
-    friend pe::contract_store<SourcePower>;
-    friend pe::power_effects<SourcePower>;
+    // every root state carries the level; its edge to Explicit
+    // Contract arrives before the entry's contract terms (an instance
+    // value) and marks the report pending for them
+    void notifyEntry(pe::power_level level)
+    {
+        apply_pending_ = level == pe::power_level::explicit_contract;
+    }
 
+    // delivered on every entry of Ready: the body stays out of the
+    // many edges leading there
+    void notifyEntry(pe::active_contract contract)
+    {
+        if (apply_pending_) {
+            applyContract(contract);
+        }
+    }
+
+    void notifyEntry(pe::restore_default_action) { restoreDefaults(); }
+
+private:
     DERIVED& derived() { return static_cast<DERIVED&>(*this); }
 
-    void applyContract()
+    void applyContract(pe::active_contract contract)
     {
+        apply_pending_ = false;
         contract_active_ = true;
-        derived().onContract(contract_.voltage, contract_.current);
+        derived().onContract(contract.voltage, contract.current);
     }
 
     void restoreDefaults()
@@ -1031,9 +1038,7 @@ private:
         }
     }
 
-    pe::contract_store<SourcePower> store_{*this};
-    pe::power_effects<SourcePower> effects_{*this};
-    pe::active_contract contract_{};
+    bool apply_pending_ = false;
     bool contract_active_ = false;
 };
 

@@ -895,18 +895,6 @@ struct pe_sink_table : sink_transitions {};
 // The table checks (timeout bounds, reachability, both variants)
 // live in test/compliance.cpp - one dedicated TU pays for them
 
-// The sink's third power observer next to the shared contract_store
-// and power_effects: the standby limit applied during the transition
-// (PE_SNK_Transition_Sink draws iSnkStdby until PS_RDY)
-template<typename POWER>
-struct standby_driver : fsm::observing<standby_driver<POWER>> {
-    explicit standby_driver(POWER& power_ref) : power(power_ref) {}
-
-    void notifyEntry(standby_limit limit) { power.derived().setLimit(limit.voltage, i_snk_stdby); }
-
-    POWER& power;
-};
-
 } // namespace pe
 
 // The power side of the sink policy engine, injectable into it as one
@@ -917,29 +905,23 @@ struct standby_driver : fsm::observing<standby_driver<POWER>> {
 //   void onContract(millivolt, milliamp); // explicit contract in place
 //   void onContractLost();                // back to default power
 //
-// The spec-compliant sequencing lives here: iSnkStdby during the sink
-// transition, the contract applied when the diagram's Power column
-// changes to Explicit Contract, vSafe5V defaults restored on the
-// states carrying a restore action - with onContractLost() fired only
-// when a contract was actually in place
+// The spec-compliant sequencing lives here, delivered from the
+// states' annotations by overload: iSnkStdby during the sink
+// transition (the standby_limit element), the contract applied when
+// the diagram's Power column changes to Explicit Contract - every
+// root state carries the level, so a bounce between Ready and its
+// service states is suppressed as unchanged; the level edge arrives
+// before the entry's contract terms (an instance value) and marks
+// the application pending for them - and vSafe5V defaults restored
+// on the states carrying the restore action, with onContractLost()
+// fired only when a contract was actually in place
 template<typename DERIVED>
-class SinkPower : public fsm::ObserverGroup<
-                      pe::contract_store<SinkPower<DERIVED>>,
-                      pe::standby_driver<SinkPower<DERIVED>>,
-                      pe::power_effects<SinkPower<DERIVED>>> {
+class SinkPower : public fsm::observing<SinkPower<DERIVED>> {
 public:
-    // store before the effects: the contract terms must be fresh when
-    // the power annotation edge fires on the same entry
-    SinkPower()
-        : fsm::ObserverGroup<
-              pe::contract_store<SinkPower>,
-              pe::standby_driver<SinkPower>,
-              pe::power_effects<SinkPower>>(store_, standby_, effects_)
-    {
-    }
-
-    // checked once the machine is built, when DERIVED is complete
-    static constexpr void validateClient()
+    // the derived class's interface is checked once the machine is
+    // built - the CRTP class is complete by then
+    template<typename TABLE>
+    static constexpr void validate()
     {
         static_assert(
             concepts::sink_power_client<DERIVED>,
@@ -948,18 +930,36 @@ public:
         );
     }
 
-private:
-    friend pe::contract_store<SinkPower>;
-    friend pe::standby_driver<SinkPower>;
-    friend pe::power_effects<SinkPower>;
+    void notifyEntry(pe::power_level level)
+    {
+        apply_pending_ = level == pe::power_level::explicit_contract;
+    }
 
+    // delivered on every entry of Ready: the body stays out of the
+    // many edges leading there
+    void notifyEntry(pe::active_contract contract)
+    {
+        if (apply_pending_) {
+            applyContract(contract);
+        }
+    }
+
+    void notifyEntry(pe::standby_limit limit)
+    {
+        derived().setLimit(limit.voltage, pe::i_snk_stdby);
+    }
+
+    void notifyEntry(pe::restore_default_action) { restoreDefaults(); }
+
+private:
     DERIVED& derived() { return static_cast<DERIVED&>(*this); }
 
-    void applyContract()
+    void applyContract(pe::active_contract contract)
     {
+        apply_pending_ = false;
         contract_active_ = true;
-        derived().setLimit(contract_.voltage, contract_.current);
-        derived().onContract(contract_.voltage, contract_.current);
+        derived().setLimit(contract.voltage, contract.current);
+        derived().onContract(contract.voltage, contract.current);
     }
 
     void restoreDefaults()
@@ -971,10 +971,7 @@ private:
         }
     }
 
-    pe::contract_store<SinkPower> store_{*this};
-    pe::standby_driver<SinkPower> standby_{*this};
-    pe::power_effects<SinkPower> effects_{*this};
-    pe::active_contract contract_{};
+    bool apply_pending_ = false;
     bool contract_active_ = false;
 };
 
