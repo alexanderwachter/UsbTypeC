@@ -47,7 +47,7 @@ struct manual_timer {
 static_assert(fsm::concepts::timer<manual_timer>);
 
 // --- application test doubles ------------------------------------------------
-struct mock_supply {
+struct mock_supply : usbc::SourceSupply<mock_supply> {
     usbc::supply_ready_callback callback = nullptr;
     void* context = nullptr;
     usbc::millivolt voltage = 5000;

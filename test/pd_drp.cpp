@@ -61,7 +61,7 @@ struct mock_sink_power : usbc::SinkPower<mock_sink_power> {
     void onContractLost() {}
 };
 
-struct mock_supply {
+struct mock_supply : usbc::SourceSupply<mock_supply> {
     usbc::supply_ready_callback callback = nullptr;
     void* context = nullptr;
     usbc::millivolt voltage = 5000;

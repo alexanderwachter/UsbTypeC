@@ -44,7 +44,7 @@ constexpr std::array source_caps{
 // Log-only supply: reports the target settled from the stack's work
 // queue (never synchronously - the engine is mid-transition when
 // setOutput() runs)
-struct Supply {
+struct Supply : usbc::SourceSupply<Supply> {
     k_work work{};
     usbc::supply_ready_callback callback = nullptr;
     void* context = nullptr;

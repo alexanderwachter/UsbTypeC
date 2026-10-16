@@ -38,9 +38,10 @@
  * annotations, the pd_message they publish through values()); the
  * application injects its own observers - derive
  * from SourcePower (CRTP) and implement onContract/onContractLost.
- * The source_supply is engine-owned like the TCPC: states report the
- * supply target, the engine applies it and feeds the settled callback
- * back as an event. Feed TCPC alerts into onAlert() and the Type-C
+ * The supply derives from SourceSupply (CRTP, implement setOutput):
+ * injected into the machine, it applies the operating points the
+ * states annotate, and the engine feeds its settled callback back as
+ * an event. Feed TCPC alerts into onAlert() and the Type-C
  * source layer's attach/detach into attached() and detached().
  * Everything runs in the stack's serialized context; observer
  * callbacks may originate from the timer context (mtl timer contract).
@@ -70,13 +71,6 @@
 #include <type_traits>
 
 namespace usbc {
-
-// A policy's answer: the operating point the supply must deliver
-struct supply_target {
-    millivolt voltage = pe::v_safe_5v;
-    milliamp current = pe::i_default_current;
-    constexpr bool operator==(supply_target const&) const = default;
-};
 
 namespace concepts {
 
@@ -1084,7 +1078,8 @@ public:
         OBSERVERs&... observers
     )
         : base(tcpc, prl_timer, pe_timer, swap_timer, observers...), policy_(policy),
-          supply_(supply), sm_(this->timed_, this->prl_, action_driver_, policy_, observers...)
+          supply_(supply),
+          sm_(this->timed_, this->prl_, action_driver_, supply_, policy_, observers...)
     {
         this->source_capabilities_ = capabilities;
         supply_.setReadyCallback(
@@ -1163,11 +1158,10 @@ public:
 private:
     // Executes the states' engine-directed annotations, delivered
     // from their sets by overload: the Source_Capabilities
-    // transmission, the PD3 collision-avoidance Rp (only meaningful
-    // under an explicit contract with a PD3 partner - elsewhere the
-    // configured advertisement stands), and the supply's vSafe5V
-    // restore; the settle states' target arrives through the
-    // nonstatic observation
+    // transmission and the PD3 collision-avoidance Rp (only
+    // meaningful under an explicit contract with a PD3 partner -
+    // elsewhere the configured advertisement stands); the supply's
+    // operating points reach the injected SourceSupply directly
     struct ActionDriver : fsm::observing<ActionDriver> {
         explicit ActionDriver(SourcePolicyEngine& engine_ref) : engine(engine_ref) {}
 
@@ -1182,15 +1176,6 @@ private:
                 cc_pull::rp,
                 tx == pe::sink_tx::ok ? rp_value::p_3a0 : rp_value::p_1a5
             );
-        }
-        void notifyEntry(pe::restore_default_action)
-        {
-            engine.supply_.setOutput(pe::v_safe_5v, pe::i_default_current);
-        }
-
-        void notifyEntry(supply_target target)
-        {
-            engine.supply_.setOutput(target.voltage, target.current);
         }
 
         SourcePolicyEngine& engine;
@@ -1264,6 +1249,7 @@ private:
         typename base::timeouts,
         ProtocolLayer<TCPC, TIMER, OBSERVERs...>,
         ActionDriver,
+        SUPPLY,
         POLICY,
         OBSERVERs...>
         sm_;

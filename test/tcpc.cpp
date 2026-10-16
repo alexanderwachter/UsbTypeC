@@ -22,7 +22,7 @@ namespace {
 // mock_vbus moved to mocks.hpp, shared with the Type-C layer tests
 
 // --- mock source power supply -----------------------------------------------
-struct mock_supply {
+struct mock_supply : usbc::SourceSupply<mock_supply> {
     usbc::supply_ready_callback callback = nullptr;
     void* context = nullptr;
     usbc::millivolt target_mv = 5000;
@@ -125,7 +125,7 @@ static_assert(!usbc::concepts::sink_load<current_only>);
 struct voltage_only : mock_supply {
     bool setOutput(usbc::millivolt) { return true; }
 };
-static_assert(!usbc::concepts::source_supply<voltage_only>);
+static_assert(!usbc::concepts::source_supply_client<voltage_only>);
 
 // a driver written against the inheritance facade satisfies the
 // concepts by construction, through the derived and the base type
@@ -180,7 +180,7 @@ bool startSink(TCPC& tcpc, VBUS& vbus)
            tcpc.setReceiveDetect(usbc::receive_detect::sop | usbc::receive_detect::hard_reset);
 }
 
-template<usbc::concepts::source_supply SUPPLY>
+template<usbc::concepts::source_supply_client SUPPLY>
 bool requestOutput(SUPPLY& supply, usbc::millivolt voltage, usbc::milliamp current_limit)
 {
     return supply.setOutput(voltage, current_limit);

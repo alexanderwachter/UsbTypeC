@@ -67,7 +67,7 @@ struct Power : usbc::SinkPower<Power> {
 // switch. The settled report comes from the stack's work queue, never
 // synchronously - the engine is mid-transition when setOutput() runs
 // (no output-voltage feedback on this board, as in Zephyr's sample)
-struct Supply {
+struct Supply : usbc::SourceSupply<Supply> {
     // duty cycles measured for the eval board's DCDC (50 us period)
     static constexpr uint32_t pulseFor(usbc::millivolt voltage)
     {
