@@ -43,6 +43,7 @@ workspace at `modules/lib/mtl` by `west update`.
 | `include/` | Public headers (`include/usbc/...`) |
 | `src/` | Library sources |
 | `test/` | Host-side unit tests for the state machines |
+| `boards/shields/` | Zephyr shields for Type-C expansion boards (`x_nucleo_usbpdm1`) |
 | `zephyr/` | Zephyr module definition (`module.yml`, Kconfig, CMake glue) |
 
 ## Building

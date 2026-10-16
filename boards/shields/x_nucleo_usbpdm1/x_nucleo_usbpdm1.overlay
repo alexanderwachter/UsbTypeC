@@ -1,0 +1,42 @@
+/*
+ * Copyright (c) 2026 Alexander Wachter
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * X-NUCLEO-USBPDM1: USB Type-C Power Delivery sink expansion board
+ * with TCPP01-M12 port protection, on the Nucleo-64 connectors.
+ *
+ *   VBUS  Arduino A3, through 200 k (upper) / 40.2 k (lower)
+ *   CC1   Arduino D10 (ST morpho CN10 pin 17)
+ *   CC2   Arduino D5  (ST morpho CN10 pin 27)
+ *   D+    ST morpho CN10 pin 12
+ *   D-    ST morpho CN10 pin 14
+ *
+ * The CC and USB data lines are the MCU's UCPD and USB alternate
+ * functions: the board overlay next to this file routes them.
+ */
+
+/ {
+	aliases {
+		usbc-port0 = &x_nucleo_usbpdm1_port;
+	};
+
+	x_nucleo_usbpdm1_vbus: vbus-x-nucleo-usbpdm1 {
+		compatible = "zephyr,usb-c-vbus-adc";
+		io-channels = <&arduino_adc 3>;
+		output-ohms = <40200>;
+		full-ohms = <(200000 + 40200)>;
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		x_nucleo_usbpdm1_port: usbc-port@0 {
+			compatible = "usb-c-connector";
+			reg = <0>;
+			vbus = <&x_nucleo_usbpdm1_vbus>;
+			power-role = "sink";
+		};
+	};
+};

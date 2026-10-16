@@ -1,0 +1,7 @@
+shield:
+  name: x_nucleo_usbpdm1
+  full_name: X-NUCLEO-USBPDM1
+  vendor: st
+  supported_features:
+    - usb-c
+    - usb-device

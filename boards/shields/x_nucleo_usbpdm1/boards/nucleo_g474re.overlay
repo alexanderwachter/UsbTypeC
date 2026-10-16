@@ -1,0 +1,91 @@
+/*
+ * Copyright (c) 2026 Alexander Wachter
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * X-NUCLEO-USBPDM1 on the NUCLEO-G474RE.
+ *
+ *   CC1   D10 / CN10 pin 17  PB6   UCPD1_CC1
+ *   CC2   D5  / CN10 pin 27  PB4   UCPD1_CC2
+ *   D+    CN10 pin 12        PA12  USB_DP
+ *   D-    CN10 pin 14        PA11  USB_DM
+ *   VBUS  A3                 PB0   ADC1_IN15
+ */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+
+/ {
+	/* The board does not describe its Arduino analog header yet. */
+	arduino_adc: analog-connector {
+		compatible = "arduino,uno-adc";
+		#io-channel-cells = <1>;
+		io-channel-map = <0 &adc1 1>,	/* A0 = PA0 = ADC1_IN1 */
+				 <1 &adc1 2>,	/* A1 = PA1 = ADC1_IN2 */
+				 <2 &adc2 17>,	/* A2 = PA4 = ADC2_IN17 */
+				 <3 &adc1 15>,	/* A3 = PB0 = ADC1_IN15 */
+				 <4 &adc1 7>,	/* A4 = PC1 = ADC1_IN7 */
+				 <5 &adc1 6>;	/* A5 = PC0 = ADC1_IN6 */
+	};
+};
+
+&x_nucleo_usbpdm1_port {
+	tcpc = <&ucpd1>;
+};
+
+&adc1 {
+	pinctrl-0 = <&adc1_in1_pa0 &adc1_in15_pb0>;
+
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/*
+	 * The divider feeds the ADC from 33 kOhm; the default (shortest)
+	 * sampling time cannot charge the sampling capacitor from that and
+	 * reads near zero. The longest one, 640.5 cycles, is 15 us.
+	 */
+	channel@f {
+		reg = <15>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_MAX>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+};
+
+&ucpd1 {
+	status = "okay";
+
+	/*
+	 * ucpd_clk is HSI at 16 MHz. The half-bit clock should be about
+	 * 600 kHz: 16 MHz / 27 = 592.6 kHz, giving tTransitionWindow
+	 * 8 x 1.687 us = 13.5 us and tInterFrameGap 17 x 1.687 us = 28.7 us.
+	 */
+	psc-ucpdclk = <1>;
+	hbitclkdiv = <27>;
+	pinctrl-0 = <&ucpd1_cc1_pb6 &ucpd1_cc2_pb4>;
+	pinctrl-names = "default";
+};
+
+/* No dead-battery property: the TCPP01-M12 presents the Rd itself. */
+
+zephyr_udc0: &usb {
+	pinctrl-0 = <&usb_dm_pa11 &usb_dp_pa12>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/* PA11 / PA12 carry the shield's USB data lines. */
+&fdcan1 {
+	status = "disabled";
+};
+
+/* PB6 (D10) is CC1: the board's SPI chip select. */
+&spi1 {
+	status = "disabled";
+};
+
+/* PB4 (D5) is CC2: the board's PWM output. */
+&pwm3 {
+	status = "disabled";
+};
