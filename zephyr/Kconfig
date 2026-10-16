@@ -26,9 +26,12 @@ config USB_TYPEC_STACK_THREAD_PRIORITY
 
 config USB_TYPEC_STACK_STACK_SIZE
 	int "USB Type-C stack thread stack size"
-	default 1024
+	default 2048
 	help
-	  Stack size of the stack's work queue thread.
+	  Stack size of the stack's work queue thread. A PD port's deepest
+	  path (a Source_Capabilities message through the engine's
+	  evaluation and the Request it sends) overflows 1024 bytes once
+	  the samples' observers log.
 
 module = USB_TYPEC_STACK
 module-str = USB Type-C stack

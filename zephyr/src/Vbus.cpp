@@ -57,8 +57,16 @@ bool Vbus::monitor(vbus_level level)
     }
     level_ = toZephyr(level);
     report_pending_ = true; // contract: report the current state once known
+    LOG_DBG("VBUS %d mV, watching level %d", measured(), level_);
     schedule(K_NO_WAIT);
     return true;
+}
+
+int Vbus::measured()
+{
+    int millivolts = -1;
+    usbc_vbus_measure(dev_, &millivolts);
+    return millivolts;
 }
 
 bool Vbus::meets(vbus_level level)
@@ -82,6 +90,7 @@ void Vbus::poll(k_work* work)
 
     bool const met = usbc_vbus_check_level(self->dev_, self->level_);
     if ((self->report_pending_ || met != self->met_) && self->callback_ != nullptr) {
+        LOG_DBG("VBUS %d mV, level %d %s", self->measured(), self->level_, met ? "met" : "not met");
         self->report_pending_ = false;
         self->met_ = met;
         self->callback_(self->context_, met);

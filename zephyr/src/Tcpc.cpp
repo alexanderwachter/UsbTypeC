@@ -150,22 +150,26 @@ bool Tcpc::setPlugOrientation(plug_orientation orientation)
     return ret == 0;
 }
 
+// A TCPC without the switch (ENOSYS) has nothing to drive: the power
+// path is the board's own, as with a port protector's gate
 bool Tcpc::sourceVbus(bool enable)
 {
     int const ret = tcpc_set_src_ctrl(dev_, enable);
-    if (ret != 0) {
+    if (ret != 0 && ret != -ENOSYS) {
         LOG_ERR("switching source VBUS %s failed (%d)", enable ? "on" : "off", ret);
+        return false;
     }
-    return ret == 0;
+    return true;
 }
 
 bool Tcpc::sinkVbus(bool enable)
 {
     int const ret = tcpc_set_snk_ctrl(dev_, enable);
-    if (ret != 0) {
+    if (ret != 0 && ret != -ENOSYS) {
         LOG_ERR("switching sink VBUS %s failed (%d)", enable ? "on" : "off", ret);
+        return false;
     }
-    return ret == 0;
+    return true;
 }
 
 bool Tcpc::setVconn(bool enable)

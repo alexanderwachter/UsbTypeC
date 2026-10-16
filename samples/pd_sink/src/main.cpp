@@ -17,6 +17,8 @@
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
 
+#include <mtl/zephyr/TraceLogger.hpp>
+
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -59,13 +61,17 @@ struct AttachLogger : fsm::observing<AttachLogger> {
     void notifyExit(usbc::tc::attach_info) { LOG_INF("detached"); }
 };
 
+// The TraceLogger traces every machine of the port - connection,
+// engine, protocol layer (module mtl_fsm, info level, behind
+// CONFIG_MTL_FSM_TRACE)
 using Port = usbc::PdSink<
     usbc::zephyr::Tcpc,
     usbc::zephyr::Vbus,
     usbc::zephyr::Timer,
     usbc::PowerPolicy,
     Power,
-    AttachLogger>;
+    AttachLogger,
+    mtl::zephyr::TraceLogger>;
 
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
@@ -74,7 +80,8 @@ usbc::pd_sink_timers<usbc::zephyr::Timer> timers;
 usbc::PowerPolicy policy{5000, 27000}; // at least 5 W, aim for 27 W
 Power power;
 AttachLogger attach_logger;
-Port port{tcpc, vbus, timers, sink_capabilities, policy, power, attach_logger};
+mtl::zephyr::TraceLogger state_logger;
+Port port{tcpc, vbus, timers, sink_capabilities, policy, power, attach_logger, state_logger};
 
 } // namespace
 
