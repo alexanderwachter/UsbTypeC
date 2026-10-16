@@ -24,6 +24,12 @@ constexpr data_role otherDataRole(data_role role)
     return role == data_role::ufp ? data_role::dfp : data_role::ufp;
 }
 
+// A PR_Swap flips the power role: the one a port would take
+constexpr power_role otherPowerRole(power_role role)
+{
+    return role == power_role::sink ? power_role::source : power_role::sink;
+}
+
 enum class pd_revision : std::uint8_t { rev_1_0 = 0, rev_2_0 = 1, rev_3_x = 2 };
 
 // Contiguous zero-based values; used as per-SOP* array index

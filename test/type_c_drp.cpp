@@ -122,45 +122,23 @@ struct fixture {
     }
 };
 
-// A swap-policy observer: consulted with the role the port would swap
-// to, arbitrating both swap kinds; it also hears the data role flips
-struct mock_swap_policy {
-    bool allow = true;
-    int consulted = 0;
-    usbc::power_role asked{};
-    usbc::data_role asked_data{};
+// An observer hearing the data role flips
+struct mock_data_role_listener {
     std::optional<usbc::data_role> data_seen{};
 
-    bool allowSwap(usbc::power_role role)
-    {
-        ++consulted;
-        asked = role;
-        return allow;
-    }
-    bool allowSwap(usbc::data_role role)
-    {
-        ++consulted;
-        asked_data = role;
-        return allow;
-    }
     void onDataRole(usbc::data_role role) { data_seen = role; }
 };
-static_assert(usbc::concepts::drp_swap_policy<mock_swap_policy, usbc::power_role>);
-static_assert(usbc::concepts::drp_swap_policy<mock_swap_policy, usbc::data_role>);
-static_assert(!usbc::concepts::drp_swap_policy<mock_drp_client, usbc::power_role>);
 
 // The role lock: answers the table's sourcing_allowed question
 struct mock_role_lock {
     bool sourcing = true;
-    bool check(usbc::tc::drp::sourcing_allowed) const { return sourcing; }
+    bool check(usbc::sourcing_allowed) const { return sourcing; }
 };
+static_assert(fsm::concepts::answers_stateless_guard<mock_role_lock, usbc::sourcing_allowed>);
 static_assert(
-    fsm::concepts::answers_stateless_guard<mock_role_lock, usbc::tc::drp::sourcing_allowed>
+    !fsm::concepts::answers_stateless_guard<mock_data_role_listener, usbc::sourcing_allowed>
 );
-static_assert(
-    !fsm::concepts::answers_stateless_guard<mock_swap_policy, usbc::tc::drp::sourcing_allowed>
-);
-static_assert(usbc::tc::drp::sourcing_allowed::check()); // the default without a lock
+static_assert(usbc::sourcing_allowed::check()); // the default without a lock
 
 } // namespace
 
@@ -577,7 +555,7 @@ int typeCDrpSwapTests()
 {
     constexpr auto& timing = usbc::default_drp_timing;
 
-    // no swap-policy observer injected: swaps are refused
+    // not attached: nothing to swap; a sink attaches as UFP
     {
         using drp = usbc::TypeCDrp<
             mock_tcpc,
@@ -589,18 +567,18 @@ int typeCDrpSwapTests()
         fixture f;
         drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client};
         tc.start();
+        check(!tc.beginSwapToSource() && !tc.beginSwapToSink());
+        check(!tc.swapDataRole());
         f.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
         f.ccAlert();
         f.vbus.setVoltage(5000);
         f.timer.expire();
-        check(f.tcpc.sinking);
-        check(!tc.beginSwapToSource());
-        check(!tc.swapDataRole());
         check(f.tcpc.sinking && !f.tcpc.sourcing);
         check(tc.dataRole() == usbc::data_role::ufp); // a sink attaches as UFP
+        check(!tc.beginSwapToSink());                 // not the departing role
     }
 
-    // a policy observer arbitrates: swap both ways, veto respected
+    // the agreed swaps, both ways (the arbitration is the PD layer's)
     {
         using drp = usbc::TypeCDrp<
             mock_tcpc,
@@ -609,15 +587,15 @@ int typeCDrpSwapTests()
             timing,
             usbc::drp_preference::none,
             mock_drp_client,
-            mock_swap_policy>;
+            mock_data_role_listener>;
         fixture f;
-        mock_swap_policy policy;
-        drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client, policy};
+        mock_data_role_listener listener;
+        drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client, listener};
         tc.start();
 
-        // not attached: refused without consulting the policy, and
-        // there is no standby to complete or abort
-        check(!tc.beginSwapToSource() && policy.consulted == 0);
+        // not attached: refused, and there is no standby to complete
+        // or abort
+        check(!tc.beginSwapToSource());
         check(!tc.completeSwap() && !tc.abortSwap());
 
         // attach as sink on CC2
@@ -628,20 +606,12 @@ int typeCDrpSwapTests()
         check(f.tcpc.sinking && f.client.attached_snk == 1);
         check(f.client.orientation == usbc::plug_orientation::cc2);
 
-        // vetoed: nothing changes
-        policy.allow = false;
-        check(!tc.beginSwapToSource());
-        check(policy.consulted == 1 && policy.asked == usbc::power_role::source);
-        check(f.tcpc.sinking && !f.tcpc.sourcing);
-
         // data role swap: only the context's data role flips, forwarded
         // to the observers - no attach/detach seen
-        policy.allow = true;
         check(tc.dataRole() == usbc::data_role::ufp);
         check(tc.swapDataRole());
-        check(policy.asked_data == usbc::data_role::dfp);
         check(tc.dataRole() == usbc::data_role::dfp);
-        check(policy.data_seen == usbc::data_role::dfp);
+        check(listener.data_seen == usbc::data_role::dfp);
         check(f.tcpc.sinking && f.client.detached == 0);
 
         // allowed: standby with the power paths off, Rd presented, the
@@ -666,7 +636,6 @@ int typeCDrpSwapTests()
 
         // and back: standby waits for the new source's PS_RDY
         check(tc.beginSwapToSink());
-        check(policy.asked == usbc::power_role::sink);
         check(!f.tcpc.sourcing && f.tcpc.pull == usbc::cc_pull::rd);
         check(f.timer.armed && f.timer.duration == usbc::tc::drp::t_ps_source_on);
         f.vbus.setVoltage(0); // bus decays until the new source takes over
@@ -794,9 +763,9 @@ int typeCDrpRoleLockTests()
         check(!f.timer.armed);
     }
 
-    // locked: a swap to source is vetoed before any policy is asked; a
-    // swap to sink is not the lock's business, nor is a running
-    // source contract
+    // the lock's answer, as the PD layer reads it before requesting a
+    // swap to source; an agreed swap executes regardless, and a lock
+    // engaged while sourcing leaves the role standing
     {
         using drp = usbc::TypeCDrp<
             mock_tcpc,
@@ -805,12 +774,10 @@ int typeCDrpRoleLockTests()
             timing,
             usbc::drp_preference::none,
             mock_drp_client,
-            mock_swap_policy,
             mock_role_lock>;
         fixture f;
-        mock_swap_policy policy;
         mock_role_lock lock;
-        drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client, policy, lock};
+        drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client, lock};
         tc.start();
         f.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
         f.ccAlert();
@@ -819,20 +786,17 @@ int typeCDrpRoleLockTests()
         check(f.tcpc.sinking);
 
         lock.sourcing = false;
-        check(!tc.swapAllowed(usbc::power_role::source));
-        check(!tc.beginSwapToSource() && policy.consulted == 0);
-        check(tc.swapAllowed(usbc::power_role::sink) && policy.consulted == 1);
-        check(f.tcpc.sinking && !f.tcpc.sourcing);
-
+        check(!tc.sourcingAllowed());
         lock.sourcing = true;
-        check(tc.beginSwapToSource() && policy.consulted == 2);
+        check(tc.sourcingAllowed());
+        check(tc.beginSwapToSource());
         check(tc.completeSwap());
         check(f.tcpc.sourcing && f.client.attached_src == 1);
         f.vbus.setVoltage(5000);
 
         lock.sourcing = false; // engaged while sourcing: the role stands
         check(f.tcpc.sourcing);
-        check(tc.beginSwapToSink() && policy.consulted == 3);
+        check(tc.beginSwapToSink());
     }
 
     return failures;

@@ -9,10 +9,9 @@
  * Role swaps are PD-negotiated (PR_Swap/DR_Swap): swapPowerRole() and
  * swapDataRole() send the request through the active engine, and the
  * partner's requests are the engine tables' questions
- * (pe::pr_swap_allowed and kin): the role swaps answered by this
- * class's policy proxies from the injected observers' allowSwap
- * hooks, the VCONN one by the enabling observer itself, and a holder
- * of the VCONN Source role accepts (pe::vconn_source_role_held,
+ * (pe::pr_swap_allowed and kin), answered by the injected observers
+ * themselves - every observer reaches every machine of the port - and
+ * a holder of the VCONN Source role accepts (pe::vconn_source_role_held,
  * answered here from the vconn machine). The engines
  * run the message choreography (Accept,
  * Transition_to_off, the PS_RDY exchange); this class watches their
@@ -31,14 +30,16 @@
  * machine of the port - connection, both engines and their protocol
  * layers, vconn.
  *
- * PR_Swap, DR_Swap and VCONN are optional features, enabled by tag:
- * an injected observer declaring `using enables = pe::..._feature;`
- * (or an mtl::typelist of tags) switches the feature on and becomes
- * its arbitration voice - it must satisfy the feature's contract
- * (allowSwap(power_role/data_role); the VCONN enabler is also the
- * switch-hardware connector, concepts::vconn_port). Without an
- * enabler the feature's engine states are filtered from the tables
- * and the partner's requests are answered Not_Supported/Reject.
+ * PR_Swap, DR_Swap and VCONN are optional features, enabled by
+ * answering: an injected observer answering the engines' question
+ * (bool check(pe::pr_swap_allowed), dr_swap_allowed,
+ * vconn_swap_allowed - with the request's role to take where it
+ * matters) brings the feature's states in and is its arbitration
+ * voice; the VCONN answerer is also the switch-hardware connector
+ * (concepts::vconn_port). Without an answerer the feature's engine
+ * states are filtered from the tables and the partner's requests are
+ * answered Not_Supported. A swap to source also passes the role lock
+ * (usbc::sourcing_allowed) on the sink engine's row.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -107,25 +108,24 @@ public:
         rp_value advertisement,
         OBSERVERs&... observers
     )
-        : sink_policy_{sink_policy, *this}, source_policy_{source_policy, *this}, watch_{*this},
-          sink_engine_(
-              tcpc,
-              timers.sink_prl,
-              timers.sink_pe,
-              timers.sink_swap,
-              sink_capabilities,
-              sink_policy_,
-              sink_power,
-              watch_,
-              observers...
-          ),
+        : watch_{*this}, sink_engine_(
+                             tcpc,
+                             timers.sink_prl,
+                             timers.sink_pe,
+                             timers.sink_swap,
+                             sink_capabilities,
+                             sink_policy,
+                             sink_power,
+                             watch_,
+                             observers...
+                         ),
           source_engine_(
               tcpc,
               timers.source_prl,
               timers.source_pe,
               timers.source_swap,
               source_capabilities,
-              source_policy_,
+              source_policy,
               supply,
               source_power,
               watch_,
@@ -174,28 +174,37 @@ public:
     // Go live: toggle Rd/Rp and resolve the roles with the partner
     void start() { drp_.start(); }
 
-    // Sends a PR_Swap to the partner; the engines run the message
-    // exchange and the VBUS hand-off from there. False when not
-    // attached with an explicit contract, a swap is already running,
-    // or an injected observer vetoes
+    // Sends a PR_Swap to the partner: the application's decision (the
+    // partner's request is the injected policy's, check(pe::
+    // pr_swap_allowed)); the engines run the message exchange and the
+    // VBUS hand-off from there. False when not attached with an
+    // explicit contract, a swap is already running, the role lock
+    // refuses sourcing, or the port has no PR_Swap feature
     bool swapPowerRole()
     {
-        auto const role = drp_.powerRole();
-        if (!role) {
+        if constexpr (!pr_swap_enabled) {
             return false;
+        } else {
+            auto const role = drp_.powerRole();
+            if (!role) {
+                return false;
+            }
+            if (*role == power_role::sink) {
+                return drp_.sourcingAllowed() && sink_engine_.requestPowerSwap();
+            }
+            return source_engine_.requestPowerSwap();
         }
-        if (*role == power_role::sink) {
-            return drp_.swapAllowed(power_role::source) && sink_engine_.requestPowerSwap();
-        }
-        return drp_.swapAllowed(power_role::sink) && source_engine_.requestPowerSwap();
     }
 
-    // Sends a DR_Swap; on the partner's Accept both sides flip and the
-    // TCPC header follows
+    // Sends a DR_Swap, likewise the application's decision; on the
+    // partner's Accept both sides flip and the TCPC header follows
     bool swapDataRole()
     {
+        if constexpr (!dr_swap_enabled) {
+            return false;
+        }
         auto const role = drp_.powerRole();
-        if (!role || !dataSwapAllowed()) {
+        if (!role) {
             return false;
         }
         return *role == power_role::sink ? sink_engine_.requestDataSwap()
@@ -236,92 +245,16 @@ private:
     // alone
     static constexpr bool vconn_enabled = feature_enabled<pe::vconn_feature>;
 
-    // An enabling observer is the feature's arbitration voice (and,
-    // for VCONN, the switch-hardware connector) - hold it to the
-    // feature's contract right where the tag is honored
+    // The observer answering the VCONN question is also the switch
+    // hardware's connector - hold it to the feature's contract right
+    // where the answer is honored
     static_assert(
-        ((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::pr_swap_feature> ||
-          concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, power_role>) &&
-         ...),
-        "an observer enabling pr_swap_feature must provide "
-        "allowSwap(power_role) -> bool"
-    );
-    static_assert(
-        ((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::dr_swap_feature> ||
-          concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, data_role>) &&
-         ...),
-        "an observer enabling dr_swap_feature must provide "
-        "allowSwap(data_role) -> bool"
-    );
-    static_assert(
-        ((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::vconn_feature> ||
+        ((!fsm::observer_answers_for_v<pe::vconn_feature, std::remove_cvref_t<OBSERVERs>> ||
           concepts::vconn_port<std::remove_cvref_t<OBSERVERs>>) &&
          ...),
-        "an observer enabling vconn_feature must satisfy concepts::vconn_port "
-        "(notifyEntry(vconn::vconn_switch) + check(pe::vconn_swap_allowed))"
+        "an observer answering pe::vconn_swap_allowed must satisfy concepts::vconn_port "
+        "(notifyEntry(vconn::vconn_switch) as well)"
     );
-
-    // The user's policies extended with the answers to the engine
-    // tables' swap questions (pe::pr_swap_allowed and kin, asked on
-    // the partner's request from Ready): the verdict is the connection
-    // layer's (every enabling observer may veto), asked with the role
-    // this engine's port would take. Each answer exists only while its
-    // feature is enabled - its absence is what filters the feature's
-    // states from the engine's table
-    struct sink_policy_proxy {
-        SINK_POLICY& inner;
-        PdDrp& port;
-
-        std::optional<contract_request> select(
-            std::span<std::uint32_t const> source_capabilities,
-            std::span<sink_capability const> capabilities
-        ) const
-        {
-            return inner.select(source_capabilities, capabilities);
-        }
-        bool check(pe::pr_swap_allowed)
-            requires(pr_swap_enabled)
-        {
-            return port.drp_.swapAllowed(power_role::source); // a sink swaps to sourcing
-        }
-        bool check(pe::dr_swap_allowed)
-            requires(dr_swap_enabled)
-        {
-            return port.dataSwapAllowed();
-        }
-    };
-
-    struct source_policy_proxy {
-        SOURCE_POLICY& inner;
-        PdDrp& port;
-
-        std::optional<supply_target>
-        evaluate(std::uint32_t rdo, std::span<std::uint32_t const> capabilities) const
-        {
-            return inner.evaluate(rdo, capabilities);
-        }
-        bool check(pe::pr_swap_allowed)
-            requires(pr_swap_enabled)
-        {
-            return port.drp_.swapAllowed(power_role::sink); // a source swaps to sinking
-        }
-        bool check(pe::dr_swap_allowed)
-            requires(dr_swap_enabled)
-        {
-            return port.dataSwapAllowed();
-        }
-    };
-
-    // A data role swap is asked with the role the port would take:
-    // the opposite of the attached pair's; refused while not attached
-    bool dataSwapAllowed()
-    {
-        auto const current = drp_.dataRole();
-        if (!current) {
-            return false;
-        }
-        return drp_.swapAllowed(*current == data_role::ufp ? data_role::dfp : data_role::ufp);
-    }
 
     // Injected into both engines' machines: watches the swap states'
     // annotations, and executes the requested port actions right from
@@ -377,11 +310,11 @@ private:
     };
 
     using SinkEngine =
-        SinkPolicyEngine<TCPC, TIMER, sink_policy_proxy, SINK_POWER, swap_watch, OBSERVERs...>;
+        SinkPolicyEngine<TCPC, TIMER, SINK_POLICY, SINK_POWER, swap_watch, OBSERVERs...>;
     using SourceEngine = SourcePolicyEngine<
         TCPC,
         TIMER,
-        source_policy_proxy,
+        SOURCE_POLICY,
         SUPPLY,
         SOURCE_POWER,
         swap_watch,
@@ -558,8 +491,6 @@ private:
 
     using Drp = TypeCDrp<TCPC, VBUS, TIMER, TIMING, PREFERENCE, router, OBSERVERs...>;
 
-    sink_policy_proxy sink_policy_;
-    source_policy_proxy source_policy_;
     swap_watch watch_;
     SinkEngine sink_engine_;
     SourceEngine source_engine_;

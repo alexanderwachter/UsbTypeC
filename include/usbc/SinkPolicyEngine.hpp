@@ -65,6 +65,7 @@
 #include <usbc/Message.hpp>
 #include <usbc/Pdo.hpp>
 #include <usbc/PolicyEngine.hpp>
+#include <usbc/PortControl.hpp>
 #include <usbc/ProtocolLayer.hpp>
 #include <usbc/SinkLoad.hpp>
 #include <usbc/Tcpc.hpp>
@@ -864,7 +865,7 @@ using sink_transitions = fsm::transition_table<
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::send_pr_swap>, fsm::to<state::pe_snk_pr_swap_initiated>>,
     fsm::transition<fsm::from<state::pe_snk_pr_swap_initiated>, fsm::on<event::swap_refused>, fsm::to<state::pe_snk_ready>>,
     fsm::transition<fsm::from<state::pe_snk_pr_swap_initiated>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
-    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::pr_swap_received>, fsm::guard<pr_swap_allowed>, fsm::to<state::pe_snk_pr_swap_responded>>,
+    fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::pr_swap_received>, fsm::guard<sourcing_allowed, pr_swap_allowed>, fsm::to<state::pe_snk_pr_swap_responded>>,
     fsm::transition<fsm::from<state::pe_snk_ready>, fsm::on<event::pr_swap_received>, fsm::to<state::pe_snk_send_not_supported>>,
     fsm::transition<fsm::from<state::pe_snk_pr_swap_responded>, fsm::on<event::protocol_error>, fsm::to<state::pe_snk_send_soft_reset>>,
     // PR_Swap's other half: this port was the source and asserted Rd -

@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -49,6 +50,17 @@ struct sink_capability {
     millivolt voltage;
     milliamp current;
 };
+
+namespace concepts {
+
+// The partner's swap request as an event: carries the refusal the
+// catch-all row answers with when the table's question says no
+template<typename T>
+concept swap_request = requires(T const& request) {
+    { request.refusal } -> std::convertible_to<control_message_type>;
+};
+
+} // namespace concepts
 
 namespace pe {
 
@@ -200,14 +212,19 @@ struct soft_reset_received {}; // the entered state builds the Accept
 struct send_pr_swap {}; // our PR_Swap goes out
 struct send_dr_swap {}; // our DR_Swap goes out
 // The partner's swap request, delivered as the table's question: the
-// guarded Ready row accepts when the injected policy answers yes, the
-// catch-all sends the refusal - Reject, or Not_Supported without the
-// feature (the Accept is built by the accepting state)
-struct swap_request {
+// guarded Ready row accepts when the injected policy answers yes
+// (bool check(pe::pr_swap_allowed); the event carries the role this
+// port would take for an answer wanting it), the catch-all sends the
+// refusal: Reject, or Not_Supported without the feature (the Accept
+// is built by the accepting state)
+struct pr_swap_received {
     control_message_type refusal;
+    power_role to_take;
 };
-struct pr_swap_received : swap_request {};
-struct dr_swap_received : swap_request {};
+struct dr_swap_received {
+    control_message_type refusal;
+    data_role to_take;
+};
 struct swap_wait_source_on { // the port asserted Rd mid PR_Swap: this
     data_role role;          // engine announces the supply is off
 };
@@ -225,7 +242,9 @@ struct bist_carrier {};    // BIST Carrier Mode 2 requested (vSafe5V)
 // VCONN_Swap messaging, shared by both engine roles; the role and
 // switch choreography lives in the vconn machine (Vconn.hpp)
 struct send_vconn_swap {};                    // our VCONN_Swap goes out
-struct vconn_swap_received : swap_request {}; // the partner's VCONN_Swap
+struct vconn_swap_received { // the partner's VCONN_Swap
+    control_message_type refusal;
+};
 struct send_vconn_ps_rdy {};                  // the vconn machine turned the switch on
 struct hard_reset_request {};                 // port-level escalation (vconn timeout)
 struct unsupported {};                        // answered with Not_Supported from Ready
@@ -393,9 +412,10 @@ struct pe_send_not_supported {
     {
     }
     // a swap request the table's question refused (or nobody answers)
-    pe_send_not_supported(event::swap_request const& event, pe_connection& connection_ref)
+    template<concepts::swap_request REQUEST>
+    pe_send_not_supported(REQUEST const& request, pe_connection& connection_ref)
         : connection(connection_ref),
-          message_(makeControlMessage(event.refusal, ROLE, connection.data))
+          message_(makeControlMessage(request.refusal, ROLE, connection.data))
     {
     }
     // the chunking timeout ran out: Not_Supported as well
@@ -1082,14 +1102,16 @@ public:
     prl::message_id_state messageIds() const { return prl_.messageIds(); }
 
 protected:
-    // The optional features follow the injected policy: the machine
-    // keeps a feature's states exactly when the policy answers the
-    // feature's question (the facade's proxies answer exactly when an
-    // injected observer enables the feature by tag); the engine's own
+    // The optional features follow the injected objects: the machine
+    // keeps a feature's states exactly when the policy or an injected
+    // observer answers the feature's question; the engine's own
     // branches ask the library the same thing
-    static constexpr bool pr_swap_capable = fsm::feature_enabled_v<pr_swap_feature, POLICY>;
-    static constexpr bool dr_swap_capable = fsm::feature_enabled_v<dr_swap_feature, POLICY>;
-    static constexpr bool vconn_capable = fsm::feature_enabled_v<vconn_feature, POLICY>;
+    static constexpr bool pr_swap_capable =
+        fsm::feature_enabled_v<pr_swap_feature, POLICY, std::remove_cvref_t<OBSERVERs>...>;
+    static constexpr bool dr_swap_capable =
+        fsm::feature_enabled_v<dr_swap_feature, POLICY, std::remove_cvref_t<OBSERVERs>...>;
+    static constexpr bool vconn_capable =
+        fsm::feature_enabled_v<vconn_feature, POLICY, std::remove_cvref_t<OBSERVERs>...>;
 
     // The machine's levels: the swap exchanges are composite states,
     // the second level is theirs (its timer idles while the policy
@@ -1200,13 +1222,19 @@ protected:
         case control_message_type::wait: derived().sm_.process(event::wait{}); break;
         case control_message_type::ps_rdy: derived().sm_.process(event::ps_rdy{}); break;
         case control_message_type::dr_swap:
-            derived().sm_.process(event::dr_swap_received{{refusal<dr_swap_capable>}});
+            derived().sm_.process(event::dr_swap_received{
+                .refusal = refusal<dr_swap_capable>,
+                .to_take = otherDataRole(dataRole()),
+            });
             break;
         case control_message_type::pr_swap:
-            derived().sm_.process(event::pr_swap_received{{refusal<pr_swap_capable>}});
+            derived().sm_.process(event::pr_swap_received{
+                .refusal = refusal<pr_swap_capable>,
+                .to_take = otherPowerRole(ROLE),
+            });
             break;
         case control_message_type::vconn_swap:
-            derived().sm_.process(event::vconn_swap_received{{refusal<vconn_capable>}});
+            derived().sm_.process(event::vconn_swap_received{.refusal = refusal<vconn_capable>});
             break;
         case control_message_type::get_sink_cap: sendSinkCapabilities(); break;
         case control_message_type::soft_reset:

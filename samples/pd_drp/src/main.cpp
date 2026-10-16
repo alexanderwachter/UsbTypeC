@@ -145,14 +145,13 @@ struct VconnPolicy : fsm::observing<VconnPolicy> {
     usbc::zephyr::Tcpc& tcpc; // this board's switch sits behind the TCPC
 };
 
-// Enables PR_Swap and DR_Swap by tag and arbitrates them - this
-// board always agrees. Dropping this observer compiles both swap
-// features out and the partner's requests are answered Not_Supported
+// Answers the engines' questions on the partner's PR_Swap and
+// DR_Swap - this board always agrees; the answers are what enable
+// both features. Dropping this observer compiles them out and the
+// partner's requests are answered Not_Supported
 struct SwapPolicy : fsm::observing<SwapPolicy> {
-    using enables = mtl::typelist<usbc::pe::pr_swap_feature, usbc::pe::dr_swap_feature>;
-
-    bool allowSwap(usbc::power_role) { return true; }
-    bool allowSwap(usbc::data_role) { return true; }
+    bool check(usbc::pe::pr_swap_allowed) { return true; }
+    bool check(usbc::pe::dr_swap_allowed) { return true; }
 };
 
 // The TraceLogger traces every machine of the port - connection,

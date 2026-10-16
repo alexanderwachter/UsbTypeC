@@ -40,13 +40,12 @@
  * phase instead of resuming it (the try_expired guard).
  *
  * Role lock (port control, conformance-neutral): an injected object
- * answering bool check(tc::drp::sourcing_allowed) keeps the port
+ * answering bool check(usbc::sourcing_allowed) keeps the port
  * sink-only while it says no - the toggle stays at Rd (re-asking each
  * slice, so lifting the lock resumes toggling within one), a
  * source-preferring port attaches as sink instead of trying Rp, and
- * swaps to source are vetoed ahead of the swap policies. The
- * question's static default is yes: without such an object nothing
- * changes.
+ * the PD layer refuses swaps to source. The question's static
+ * default is yes: without such an object nothing changes.
  *
  * Deviations from the spec, accepted knowingly: TryWait.SNK attaches
  * on VBUS with a single Rp in the context rather than debouncing the
@@ -75,6 +74,7 @@
 
 #pragma once
 
+#include <usbc/PortControl.hpp>
 #include <usbc/Tcpc.hpp>
 #include <usbc/TypeC.hpp>
 #include <usbc/TypeCSink.hpp>
@@ -113,19 +113,6 @@ struct drp_timing {
 };
 
 inline constexpr drp_timing default_drp_timing{};
-
-namespace concepts {
-
-// An injected observer with the runtime say over PD-directed role
-// swaps of the given kind (power_role or data_role), consulted with
-// the role the port would swap to. Every such observer may veto; with
-// none injected, swaps of that kind are refused
-template<typename T, typename ROLE>
-concept drp_swap_policy = requires(T policy, ROLE role) {
-    { policy.allowSwap(role) } -> std::convertible_to<bool>;
-};
-
-} // namespace concepts
 
 namespace tc {
 
@@ -518,23 +505,6 @@ struct try_expired {
     static bool check(auto const& state) { return state.phase.expired; }
 };
 
-// --- the role lock -----------------------------------------------------------
-
-// May the port take the source role now? The table's question at
-// every decision towards Rp - the toggle's Rp slice, Try.SRC where a
-// source-preferring port's sink flow would attach - and the facade's
-// for a swap to source. Its static default says yes; an application
-// object injected into the port answering bool check(sourcing_allowed)
-// overrides it, and while it says no the DRP behaves as a sink: it
-// rests at Rd re-asking every slice, attaches as sink, vetoes swaps
-// to source. A phase already running completes (a lock engaged
-// mid-debounce may still resolve to Attached.SRC once), a port
-// already sourcing keeps its contract - the application requests the
-// swap. Exactly one answering object per port (mtl's rule)
-struct sourcing_allowed {
-    static constexpr bool check() { return true; }
-};
-
 // --- timer-range maps --------------------------------------------------------
 
 // Composed per preference like the flows they check; the shared attach
@@ -860,20 +830,19 @@ public:
     {
     }
 
-    // Power role swap directed by the layer above (a USB PD PR_Swap),
-    // in phases: begin enters the swap standby - power paths off, Rd
+    // Power role swap directed by the layer above (a USB PD PR_Swap
+    // both sides agreed to - the arbitration happened there), in
+    // phases: begin enters the swap standby - power paths off, Rd
     // presented, detach detection suspended while VBUS is legitimately
     // absent - completeSwap() (the partner's PS_RDY) lands in the new
     // attached state, abortSwap() restores the departing role. A
     // standby left to its spec timeout (tPSSourceOff/tPSSourceOn)
-    // falls back to the departing role on its own. Every injected
-    // observer providing allowSwap(power_role) is consulted at begin
-    // and may veto; with no such observer, swaps are refused. False
-    // when vetoed or not attached in the departing role. Call from the
-    // stack's serialized context
+    // falls back to the departing role on its own. False when not
+    // attached in the departing role. Call from the stack's serialized
+    // context
     bool beginSwapToSource()
     {
-        if (powerRole() != power_role::sink || !swapAllowed(power_role::source)) {
+        if (powerRole() != power_role::sink) {
             return false;
         }
         return sm_.process(tc::event::swap_to_source{});
@@ -881,7 +850,7 @@ public:
 
     bool beginSwapToSink()
     {
-        if (powerRole() != power_role::source || !swapAllowed(power_role::sink)) {
+        if (powerRole() != power_role::source) {
             return false;
         }
         return sm_.process(tc::event::swap_to_sink{});
@@ -895,16 +864,14 @@ public:
 
     bool abortSwap() { return hw_.in_swap_standby && sm_.process(tc::event::swap_abort{}); }
 
-    // Data role swap directed by the layer above (a USB PD DR_Swap):
-    // no termination changes, only the context's data role flips. Same
-    // arbitration, asked with the data role the port would take. The
-    // flip is an internal transition without machine hooks, so the new
-    // role is forwarded to the observers providing onDataRole(data_role)
+    // Data role swap directed by the layer above (an agreed USB PD
+    // DR_Swap): no termination changes, only the context's data role
+    // flips. The flip is an internal transition without machine hooks,
+    // so the new role is forwarded to the observers providing
+    // onDataRole(data_role). False while not attached
     bool swapDataRole()
     {
-        auto const current = dataRole();
-        if (!current ||
-            !swapAllowed(*current == data_role::ufp ? data_role::dfp : data_role::ufp)) {
+        if (!dataRole()) {
             return false;
         }
         return applyDataRoleSwap();
@@ -929,28 +896,7 @@ public:
         return true;
     }
 
-    // The arbitration alone, for a PD layer answering the partner's
-    // swap request: every injected policy observer for the role kind
-    // is consulted with the role the port would take - a swap to
-    // source first passes the role lock
-    template<typename ROLE>
-    bool swapAllowed(ROLE role)
-    {
-        if constexpr (std::is_same_v<ROLE, power_role>) {
-            if (role == power_role::source && !sourcingAllowed()) {
-                return false;
-            }
-        }
-        constexpr bool any_policy =
-            (concepts::drp_swap_policy<std::remove_cvref_t<OBSERVERs>, ROLE> || ...);
-        return any_policy &&
-               std::apply(
-                   [role](auto&... observer) { return (allowsSwap(observer, role) && ...); },
-                   observers_
-               );
-    }
-
-    // The role lock's answer (tc::drp::sourcing_allowed): the injected
+    // The role lock's answer (usbc::sourcing_allowed): the injected
     // object answering it decides, the question's static default (yes)
     // stands without one - the same resolution the machine applies
     bool sourcingAllowed()
@@ -996,16 +942,6 @@ public:
 private:
     friend tc::port_frontend<TypeCDrp, TCPC, VBUS>;
 
-    template<typename ROLE>
-    static bool allowsSwap(auto& observer, ROLE role)
-    {
-        if constexpr (concepts::drp_swap_policy<std::remove_cvref_t<decltype(observer)>, ROLE>) {
-            return observer.allowSwap(role);
-        } else {
-            return true;
-        }
-    }
-
     static void forwardDataRole(auto& observer, data_role role)
     {
         if constexpr (requires { observer.onDataRole(role); }) {
@@ -1015,10 +951,9 @@ private:
 
     static bool allowsSourcing(auto& observer)
     {
-        if constexpr (fsm::concepts::answers_stateless_guard<
-                          std::remove_cvref_t<decltype(observer)>,
-                          tc::drp::sourcing_allowed>) {
-            return observer.check(tc::drp::sourcing_allowed{});
+        if constexpr (fsm::concepts::
+                          answers_stateless_guard<std::remove_cvref_t<decltype(observer)>, sourcing_allowed>) {
+            return observer.check(sourcing_allowed{});
         } else {
             return true;
         }

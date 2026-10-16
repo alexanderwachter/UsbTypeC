@@ -101,19 +101,17 @@ struct vconn_allow : fsm::observing<vconn_allow> {
 };
 static_assert(usbc::concepts::vconn_port<vconn_allow>);
 
-// Enables both role swaps by tag and arbitrates them (a typelist
-// enabling two features with one observer)
+// Answers the engines' questions on the partner's PR_Swap and
+// DR_Swap - the answers are what enable both features
 struct swap_allow : fsm::observing<swap_allow> {
-    using enables = mtl::typelist<usbc::pe::pr_swap_feature, usbc::pe::dr_swap_feature>;
-
-    bool allowSwap(usbc::power_role) { return true; }
-    bool allowSwap(usbc::data_role) { return true; }
+    bool check(usbc::pe::pr_swap_allowed) { return true; }
+    bool check(usbc::pe::dr_swap_allowed) { return true; }
 };
 
 // The role lock: the port is sink-only while it answers no
 struct sink_lock {
     bool sourcing = true;
-    bool check(usbc::tc::drp::sourcing_allowed) const { return sourcing; }
+    bool check(usbc::sourcing_allowed) const { return sourcing; }
 };
 
 // --- partner messages --------------------------------------------------------
