@@ -139,10 +139,12 @@ struct ContractMonitor : usbc::SourcePower<ContractMonitor> {
 struct VconnPolicy : fsm::observing<VconnPolicy> {
     using enables = usbc::pe::vconn_feature;
 
-    usbc::zephyr::Tcpc* tcpc = nullptr; // wired in main()
+    explicit VconnPolicy(usbc::zephyr::Tcpc& tcpc_ref) : tcpc(tcpc_ref) {}
 
-    bool setVconn(bool on) { return tcpc->setVconn(on); }
+    void notifyEntry(usbc::vconn::vconn_switch vconn) { tcpc.setVconn(vconn.on); }
     bool allowSwap(usbc::vconn_source_role) { return true; }
+
+    usbc::zephyr::Tcpc& tcpc; // this board's switch sits behind the TCPC
 };
 
 // Enables PR_Swap and DR_Swap by tag and arbitrates them - this
@@ -205,7 +207,7 @@ Supply supply;
 ContractMonitor contract_monitor;
 mtl::zephyr::TraceLogger state_logger;
 #ifndef PD_DRP_MINIMAL
-VconnPolicy vconn_policy;
+VconnPolicy vconn_policy{tcpc};
 SwapPolicy swap_policy;
 #endif
 
@@ -294,9 +296,6 @@ int main()
         LOG_ERR("supply hardware init failed");
         return -1;
     }
-#ifndef PD_DRP_MINIMAL
-    vconn_policy.tcpc = &tcpc; // this board's switch sits behind the TCPC
-#endif
     port.start(); // leave Disabled: toggle Rd/Rp, resolve with the partner
 
     setupButton(power_button, power_button_cb, [](const device*, gpio_callback*, uint32_t) {

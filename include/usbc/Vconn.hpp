@@ -10,11 +10,13 @@
  * The role begins with the source: a source-role attach with Ra on
  * the non-CC line turns VCONN on, a sink attach leaves it off, and
  * nothing moves it afterwards except a negotiated VCONN_Swap. Every
- * state annotates the switch position; the vconn_driver observer
- * applies it with change suppression through the injected vconn_port
- * - the one user object that connects the switch hardware AND
- * arbitrates taking the role (the TCPC interface carries no VCONN;
- * boards route the switch wherever it lives).
+ * state annotates the switch position; the injected vconn_port
+ * observes it (change-suppressed by the observing contract) - the
+ * one user object that connects the switch hardware AND arbitrates
+ * taking the role (the TCPC interface carries no VCONN; boards route
+ * the switch wherever it lives). The sourcing and swap states are
+ * the VCONN feature: without an enabling observer the machine runs
+ * vconn_off alone and ignores every event.
  *
  * Integration (the PdDrp facade wires all of it): feed the Type-C
  * attach resolution through attachedSource(ra)/detached(), and the
@@ -41,19 +43,6 @@
 #include <concepts>
 
 namespace usbc {
-
-namespace concepts {
-
-// The one injected object that both connects the VCONN switch
-// hardware and arbitrates taking the role - its presence among a
-// port's observers enables the whole feature
-template<typename T>
-concept vconn_port = requires(T port, bool on, vconn_source_role role) {
-    { port.setVconn(on) } -> std::convertible_to<bool>;
-    { port.allowSwap(role) } -> std::convertible_to<bool>;
-};
-
-} // namespace concepts
 
 namespace vconn {
 
@@ -87,6 +76,24 @@ struct source_role {
     constexpr bool operator==(source_role const&) const = default;
 };
 
+} // namespace vconn
+
+namespace concepts {
+
+// The one injected object that both connects the VCONN switch
+// hardware - observing the states' switch annotation - and
+// arbitrates taking the role; its presence among a port's observers
+// enables the whole feature
+template<typename T>
+concept vconn_port = requires(T port, vconn::vconn_switch vconn, vconn_source_role role) {
+    port.notifyEntry(vconn);
+    { port.allowSwap(role) } -> std::convertible_to<bool>;
+};
+
+} // namespace concepts
+
+namespace vconn {
+
 namespace state {
 
 struct vconn_off {
@@ -100,6 +107,8 @@ struct vconn_off {
 
 // The VCONN Source (spec term): sourcing steadily until a swap
 struct vconn_source {
+    using feature = pe::vconn_feature;
+
     static constexpr auto annotations = fsm::annotate(
         vconn_switch{true},
         source_role{}
@@ -109,6 +118,8 @@ struct vconn_source {
 // PE_VCS_Turn_On_VCONN: the switch is on; the port announces it with
 // PS_RDY through the active engine
 struct pe_vcs_turn_on_vconn {
+    using feature = pe::vconn_feature;
+
     static constexpr auto annotations = fsm::annotate(
         vconn_switch{true},
         pe::announce_vconn_on{}
@@ -118,6 +129,8 @@ struct pe_vcs_turn_on_vconn {
 // PE_VCS_Wait_For_VCONN: we relinquish - still sourcing until the new
 // VCONN source's PS_RDY, due within tVCONNSourceTimeout
 struct pe_vcs_wait_for_vconn {
+    using feature = pe::vconn_feature;
+
     static constexpr auto annotations = fsm::annotate(
         vconn_switch{true},
         source_role{}
@@ -130,6 +143,8 @@ struct pe_vcs_wait_for_vconn {
 // -> Hard_Reset): the port-level integration executes it and
 // acknowledges; VCONN stays with us
 struct pe_vcs_timeout {
+    using feature = pe::vconn_feature;
+
     static constexpr auto annotations = fsm::annotate(
         vconn_switch{true},
         pe::request_hard_reset{},
@@ -167,31 +182,15 @@ using vconn_transitions = fsm::transition_table<
 struct vconn_table : vconn_transitions {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
-// Applies each state's switch annotation through the injected
-// vconn_port hardware connector; suppressed while unchanged
-template<typename VCONN_PORT>
-struct vconn_driver : fsm::observing<vconn_driver<VCONN_PORT>> {
-    explicit vconn_driver(VCONN_PORT& port_ref) : port(port_ref) {}
-
-    void notifyEntry(vconn_switch vconn)
-    {
-        if (vconn.on != applied) {
-            applied = vconn.on;
-            port.setVconn(vconn.on);
-        }
-    }
-
-    VCONN_PORT& port;
-    bool applied = false;
-};
-
 } // namespace vconn
 
-template<concepts::vconn_port VCONN_PORT, fsm::concepts::timer TIMER, typename... OBSERVERs>
+// The observers carry the vconn_port that enables the feature and
+// drives the switch; without one the machine runs vconn_off alone
+template<fsm::concepts::timer TIMER, typename... OBSERVERs>
 class VconnMachine {
 public:
-    VconnMachine(VCONN_PORT& vconn_port, TIMER& timer, OBSERVERs&... observers)
-        : driver_(vconn_port), timer_(timer), timed_(timer_), sm_(timed_, driver_, observers...)
+    VconnMachine(TIMER& timer, OBSERVERs&... observers)
+        : timer_(timer), timed_(timer_), sm_(timed_, observers...)
     {
     }
 
@@ -212,7 +211,6 @@ public:
     bool isVconnSource() const { return sm_.template annotation<vconn::source_role>().has_value(); }
 
 private:
-    vconn::vconn_driver<VCONN_PORT> driver_;
     fsm::QueuedTimer<TIMER> timer_;
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     // Queued: the tVCONNSourceTimeout expiry's hard-reset request is
@@ -224,7 +222,6 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         fsm::timed<fsm::QueuedTimer<TIMER>&>,
-        vconn::vconn_driver<VCONN_PORT>,
         OBSERVERs...>
         sm_;
 };

@@ -128,7 +128,7 @@ public:
               watch_,
               observers...
           ),
-          vconn_(pickVconnPort(observers...), timers.vconn, watch_, observers...),
+          vconn_(timers.vconn, watch_, observers...),
           router_(tcpc, sink_engine_, source_engine_, *this),
           drp_(tcpc, vbus, timers.tc, timers.tc_try, advertisement, router_, observers...)
     {
@@ -225,7 +225,8 @@ private:
     static constexpr bool pr_swap_enabled = feature_enabled<pe::pr_swap_feature>;
     static constexpr bool dr_swap_enabled = feature_enabled<pe::dr_swap_feature>;
     // VCONN only matters for emarked/high-speed cables and contracts
-    // above 3 A; without an enabler the vconn machine is a stub
+    // above 3 A; without an enabler the vconn machine runs vconn_off
+    // alone
     static constexpr bool vconn_enabled = feature_enabled<pe::vconn_feature>;
 
     // An enabling observer is the feature's arbitration voice (and,
@@ -249,35 +250,9 @@ private:
         ((!fsm::observer_enables_v<std::remove_cvref_t<OBSERVERs>, pe::vconn_feature> ||
           concepts::vconn_port<std::remove_cvref_t<OBSERVERs>>) &&
          ...),
-        "an observer enabling vconn_feature must satisfy "
-        "concepts::vconn_port (setVconn(bool) + allowSwap(vconn_source_role))"
+        "an observer enabling vconn_feature must satisfy concepts::vconn_port "
+        "(notifyEntry(vconn::vconn_switch) + allowSwap(vconn_source_role))"
     );
-
-    // The inert hardware stand-in when the feature is compiled out
-    struct no_vconn_port {
-        bool setVconn(bool) { return true; }
-        bool allowSwap(vconn_source_role) { return false; }
-    };
-
-    // The vconn-enabling observer is the port; the stand-in without one
-    using vconn_enabler_t = fsm::
-        feature_enabler_t<pe::vconn_feature, fsm::observers<std::remove_cvref_t<OBSERVERs>...>>;
-    using vconn_port_t = std::conditional_t<
-        std::is_same_v<vconn_enabler_t, mtl::nil_type>,
-        no_vconn_port,
-        vconn_enabler_t>;
-
-    // The first vconn-enabling observer of the pack, or the stand-in
-    auto& pickVconnPort() { return dummy_vconn_port_; }
-    template<typename FIRST, typename... REST>
-    auto& pickVconnPort(FIRST& first, REST&... rest)
-    {
-        if constexpr (fsm::observer_enables_v<std::remove_cvref_t<FIRST>, pe::vconn_feature>) {
-            return first;
-        } else {
-            return pickVconnPort(rest...);
-        }
-    }
 
     // The user's policies extended with the answers to the engine
     // tables' swap questions (pe::pr_swap_allowed and kin, asked on
@@ -588,19 +563,6 @@ private:
         vconn_.swapFailureHandled();
     }
 
-    // Stand-in when VCONN is compiled out: every call site stays
-    // valid, nothing ever sources
-    struct no_vconn {
-        no_vconn(auto&, TIMER&, swap_watch&, OBSERVERs&...) {}
-        void attachedSource(bool) {}
-        void detached() {}
-        void swapAgreed() {}
-        void partnerPsRdy() {}
-        void psRdySent() {}
-        void swapFailureHandled() {}
-        bool isVconnSource() const { return false; }
-    };
-
     using Drp = TypeCDrp<TCPC, VBUS, TIMER, TIMING, PREFERENCE, router, OBSERVERs...>;
 
     sink_policy_proxy sink_policy_;
@@ -608,12 +570,7 @@ private:
     swap_watch watch_;
     SinkEngine sink_engine_;
     SourceEngine source_engine_;
-    [[no_unique_address]] no_vconn_port dummy_vconn_port_{};
-    std::conditional_t<
-        vconn_enabled,
-        VconnMachine<vconn_port_t, TIMER, swap_watch, OBSERVERs...>,
-        no_vconn>
-        vconn_;
+    VconnMachine<TIMER, swap_watch, OBSERVERs...> vconn_;
     router router_;
     Drp drp_;
 };

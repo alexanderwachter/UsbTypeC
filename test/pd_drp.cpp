@@ -97,11 +97,7 @@ struct vconn_allow : fsm::observing<vconn_allow> {
 
     bool on = false;
 
-    bool setVconn(bool enable)
-    {
-        on = enable;
-        return true;
-    }
+    void notifyEntry(usbc::vconn::vconn_switch vconn) { on = vconn.on; }
     bool allowSwap(usbc::vconn_source_role) { return true; }
 };
 static_assert(usbc::concepts::vconn_port<vconn_allow>);
