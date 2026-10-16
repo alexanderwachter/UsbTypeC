@@ -4,7 +4,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/dt-bindings/adc/adc.h>
 #include <zephyr/dt-bindings/usb-c/pd.h>
+
+/* VBUS reaches the ADC through a 43 kOhm divider: the longest sampling
+ * time, 160.5 cycles, charges the sampling capacitor from it */
+&adc1 {
+	channel@9 {
+		zephyr,acquisition-time = <ADC_ACQ_TIME_MAX>;
+	};
+};
 
 / {
 	aliases {

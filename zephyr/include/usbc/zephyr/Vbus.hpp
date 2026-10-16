@@ -43,7 +43,6 @@ public:
 private:
     static void poll(k_work* work);
     void schedule(k_timeout_t delay);
-    int measured(); // millivolts, for the debug log
 
     device const* dev_;
     k_work_delayable work_{};
