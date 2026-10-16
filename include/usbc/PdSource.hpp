@@ -13,7 +13,8 @@
  * The user provides the domain pieces only: the drivers (TCPC, VBUS),
  * the timers, the capabilities, the request policy, and the power
  * effects (the supply and a SourcePower-derived monitor). Extra
- * observers may be injected into the connection machine. The optional
+ * observers are handed to every machine of the port - connection,
+ * engine, protocol layer - so a tracer sees all of them. The optional
  * features (PR_Swap/DR_Swap/VCONN) stay compiled out - a source-only
  * port answers the partner's swap requests with Not_Supported.
  *
@@ -85,7 +86,8 @@ public:
                              policy,
                              supply,
                              power,
-                             watch_
+                             watch_,
+                             observers...
                          ),
           router_{*this}, source_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
     {
@@ -134,7 +136,8 @@ private:
         PdSource& port;
     };
 
-    using SourceEngine = SourcePolicyEngine<TCPC, TIMER, POLICY, SUPPLY, POWER, port_watch>;
+    using SourceEngine =
+        SourcePolicyEngine<TCPC, TIMER, POLICY, SUPPLY, POWER, port_watch, OBSERVERs...>;
 
     // The port's internal wiring in the connection machine, observing
     // the states' declared facts: the PD connection brackets the

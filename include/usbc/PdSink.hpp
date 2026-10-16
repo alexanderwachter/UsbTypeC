@@ -13,8 +13,9 @@
  *
  * The user provides the domain pieces only: the drivers (TCPC, VBUS),
  * the timers, the capabilities, the selection policy, and the power
- * effects (a SinkPower-derived class). Extra observers may be
- * injected into the connection machine. The optional features
+ * effects (a SinkPower-derived class). Extra observers are handed to
+ * every machine of the port - connection, engine, protocol layer - so
+ * a tracer sees all of them. The optional features
  * (PR_Swap/DR_Swap/VCONN) stay compiled out - a sink-only port
  * answers the partner's swap requests with Not_Supported.
  *
@@ -74,8 +75,17 @@ public:
         POWER& power,
         OBSERVERs&... observers
     )
-        : watch_{*this},
-          engine_(tcpc, timers.prl, timers.pe, timers.swap, capabilities, policy, power, watch_),
+        : watch_{*this}, engine_(
+                             tcpc,
+                             timers.prl,
+                             timers.pe,
+                             timers.swap,
+                             capabilities,
+                             policy,
+                             power,
+                             watch_,
+                             observers...
+                         ),
           router_{*this}, sink_(tcpc, vbus, timers.tc, router_, observers...)
     {
     }
@@ -101,7 +111,7 @@ private:
         PdSink& port;
     };
 
-    using SinkEngine = SinkPolicyEngine<TCPC, TIMER, POLICY, POWER, port_watch>;
+    using SinkEngine = SinkPolicyEngine<TCPC, TIMER, POLICY, POWER, port_watch, OBSERVERs...>;
 
     // The port's internal wiring in the connection machine, observing
     // the states' declared facts: the PD connection's exit is the one

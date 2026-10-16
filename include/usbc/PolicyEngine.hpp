@@ -1062,7 +1062,8 @@ template<
     fsm::concepts::transition_table TABLE,
     concepts::pd_transport TCPC,
     fsm::concepts::timer TIMER,
-    typename POLICY>
+    typename POLICY,
+    typename... OBSERVERs>
 class PolicyEngineBase {
 public:
     // Feed the TCPC's PD alerts (message/transmit/hard reset bits)
@@ -1097,9 +1098,15 @@ protected:
     using timeouts = fsm::timed<queued_timer&, fsm::levels_v<TABLE>>;
 
     // swap_timer runs the timeouts inside a swap exchange
-    PolicyEngineBase(TCPC& tcpc, TIMER& prl_timer, TIMER& pe_timer, TIMER& swap_timer)
-        : tcpc_(tcpc), prl_(tcpc, prl_timer, port_), pe_timer_(pe_timer), swap_timer_(swap_timer),
-          timed_(pe_timer_, swap_timer_)
+    PolicyEngineBase(
+        TCPC& tcpc,
+        TIMER& prl_timer,
+        TIMER& pe_timer,
+        TIMER& swap_timer,
+        OBSERVERs&... observers
+    )
+        : tcpc_(tcpc), prl_(tcpc, prl_timer, port_, observers...), pe_timer_(pe_timer),
+          swap_timer_(swap_timer), timed_(pe_timer_, swap_timer_)
     {
         tcpc_.setMessageHeaderInfo(
             {.power = ROLE, .data = defaultDataRole(ROLE), .revision = pd_revision::rev_3_x}
@@ -1269,7 +1276,9 @@ protected:
     std::span<std::uint32_t const> source_capabilities_{};
     bool bist_test_data_ = false;
     PrlPort port_{*this};
-    ProtocolLayer<TCPC, TIMER> prl_; // also an observer of the machine
+    // also an observer of the machine; the engine's injected observers
+    // ride in its transmit machine as well
+    ProtocolLayer<TCPC, TIMER, OBSERVERs...> prl_;
     queued_timer pe_timer_;
     queued_timer swap_timer_;
     timeouts timed_;

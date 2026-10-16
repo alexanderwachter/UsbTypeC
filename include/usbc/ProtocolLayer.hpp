@@ -253,12 +253,15 @@ struct phy_driver : fsm::observing<phy_driver<TCPC>> {
 // role-independent, and templating it on the client duplicated the
 // whole PRL - tx machine, receive drain, counters - once per policy
 // engine (measured ~2 kB flash in a DRP image)
-template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER>
-class ProtocolLayer : public fsm::observing<ProtocolLayer<TCPC, TIMER>> {
+template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER, typename... OBSERVERs>
+class ProtocolLayer : public fsm::observing<ProtocolLayer<TCPC, TIMER, OBSERVERs...>> {
 public:
+    // The observers ride along in the transmit machine after the
+    // layer's own
     template<concepts::prl_client CLIENT>
-    ProtocolLayer(TCPC& tcpc, TIMER& timer, CLIENT& client)
-        : tcpc_(tcpc), client_(&client), hooks_(&hooks_for<CLIENT>), timer_(timer), timed_(timer_)
+    ProtocolLayer(TCPC& tcpc, TIMER& timer, CLIENT& client, OBSERVERs&... observers)
+        : tcpc_(tcpc), client_(&client), hooks_(&hooks_for<CLIENT>), timer_(timer), timed_(timer_),
+          sm_(timed_, driver_, reporter_, observers...)
     {
     }
 
@@ -493,8 +496,9 @@ private:
         fsm::no_lock,
         fsm::timed<fsm::QueuedTimer<TIMER>&>,
         prl::phy_driver<TCPC>,
-        client_reporter>
-        sm_{timed_, driver_, reporter_};
+        client_reporter,
+        OBSERVERs...>
+        sm_;
     std::array<std::uint8_t, prl::sop_count> tx_counter_{};
     std::array<std::optional<std::uint8_t>, prl::sop_count> rx_id_{};
     pd_revision revision_ = pd_revision::rev_3_x;

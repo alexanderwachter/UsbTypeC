@@ -1048,19 +1048,22 @@ class SourcePolicyEngine : public pe::PolicyEngineBase<
                                pe::pe_source_table,
                                TCPC,
                                TIMER,
-                               POLICY> {
+                               POLICY,
+                               OBSERVERs...> {
     using base = pe::PolicyEngineBase<
         SourcePolicyEngine,
         power_role::source,
         pe::pe_source_table,
         TCPC,
         TIMER,
-        POLICY>;
+        POLICY,
+        OBSERVERs...>;
     friend base;
 
 public:
     // The observers are injected into the engine's machine after the
-    // protocol layer and the supply driver; a SourcePower-derived one
+    // protocol layer and the supply driver, and into the protocol
+    // layer's machine; a SourcePower-derived one
     // supplies the contract notifications. pe_timer runs the engine's
     // states, swap_timer the sub-states of a swap exchange (never
     // armed without a swap feature)
@@ -1074,8 +1077,8 @@ public:
         SUPPLY& supply,
         OBSERVERs&... observers
     )
-        : base(tcpc, prl_timer, pe_timer, swap_timer), policy_(policy), supply_(supply),
-          sm_(this->timed_, this->prl_, action_driver_, policy_, observers...)
+        : base(tcpc, prl_timer, pe_timer, swap_timer, observers...), policy_(policy),
+          supply_(supply), sm_(this->timed_, this->prl_, action_driver_, policy_, observers...)
     {
         this->source_capabilities_ = capabilities;
         supply_.setReadyCallback(
@@ -1253,7 +1256,7 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         typename base::timeouts,
-        ProtocolLayer<TCPC, TIMER>,
+        ProtocolLayer<TCPC, TIMER, OBSERVERs...>,
         ActionDriver,
         POLICY,
         OBSERVERs...>

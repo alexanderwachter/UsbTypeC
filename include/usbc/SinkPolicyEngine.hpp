@@ -987,19 +987,22 @@ class SinkPolicyEngine : public pe::PolicyEngineBase<
                              pe::pe_sink_table,
                              TCPC,
                              TIMER,
-                             POLICY> {
+                             POLICY,
+                             OBSERVERs...> {
     using base = pe::PolicyEngineBase<
         SinkPolicyEngine,
         power_role::sink,
         pe::pe_sink_table,
         TCPC,
         TIMER,
-        POLICY>;
+        POLICY,
+        OBSERVERs...>;
     friend base;
 
 public:
     // The observers are injected into the engine's machine after the
-    // protocol layer; a SinkPower-derived one supplies the power side.
+    // protocol layer, and into the protocol layer's machine; a
+    // SinkPower-derived one supplies the power side.
     // pe_timer runs the engine's states, swap_timer the sub-states of a
     // swap exchange (never armed without a swap feature)
     SinkPolicyEngine(
@@ -1011,7 +1014,7 @@ public:
         POLICY& policy,
         OBSERVERs&... observers
     )
-        : base(tcpc, prl_timer, pe_timer, swap_timer), policy_(policy),
+        : base(tcpc, prl_timer, pe_timer, swap_timer, observers...), policy_(policy),
           sm_(this->timed_, this->prl_, gates_, policy_, observers...)
     {
         this->sink_capabilities_ = capabilities;
@@ -1270,7 +1273,7 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         typename base::timeouts,
-        ProtocolLayer<TCPC, TIMER>,
+        ProtocolLayer<TCPC, TIMER, OBSERVERs...>,
         gate_watch,
         POLICY,
         OBSERVERs...>

@@ -155,8 +155,9 @@ struct SwapPolicy : fsm::observing<SwapPolicy> {
     bool allowSwap(usbc::data_role) { return true; }
 };
 
-// The TraceLogger rides along in the connection machine (module
-// mtl_fsm, info level, behind CONFIG_MTL_FSM_TRACE)
+// The TraceLogger traces every machine of the port - connection,
+// engines, protocol layers, vconn (module mtl_fsm, info level,
+// behind CONFIG_MTL_FSM_TRACE)
 // PD_DRP_MINIMAL drops the optional features (VCONN, PR_Swap,
 // DR_Swap) by not injecting their enabling observers - the engines'
 // swap and VCS states are then filtered from the tables. The

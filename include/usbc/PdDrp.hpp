@@ -24,8 +24,9 @@
  * the timers, the capabilities and policies of both roles, the power
  * effects (a SinkPower- and a SourcePower-derived class, and the
  * supply). No knowledge of the state machines is required; extra
- * observers (e.g. usbc::zephyr::StateLogger) may still be injected
- * into the connection machine.
+ * observers (e.g. mtl::zephyr::TraceLogger) are handed to every
+ * machine of the port - connection, both engines and their protocol
+ * layers, vconn.
  *
  * PR_Swap, DR_Swap and VCONN are optional features, enabled by tag:
  * an injected observer declaring `using enables = pe::..._feature;`
@@ -112,7 +113,8 @@ public:
               sink_capabilities,
               sink_policy_,
               sink_power,
-              watch_
+              watch_,
+              observers...
           ),
           source_engine_(
               tcpc,
@@ -123,9 +125,10 @@ public:
               source_policy_,
               supply,
               source_power,
-              watch_
+              watch_,
+              observers...
           ),
-          vconn_(pickVconnPort(observers...), timers.vconn, watch_),
+          vconn_(pickVconnPort(observers...), timers.vconn, watch_, observers...),
           router_(tcpc, sink_engine_, source_engine_, *this),
           drp_(tcpc, vbus, timers.tc, timers.tc_try, advertisement, router_, observers...)
     {
@@ -405,9 +408,16 @@ private:
         PdDrp& port;
     };
 
-    using SinkEngine = SinkPolicyEngine<TCPC, TIMER, sink_policy_proxy, SINK_POWER, swap_watch>;
-    using SourceEngine =
-        SourcePolicyEngine<TCPC, TIMER, source_policy_proxy, SUPPLY, SOURCE_POWER, swap_watch>;
+    using SinkEngine =
+        SinkPolicyEngine<TCPC, TIMER, sink_policy_proxy, SINK_POWER, swap_watch, OBSERVERs...>;
+    using SourceEngine = SourcePolicyEngine<
+        TCPC,
+        TIMER,
+        source_policy_proxy,
+        SUPPLY,
+        SOURCE_POWER,
+        swap_watch,
+        OBSERVERs...>;
 
     // The port's internal wiring, observing the connection machine's
     // declared facts: the PD connection brackets the engines' life (its
@@ -581,7 +591,7 @@ private:
     // Stand-in when VCONN is compiled out: every call site stays
     // valid, nothing ever sources
     struct no_vconn {
-        no_vconn(auto&, TIMER&, swap_watch&) {}
+        no_vconn(auto&, TIMER&, swap_watch&, OBSERVERs&...) {}
         void attachedSource(bool) {}
         void detached() {}
         void swapAgreed() {}
@@ -599,7 +609,10 @@ private:
     SinkEngine sink_engine_;
     SourceEngine source_engine_;
     [[no_unique_address]] no_vconn_port dummy_vconn_port_{};
-    std::conditional_t<vconn_enabled, VconnMachine<vconn_port_t, TIMER, swap_watch>, no_vconn>
+    std::conditional_t<
+        vconn_enabled,
+        VconnMachine<vconn_port_t, TIMER, swap_watch, OBSERVERs...>,
+        no_vconn>
         vconn_;
     router router_;
     Drp drp_;
