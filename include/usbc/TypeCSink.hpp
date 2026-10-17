@@ -7,15 +7,19 @@
  *
  * The machine keeps the latest CC status in machine-owned context; CC
  * updates that must not disturb the running debounce are internal
- * transitions. AttachWait.SNK debounces CC for tCCDebounce (one
- * debounce time is used for attach and detach; the spec's shorter
- * tPDDebounce for detach detection is not used yet). After a stable
- * single-Rp result the machine attaches as soon as VBUS is present -
- * immediately at the debounce timeout, asking the driver, or later on
- * the VBUS report the debounced wait arms. Attached.SNK watches
- * vSinkDisconnect instead of vSafe5V; the watched level is a state
- * annotation and the vbus_watcher observer re-arms the vbus driver on
- * changes.
+ * transitions. Unattached.SNK enters AttachWait.SNK when Rp appears on
+ * at least one pin (4.5.2.2.3.2); AttachWait.SNK debounces a single Rp
+ * for tCCDebounce and leaves for the table's open exit when both pins
+ * stay open for tPDDebounce (4.5.2.2.4.2 - the two debounce times are
+ * two states, attach_wait_snk and attach_wait_snk_open). Rp on both
+ * pins is a debug accessory this layer does not support: no exit
+ * applies, the port keeps waiting for the line to change. After a
+ * stable single-Rp result the machine attaches as soon as VBUS is
+ * present - immediately at the debounce timeout, asking the driver,
+ * or later on the VBUS report the debounced wait arms. Attached.SNK
+ * watches vSinkDisconnect instead of vSafe5V; the watched level is a
+ * state annotation and the vbus_watcher observer re-arms the vbus
+ * driver on changes.
  *
  * Integration: hand over initialized drivers and a caller-owned timer
  * policy instance. Construction rests in the spec's Disabled state
@@ -32,9 +36,9 @@
  * debounce-timeout paths.
  *
  * DRP and Try.SNK/Try.SRC build on this layer's states in
- * TypeCDrp.hpp. Not covered yet: debug and audio accessories (both-Rp
- * results detach), Rp change notification while attached, and VCONN (a
- * sink without cable communication needs none).
+ * TypeCDrp.hpp. Not covered yet: debug and audio accessories, Rp
+ * change notification while attached, and VCONN (a sink without cable
+ * communication needs none).
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -60,6 +64,12 @@ namespace tc {
 constexpr bool singleRp(cc_status status)
 {
     return isRp(status.cc1) != isRp(status.cc2);
+}
+
+// A source connection as the spec detects it: Rp on at least one pin
+constexpr bool sourcePresent(cc_status status)
+{
+    return isRp(status.cc1) || isRp(status.cc2);
 }
 
 constexpr plug_orientation orientationOf(cc_status status)
@@ -154,6 +164,11 @@ struct attach_wait_snk : sink_state {
     );
 
     static constexpr auto timeout = t_cc_debounce; // CCDebounceTimer
+
+    using sink_state::handle;
+    // Rp on both pins debounced: nothing to decide, the line has to
+    // change
+    void handle(fsm::timeout const&) {}
 };
 
 // AttachWait.SNK with a stable single Rp, waiting for VBUS
@@ -165,6 +180,26 @@ struct attach_wait_snk_debounced : sink_state {
         vbus_power{vbus_path::open},
         vbus_level{vbus_level::safe5v}
     );
+};
+
+// AttachWait.SNK with both pins open: the source is gone unless the
+// Rp returns within tPDDebounce (USB PD signaling opens one pin
+// briefly, never both for that long)
+struct attach_wait_snk_open : sink_state {
+    attach_wait_snk_open(event::cc_changed const& event, line_status& line_ref)
+        : sink_state(line_ref)
+    {
+        line.cc = event.cc;
+    }
+    using sink_state::sink_state;
+
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rd},
+        vbus_power{vbus_path::open},
+        vbus_level{vbus_level::unwatched}
+    );
+
+    static constexpr auto timeout = t_pd_debounce; // PDDebounceTimer
 };
 
 struct attached_snk : sink_state {
@@ -297,29 +332,49 @@ struct stable_rp {
     static bool check(state::attach_wait_snk const& state) { return singleRp(state.line.cc); }
 };
 
+// Guards deciding on the event's CC payload - the context still holds
+// the pre-event status when a guard runs
+struct source_present {
+    static bool check(auto const&, event::cc_changed const& event)
+    {
+        return sourcePresent(event.cc);
+    }
+};
+
 // The sink attach flow, shared with the DRP layer: UNATTACHED anchors
 // it (the sink's resting state, or the DRP's toggling Rd phase) and
 // ATTACH is where a successful attach leads (Attached.SNK, or Try.SRC
-// for a source-preferring DRP)
+// for a source-preferring DRP). AttachWait.SNK's open exit leads back
+// to UNATTACHED; a DRP lists its own exit (Unattached.SRC) ahead
 template<fsm::concepts::state UNATTACHED, fsm::concepts::state ATTACH>
 using sink_attach_flow = fsm::transition_table<
-    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
-    // a CC change during the debounce restarts it
+    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>, fsm::guard<source_present>, fsm::to<state::attach_wait_snk>>,
+    fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>>,
+    // both pins open: tPDDebounce decides; any other CC change
+    // restarts the tCCDebounce
+    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<event::cc_changed>, fsm::guard<fsm::not_<source_present>>, fsm::to<state::attach_wait_snk_open>>,
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
-    // debounce complete: attach, keep waiting for VBUS, or detach
+    // debounce complete: attach, keep waiting for VBUS, or (Rp on both
+    // pins) keep waiting for the line to change
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::guard<stable_rp, vbus_at_safe5v>, fsm::to<ATTACH>>,
     fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::guard<stable_rp>, fsm::to<state::attach_wait_snk_debounced>>,
-    fsm::transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>,
+    fsm::internal_transition<fsm::from<state::attach_wait_snk>, fsm::on<fsm::timeout>>,
     fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::vbus_present>, fsm::to<ATTACH>>,
+    fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::cc_changed>, fsm::guard<fsm::not_<source_present>>, fsm::to<state::attach_wait_snk_open>>,
     fsm::transition<fsm::from<state::attach_wait_snk_debounced>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_snk>>,
+    // the Rp returned in time: debounce it afresh; still open: wait on
+    fsm::transition<fsm::from<state::attach_wait_snk_open>, fsm::on<event::cc_changed>, fsm::guard<source_present>, fsm::to<state::attach_wait_snk>>,
+    fsm::internal_transition<fsm::from<state::attach_wait_snk_open>, fsm::on<event::cc_changed>>,
+    fsm::transition<fsm::from<state::attach_wait_snk_open>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>,
     // sink detach detection is VBUS-based
     fsm::transition<fsm::from<state::attached_snk>, fsm::on<event::vbus_removed>, fsm::to<UNATTACHED>>,
     fsm::internal_transition<fsm::from<state::attached_snk>, fsm::on<event::cc_changed>>>;
 
 // The spec timer range of every timed state of the sink flow; the DRP
 // concatenates this map with its own, like the flows themselves
-using sink_timer_ranges =
-    fsm::timer_ranges<fsm::timed_by<state::attach_wait_snk, spec::t_cc_debounce>>;
+using sink_timer_ranges = fsm::timer_ranges<
+    fsm::timed_by<state::attach_wait_snk, spec::t_cc_debounce>,
+    fsm::timed_by<state::attach_wait_snk_open, spec::t_pd_debounce>>;
 
 // Separate entry: the DRP shares the state, standalone source tables
 // do not - the bidirectional map check rejects entries for absent states

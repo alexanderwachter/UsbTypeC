@@ -3,8 +3,11 @@
  * Cable and Connector Specification. The port toggles between
  * Unattached.SNK (presenting Rd) and Unattached.SRC (presenting Rp)
  * and follows the sink or source attach flow of whichever role it was
- * advertising when a partner appeared - the AttachWait, Attached and
- * UnattachedWait states are shared with TypeCSink.hpp/TypeCSource.hpp.
+ * advertising when a partner appeared - the AttachWait and Attached
+ * states are shared with TypeCSink.hpp/TypeCSource.hpp. A sink leaving
+ * Attached.SRC puts the DRP at Rd at once while VBUS is removed
+ * (removing_vbus), then on to Unattached.SNK - or TryWait.SNK for a
+ * source-preferring port (4.5.2.2.9.2).
  *
  * Toggle timing is a compile-time policy: tDRP is the full toggle
  * period and dcSRC.DRP the percentage of it spent advertising Rp, both
@@ -16,13 +19,15 @@
  * Role preference (spec 4.5.2.2): drp_preference::source inserts
  * Try.SRC/TryWait.SNK where the sink flow would attach,
  * drp_preference::sink inserts Try.SNK/TryWait.SRC where the source
- * flow would attach. Try.SRC, Try.SNK and TryWait.SRC are composite
- * states: the spec state's time budget is the composite state's own
- * timeout - a hard wall a flapping partner cannot extend - and its
- * submachine watches and debounces the wanted termination:
+ * flow would attach. The Try states are composite states: the spec
+ * state's time budget is the composite state's own timeout - a hard
+ * wall a flapping partner cannot extend - and its submachine watches
+ * and debounces the wanted termination:
  *   Try.SRC        = try_src (tDRPTry) owning try_src_monitor and
  *                    try_src_debounce (tTryCCDebounce)
- *   TryWait.SNK    = try_wait_snk (tDRPTryWait)
+ *   TryWait.SNK    = try_wait_snk (tCCDebounce, then VBUS attaches)
+ *                    owning try_wait_snk_monitor and try_wait_snk_open
+ *                    (tPDDebounce, both pins open ends the phase)
  *   Try.SNK        = try_snk (tTryTimeout) owning try_snk_wait
  *                    (tDRPTry, CC ignored), try_snk_monitor and
  *                    try_snk_debounce (tPDDebounce)
@@ -47,11 +52,8 @@
  * the PD layer refuses swaps to source. The question's static
  * default is yes: without such an object nothing changes.
  *
- * Deviations from the spec, accepted knowingly: TryWait.SNK attaches
- * on VBUS with a single Rp in the context rather than debouncing the
- * Rp separately; AttachWait exit back to toggling uses tCCDebounce
- * (the spec's shorter tPDDebounce path is not modelled, matching the
- * sink/source layers).
+ * Open deviations from Release 2.5 are listed in the conformance
+ * roadmap (CLAUDE.md); the Try phases still model an older reading.
  *
  * Integration matches TypeCSink/TypeCSource: initialized drivers plus
  * a caller-owned timer policy instance; construction rests in the
@@ -311,11 +313,67 @@ struct try_src : try_phase_state<state::source_state> {
     static constexpr auto timeout = TIMING.t_drp_try;
 };
 
-// The partner did not present Rd: back to Rd for tDRPTryWait, attaching
-// as sink when the partner sources VBUS
-template<drp_timing const& TIMING>
+// TryWait.SNK, shared by its composite state and its sub-states: the
+// spec's tCCDebounce since entry has elapsed - VBUS detected from
+// then on attaches
+struct try_wait_snk_phase {
+    bool cc_debounced = false;
+};
+
+// A TryWait.SNK sub-state: the port's line plus the phase
+struct try_wait_snk_state : state::sink_state {
+    try_wait_snk_state(
+        event::cc_changed const& event,
+        line_status& line_ref,
+        try_wait_snk_phase& phase_ref
+    )
+        : try_wait_snk_state(line_ref, phase_ref)
+    {
+        line.cc = event.cc;
+    }
+    try_wait_snk_state(line_status& line_ref, try_wait_snk_phase& phase_ref)
+        : sink_state(line_ref), phase(phase_ref)
+    {
+    }
+
+    using contexts = fsm::contexts<line_status, try_wait_snk_phase>;
+
+    try_wait_snk_phase& phase;
+};
+
+// Watching the line: the source's VBUS attaches once tCCDebounce is up
+struct try_wait_snk_monitor : try_wait_snk_state {
+    using try_wait_snk_state::try_wait_snk_state;
+};
+
+// Both pins open: the source is gone unless the Rp returns within
+// tPDDebounce (USB PD signaling opens both pins briefly, never for
+// that long)
+struct try_wait_snk_open : try_wait_snk_state {
+    using try_wait_snk_state::try_wait_snk_state;
+
+    static constexpr auto timeout = t_pd_debounce;
+};
+
+struct partner_gone {
+    using emits = try_failed;
+};
+
+struct try_wait_snk_table;
+
+// TryWait.SNK: Rd presented where Try.SRC failed, or where the sink
+// left Attached.SRC. Attaches as sink after tCCDebounce once VBUS is
+// detected, ends with both pins open for tPDDebounce (4.5.2.2.11.2);
+// the debounce is the composite's own timeout, immune to the line
+// flapping below it
 struct try_wait_snk : state::sink_state {
-    using state::sink_state::sink_state;
+    using submachine = try_wait_snk_table;
+
+    try_wait_snk(line_status& line_ref, try_wait_snk_phase& phase_ref)
+        : sink_state(line_ref), phase(phase_ref)
+    {
+        phase = {};
+    }
 
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rd},
@@ -323,7 +381,35 @@ struct try_wait_snk : state::sink_state {
         vbus_level{vbus_level::safe5v}
     );
 
-    static constexpr auto timeout = TIMING.t_drp_try_wait;
+    using contexts = fsm::contexts<line_status, try_wait_snk_phase>;
+    using parent_contexts = fsm::contexts<line_status, try_wait_snk_phase>;
+
+    static constexpr auto timeout = t_cc_debounce;
+
+    using sink_state::handle;
+    void handle(fsm::timeout const&) { phase.cc_debounced = true; }
+    // VBUS before the debounce, or without an Rp to resolve the plug
+    // from: asked again when it matters
+    void handle(event::vbus_present const&) {}
+
+    try_wait_snk_phase& phase;
+};
+
+// --- leaving Attached.SRC ----------------------------------------------------
+
+// The sink left: Rd is presented at once - the spec's Unattached.SNK
+// or TryWait.SNK (4.5.2.2.9.2) - while VBUS is removed, discharged to
+// vSafe0V within tVBUSOFF. Where the port goes on once VBUS is down is
+// the preference's business; CC reports are absorbed meanwhile and the
+// line is read on the way out
+struct removing_vbus : state::sink_state {
+    using state::sink_state::sink_state;
+
+    static constexpr auto annotations = fsm::annotate(
+        cc_termination{cc_pull::rd},
+        vbus_power{vbus_path::safe0v},
+        vbus_level{vbus_level::safe0v}
+    );
 };
 
 // --- Try.SNK / TryWait.SRC (drp_preference::sink) ----------------------------
@@ -505,6 +591,12 @@ struct try_expired {
     static bool check(auto const& state) { return state.phase.expired; }
 };
 
+// TryWait.SNK's tCCDebounce since entry is up (the composite state
+// recorded it): VBUS detected attaches
+struct cc_debounced {
+    static bool check(auto const& state) { return state.phase.cc_debounced; }
+};
+
 // --- timer-range maps --------------------------------------------------------
 
 // Composed per preference like the flows they check; the shared attach
@@ -526,7 +618,8 @@ template<drp_timing const& TIMING>
 using try_src_timer_ranges = fsm::timer_ranges<
     fsm::timed_by<try_src<TIMING>, spec::t_drp_try>,
     fsm::timed_by<try_src_debounce<TIMING>, spec::t_try_cc_debounce>,
-    fsm::timed_by<try_wait_snk<TIMING>, spec::t_drp_try_wait>>;
+    fsm::timed_by<try_wait_snk, spec::t_cc_debounce>,
+    fsm::timed_by<try_wait_snk_open, spec::t_pd_debounce>>;
 
 template<drp_timing const& TIMING>
 using try_snk_timer_ranges = fsm::timer_ranges<
@@ -541,21 +634,37 @@ using try_snk_timer_ranges = fsm::timer_ranges<
 // Sink-role flow: the sink layer's attach flow anchored at the
 // toggling Unattached.SNK, plus the toggle to the Rp phase; SNK_ATTACH
 // is where a successful attach leads - Attached.SNK, or Try.SRC for a
-// source-preferring port
+// source-preferring port. A DRP leaves AttachWait.SNK's open exit for
+// Unattached.SRC (4.5.2.2.4.2) - listed ahead of the shared flow's
+// row, whose Unattached.SNK is the role lock's fallback
 template<drp_timing const& TIMING, fsm::concepts::state SNK_ATTACH>
 using sink_flow = fsm::transition_table<
     // the Rd slice is up: advertise Rp - unless the port is locked
     // to the sink role, then another Rd slice (re-asking each time)
     fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<sourcing_allowed>, fsm::to<unattached_src<TIMING>>>,
     fsm::transition<fsm::from<unattached_snk<TIMING>>, fsm::on<fsm::timeout>, fsm::to<unattached_snk<TIMING>>>,
+    fsm::transition<fsm::from<state::attach_wait_snk_open>, fsm::on<fsm::timeout>, fsm::guard<sourcing_allowed>, fsm::to<unattached_src<TIMING>>>,
     sink_attach_flow<unattached_snk<TIMING>, SNK_ATTACH>>;
 
 // Source-role flow; SRC_ATTACH is Attached.SRC, or Try.SNK for a
-// sink-preferring port
+// sink-preferring port. A DRP leaves AttachWait.SRC's open exit for
+// Unattached.SNK (4.5.2.2.8.2), and a sink detach for Rd with VBUS
+// being removed - where it goes on from there is the preference's:
+// vbus_removed_flow or TryWait.SNK (4.5.2.2.9.2)
 template<drp_timing const& TIMING, fsm::concepts::state SRC_ATTACH>
 using source_flow = fsm::transition_table<
     fsm::transition<fsm::from<unattached_src<TIMING>>, fsm::on<fsm::timeout>, fsm::to<unattached_snk<TIMING>>>,
-    source_attach_flow<unattached_src<TIMING>, SRC_ATTACH>>;
+    source_attach_flow<unattached_src<TIMING>, SRC_ATTACH, unattached_snk<TIMING>>,
+    fsm::transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>, fsm::guard<rd_removed>, fsm::to<removing_vbus>>,
+    fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>>,
+    fsm::internal_transition<fsm::from<removing_vbus>, fsm::on<event::cc_changed>>>;
+
+// VBUS removed after Attached.SRC, no Try: a source presenting Rp
+// meanwhile is debounced like any other, else toggling resumes at Rd
+template<drp_timing const& TIMING>
+using vbus_removed_flow = fsm::transition_table<
+    fsm::transition<fsm::from<removing_vbus>, fsm::on<event::vbus_reached_safe0v>, fsm::guard<rp_in_context>, fsm::to<state::attach_wait_snk>>,
+    fsm::transition<fsm::from<removing_vbus>, fsm::on<event::vbus_reached_safe0v>, fsm::to<unattached_snk<TIMING>>>>;
 
 // Inside Try.SRC: watch for a single Rd and debounce it
 template<drp_timing const& TIMING>
@@ -573,19 +682,39 @@ using try_src_transitions = fsm::transition_table<
 template<drp_timing const& TIMING>
 struct try_src_table : try_src_transitions<TIMING> {};
 
+// Inside TryWait.SNK: watch the line, attach on the source's VBUS once
+// tCCDebounce is up, leave when both pins stay open for tPDDebounce
+using try_wait_snk_transitions = fsm::transition_table<
+    fsm::transition<fsm::from<try_wait_snk_monitor>, fsm::on<event::cc_changed>, fsm::guard<fsm::not_<source_present>>, fsm::to<try_wait_snk_open>>,
+    fsm::transition<fsm::from<try_wait_snk_monitor>, fsm::on<event::cc_changed>, fsm::guard<rp_on_event, cc_debounced, vbus_at_safe5v>, fsm::to<partner_detected>>,
+    fsm::internal_transition<fsm::from<try_wait_snk_monitor>, fsm::on<event::cc_changed>>,
+    fsm::transition<fsm::from<try_wait_snk_monitor>, fsm::on<event::vbus_present>, fsm::guard<cc_debounced, rp_in_context>, fsm::to<partner_detected>>,
+    // the Rp returned in time: watch on; still open: wait on
+    fsm::transition<fsm::from<try_wait_snk_open>, fsm::on<event::cc_changed>, fsm::guard<source_present>, fsm::to<try_wait_snk_monitor>>,
+    fsm::internal_transition<fsm::from<try_wait_snk_open>, fsm::on<event::cc_changed>>,
+    fsm::transition<fsm::from<try_wait_snk_open>, fsm::on<fsm::timeout>, fsm::to<partner_gone>>,
+    fsm::final<partner_detected>,
+    fsm::final<partner_gone>>;
+
+struct try_wait_snk_table : try_wait_snk_transitions {};
+
 template<drp_timing const& TIMING>
 using try_src_flow = fsm::transition_table<
     // tDRPTry is up: recorded while an Rd is under debounce, else give
     // up trying
     fsm::internal_transition<fsm::from<try_src<TIMING>>, fsm::on<fsm::timeout>, fsm::guard<termination_seen>>,
-    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<fsm::timeout>, fsm::to<try_wait_snk<TIMING>>>,
+    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<fsm::timeout>, fsm::to<try_wait_snk>>,
     fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<try_succeeded>, fsm::to<state::attached_src>>,
-    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<try_failed>, fsm::to<try_wait_snk<TIMING>>>,
-    // TryWait.SNK: the partner sourcing VBUS is the attach signal
-    fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::cc_changed>, fsm::guard<rp_on_event, vbus_at_safe5v>, fsm::to<state::attached_snk>>,
-    fsm::internal_transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::cc_changed>>,
-    fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<event::vbus_present>, fsm::guard<rp_in_context>, fsm::to<state::attached_snk>>,
-    fsm::transition<fsm::from<try_wait_snk<TIMING>>, fsm::on<fsm::timeout>, fsm::to<unattached_snk<TIMING>>>>;
+    fsm::transition<fsm::from<try_src<TIMING>>, fsm::on<try_failed>, fsm::to<try_wait_snk>>,
+    // the sink left Attached.SRC: TryWait.SNK once VBUS is down
+    fsm::transition<fsm::from<removing_vbus>, fsm::on<event::vbus_reached_safe0v>, fsm::to<try_wait_snk>>,
+    // tCCDebounce is up: the source there with VBUS attaches, else
+    // recorded - VBUS detected from now on attaches
+    fsm::transition<fsm::from<try_wait_snk>, fsm::on<fsm::timeout>, fsm::guard<rp_in_context, vbus_at_safe5v>, fsm::to<state::attached_snk>>,
+    fsm::internal_transition<fsm::from<try_wait_snk>, fsm::on<fsm::timeout>>,
+    fsm::internal_transition<fsm::from<try_wait_snk>, fsm::on<event::vbus_present>>,
+    fsm::transition<fsm::from<try_wait_snk>, fsm::on<try_succeeded>, fsm::to<state::attached_snk>>,
+    fsm::transition<fsm::from<try_wait_snk>, fsm::on<try_failed>, fsm::to<unattached_snk<TIMING>>>>;
 
 // Inside Try.SNK: after the tDRPTry wait, watch for a single Rp and
 // debounce it
@@ -687,6 +816,7 @@ struct table_for : fsm::transition_table<
                        entry_flow<TIMING>,
                        sink_flow<TIMING, state::attached_snk>,
                        source_flow<TIMING, state::attached_src>,
+                       vbus_removed_flow<TIMING>,
                        swap_flow<TIMING>,
                        error_recovery_flow<unattached_snk<TIMING>>,
                        hard_reset_flow<unattached_snk<TIMING>>> {
@@ -720,6 +850,7 @@ struct table_for<TIMING, drp_preference::sink> : fsm::transition_table<
                                                      entry_flow<TIMING>,
                                                      sink_flow<TIMING, state::attached_snk>,
                                                      source_flow<TIMING, try_snk<TIMING>>,
+                                                     vbus_removed_flow<TIMING>,
                                                      try_snk_flow<TIMING>,
                                                      swap_flow<TIMING>,
                                                      error_recovery_flow<unattached_snk<TIMING>>,
@@ -951,8 +1082,10 @@ private:
 
     static bool allowsSourcing(auto& observer)
     {
-        if constexpr (fsm::concepts::
-                          answers_stateless_guard<std::remove_cvref_t<decltype(observer)>, sourcing_allowed>) {
+        if constexpr (
+            fsm::concepts::
+                answers_stateless_guard<std::remove_cvref_t<decltype(observer)>, sourcing_allowed>
+        ) {
             return observer.check(sourcing_allowed{});
         } else {
             return true;

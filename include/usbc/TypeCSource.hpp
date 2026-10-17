@@ -2,15 +2,22 @@
  * USB Type-C source connection layer: Unattached.SRC, AttachWait.SRC,
  * Attached.SRC and UnattachedWait.SRC per the USB Type-C Cable and
  * Connector Specification. The port presents Rp with the configured
- * advertisement, debounces a detected Rd for tCCDebounce, requires
- * VBUS at vSafe0V before applying power (the debounce outcome asks
- * the driver; attach_wait_src_debounced waits for the report when it
- * is not there yet, like the sink's sub-state waits for vSafe5V),
- * sources VBUS while attached, and discharges to vSafe0V in
- * UnattachedWait.SRC after a detach - the driver's arm-report exits it
- * right away when VBUS already sits there. Detach detection (Rd
- * removed) decides on the CC event payload through a (state, event)
- * guard.
+ * advertisement and enters AttachWait.SRC when a sink or an accessory
+ * appears - Rd on either pin, or Ra on both (4.5.2.2.7.2; Ra on one
+ * pin alone is a cable without a device). AttachWait.SRC debounces a
+ * single Rd for tCCDebounce, requires VBUS at vSafe0V before applying
+ * power (the debounce outcome asks the driver;
+ * attach_wait_src_debounced waits for the report when it is not there
+ * yet, like the sink's sub-state waits for vSafe5V), and leaves for
+ * the table's open exit the moment the sink is gone - both pins open,
+ * or open and Ra - without a debounce (4.5.2.2.8.2, "within
+ * tSRCDisconnect, as quickly as possible"). Rd on both pins or Ra on
+ * both is an accessory this layer does not support: no exit applies,
+ * the port keeps waiting for the line to change. Attached.SRC sources
+ * VBUS and discharges to vSafe0V in UnattachedWait.SRC after a detach
+ * - the driver's arm-report exits it right away when VBUS already
+ * sits there. Detach detection (Rd removed) decides on the CC event
+ * payload through a (state, event) guard.
  *
  * Integration mirrors TypeCSink: initialized drivers plus a
  * caller-owned timer policy instance. Construction rests in the spec's
@@ -23,9 +30,8 @@
  * debounce-timeout paths.
  *
  * DRP and Try.SRC/Try.SNK build on this layer's states in
- * TypeCDrp.hpp. Not covered yet: debug accessories (both-Rd results
- * detach), VCONN and Ra cable handling, and debounced source-side
- * detach (tPDDebounce).
+ * TypeCDrp.hpp. Not covered yet: debug and audio accessories, and
+ * VCONN (the PD layer's VCONN machine drives the switch).
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -50,6 +56,13 @@ namespace tc {
 constexpr bool singleRd(cc_status status)
 {
     return isRd(status.cc1) != isRd(status.cc2);
+}
+
+// A sink or accessory connection as the spec detects it: Rd on either
+// pin, or Ra on both
+constexpr bool sinkPresent(cc_status status)
+{
+    return isRd(status.cc1) || isRd(status.cc2) || (isRa(status.cc1) && isRa(status.cc2));
 }
 
 constexpr plug_orientation srcOrientationOf(cc_status status)
@@ -127,6 +140,10 @@ struct attach_wait_src : source_state {
     );
 
     static constexpr auto timeout = t_cc_debounce; // CCDebounceTimer
+
+    using source_state::handle;
+    // an accessory debounced: nothing to decide, the line has to change
+    void handle(fsm::timeout const&) {}
 };
 
 // AttachWait.SRC with a stable single Rd, waiting for VBUS at vSafe0V
@@ -223,8 +240,8 @@ struct src_stable_rd {
     static bool check(state::attach_wait_src const& state) { return singleRd(state.line.cc); }
 };
 
-// Decides on the event's CC payload - the state's context still holds
-// the pre-event status when the guard runs
+// Guards deciding on the event's CC payload - the state's context
+// still holds the pre-event status when a guard runs
 struct rd_removed {
     static bool check(state::attached_src const&, event::cc_changed const& event)
     {
@@ -232,29 +249,40 @@ struct rd_removed {
     }
 };
 
+struct sink_present {
+    static bool check(auto const&, event::cc_changed const& event) { return sinkPresent(event.cc); }
+};
+
+// ... and on the context, for a state that absorbed the CC reports
+struct sink_in_context {
+    static bool check(auto const& state) { return sinkPresent(state.line.cc); }
+};
+
 // The source attach flow, shared with the DRP layer: UNATTACHED
 // anchors it (the source's resting state, or the DRP's toggling Rp
-// phase) and ATTACH is where a successful attach leads (Attached.SRC,
-// or Try.SNK for a sink-preferring DRP)
-template<fsm::concepts::state UNATTACHED, fsm::concepts::state ATTACH>
+// phase), ATTACH is where a successful attach leads (Attached.SRC, or
+// Try.SNK for a sink-preferring DRP) and OPEN_EXIT is where
+// AttachWait.SRC leaves when the sink is gone (Unattached.SRC for a
+// source, Unattached.SNK for a DRP)
+template<
+    fsm::concepts::state UNATTACHED,
+    fsm::concepts::state ATTACH,
+    fsm::concepts::state OPEN_EXIT>
 using source_attach_flow = fsm::transition_table<
-    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_src>>,
-    // a CC change during the debounce restarts it
+    fsm::transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>, fsm::guard<sink_present>, fsm::to<state::attach_wait_src>>,
+    fsm::internal_transition<fsm::from<UNATTACHED>, fsm::on<event::cc_changed>>,
+    // the sink is gone: leave at once; any other CC change restarts
+    // the debounce
+    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<event::cc_changed>, fsm::guard<fsm::not_<sink_present>>, fsm::to<OPEN_EXIT>>,
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_src>>,
-    // debounce complete: attach, wait for vSafe0V, or back to unattached
+    // debounce complete: attach, wait for vSafe0V, or (an accessory)
+    // keep waiting for the line to change
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>, fsm::guard<src_stable_rd, vbus_at_safe0v>, fsm::to<ATTACH>>,
     fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>, fsm::guard<src_stable_rd>, fsm::to<state::attach_wait_src_debounced>>,
-    fsm::transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>, fsm::to<UNATTACHED>>,
+    fsm::internal_transition<fsm::from<state::attach_wait_src>, fsm::on<fsm::timeout>>,
     fsm::transition<fsm::from<state::attach_wait_src_debounced>, fsm::on<event::vbus_reached_safe0v>, fsm::to<ATTACH>>,
-    fsm::transition<fsm::from<state::attach_wait_src_debounced>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_src>>,
-    // source detach detection is CC-based: Rd removed; toggling
-    // resumes after UnattachedWait.SRC - whose entry arms vSafe0V,
-    // and the driver's arm-report exits it right away when the line
-    // is already there
-    fsm::transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>, fsm::guard<rd_removed>, fsm::to<state::unattached_wait_src>>,
-    fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>>,
-    fsm::transition<fsm::from<state::unattached_wait_src>, fsm::on<event::vbus_reached_safe0v>, fsm::to<UNATTACHED>>,
-    fsm::internal_transition<fsm::from<state::unattached_wait_src>, fsm::on<event::cc_changed>>>;
+    fsm::transition<fsm::from<state::attach_wait_src_debounced>, fsm::on<event::cc_changed>, fsm::guard<fsm::not_<sink_present>>, fsm::to<OPEN_EXIT>>,
+    fsm::transition<fsm::from<state::attach_wait_src_debounced>, fsm::on<event::cc_changed>, fsm::to<state::attach_wait_src>>>;
 
 // The spec timer range of every timed state of the source flow; the
 // DRP concatenates this map with its own, like the flows themselves
@@ -264,7 +292,16 @@ using source_timer_ranges =
 using source_transitions = fsm::transition_table<
     fsm::initial<state::disabled_src>,
     fsm::transition<fsm::from<state::disabled_src>, fsm::on<event::started>, fsm::to<state::unattached_src>>,
-    source_attach_flow<state::unattached_src, state::attached_src>,
+    source_attach_flow<state::unattached_src, state::attached_src, state::unattached_src>,
+    // source detach detection is CC-based: Rd removed; Rp waits again
+    // after UnattachedWait.SRC - whose entry arms vSafe0V, and the
+    // driver's arm-report exits it right away when the line is already
+    // there. A sink seen meanwhile is debounced afresh
+    fsm::transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>, fsm::guard<rd_removed>, fsm::to<state::unattached_wait_src>>,
+    fsm::internal_transition<fsm::from<state::attached_src>, fsm::on<event::cc_changed>>,
+    fsm::transition<fsm::from<state::unattached_wait_src>, fsm::on<event::vbus_reached_safe0v>, fsm::guard<sink_in_context>, fsm::to<state::attach_wait_src>>,
+    fsm::transition<fsm::from<state::unattached_wait_src>, fsm::on<event::vbus_reached_safe0v>, fsm::to<state::unattached_src>>,
+    fsm::internal_transition<fsm::from<state::unattached_wait_src>, fsm::on<event::cc_changed>>,
     fsm::transition<fsm::from<fsm::any_state>, fsm::on<event::error_recovery>, fsm::to<state::error_recovery_src>>,
     fsm::transition<fsm::from<state::error_recovery_src>, fsm::on<fsm::timeout>, fsm::to<state::unattached_src>>>;
 

@@ -25,6 +25,7 @@ namespace usbc {
 namespace tc {
 
 inline constexpr auto t_cc_debounce = std::chrono::milliseconds{150};        // tCCDebounce
+inline constexpr auto t_pd_debounce = std::chrono::milliseconds{15};         // tPDDebounce
 inline constexpr auto t_error_recovery = std::chrono::milliseconds{50};      // tErrorRecovery
 inline constexpr auto t_hard_reset_window = std::chrono::milliseconds{6000}; // > tNoResponse
 
@@ -39,6 +40,11 @@ constexpr bool isRp(cc_state state)
 constexpr bool isRd(cc_state state)
 {
     return state == cc_state::src_rd;
+}
+
+constexpr bool isRa(cc_state state)
+{
+    return state == cc_state::src_ra;
 }
 
 // PD3 collision avoidance, seen from the sink: the source's Rp reads

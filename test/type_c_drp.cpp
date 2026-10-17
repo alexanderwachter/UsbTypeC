@@ -203,23 +203,69 @@ int typeCDrpTests()
     check(f.client.orientation == usbc::plug_orientation::cc2);
     f.vbus.setVoltage(5000); // the supply raises VBUS
 
-    // detach discharges before toggling resumes at Rp
+    // the sink leaves: Rd at once while VBUS is removed, then toggling
+    // resumes at Rd (Unattached.SNK)
     f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     f.ccAlert();
     check(!f.tcpc.sourcing && f.vbus.discharging);
+    check(f.tcpc.pull == usbc::cc_pull::rd && !f.timer.armed);
     check(f.client.detached == 2);
     f.vbus.setVoltage(0);
     check(!f.vbus.discharging);
-    check(f.tcpc.pull == usbc::cc_pull::rp);
-    check(f.timer.armed);
+    check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.armed);
 
-    // noise during a toggle phase debounces back to toggling
-    f.timer.expire(); // Rd phase
+    // open lines reported during the Rd phase are not a source: the
+    // toggle runs on undisturbed
+    auto const slice_started = f.timer.starts;
+    f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
+    f.ccAlert();
+    check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.starts == slice_started);
+
+    // an Rp that vanishes during its debounce: tPDDebounce, then the
+    // DRP continues with the Rp phase
+    f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
+    f.ccAlert();
     f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
     f.ccAlert();
     f.timer.expire();
-    check(f.tcpc.pull == usbc::cc_pull::rd);
+    check(f.tcpc.pull == usbc::cc_pull::rp && f.timer.armed);
     check(f.client.attached_snk == 1 && f.client.attached_src == 1);
+
+    // an Rd that vanishes during its debounce: the DRP continues with
+    // the Rd phase at once
+    f.tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+    f.ccAlert();
+    f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+    f.ccAlert();
+    check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.armed);
+    check(f.client.attached_snk == 1 && f.client.attached_src == 1);
+
+    // the sink that left turned into a source while VBUS was being
+    // removed: its Rp is debounced as the sink flow would, no toggle
+    {
+        fixture g;
+        drp tc2{g.tcpc, g.vbus, g.timer, g.try_timer, usbc::rp_value::p_1a5, g.client};
+        tc2.start();
+        g.timer.expire(); // Rp phase
+        g.tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+        g.ccAlert();
+        g.timer.expire();
+        check(g.tcpc.sourcing && g.client.attached_src == 1);
+        g.vbus.setVoltage(5000);
+
+        g.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+        g.ccAlert(); // the sink is gone: Rd, VBUS being removed
+        check(g.tcpc.pull == usbc::cc_pull::rd && g.vbus.discharging);
+        g.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
+        g.ccAlert(); // ... and the partner presents Rp meanwhile
+        check(!g.timer.armed);
+        g.vbus.setVoltage(0); // vSafe0V: AttachWait.SNK, tCCDebounce
+        check(!g.vbus.discharging && g.timer.armed);
+        g.vbus.setVoltage(5000);
+        g.timer.expire();
+        check(g.tcpc.sinking && g.client.attached_snk == 1);
+        check(g.client.orientation == usbc::plug_orientation::cc1);
+    }
 
     return failures;
 }
@@ -262,7 +308,8 @@ int typeCDrpTrySrcTests()
         check(!f.try_timer.armed);
     }
 
-    // no Rd within tDRPTry: TryWait.SNK attaches as sink on VBUS
+    // no Rd within tDRPTry: TryWait.SNK attaches as sink on VBUS, but
+    // not before tCCDebounce since its entry
     {
         fixture f;
         drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client};
@@ -276,17 +323,42 @@ int typeCDrpTrySrcTests()
         check(f.timer.armed);
         f.timer.expire(); // tDRPTry: no Rd -> TryWait.SNK
         check(f.tcpc.pull == usbc::cc_pull::rd);
-        check(f.timer.armed);
+        check(f.timer.armed && !f.try_timer.armed); // tCCDebounce
 
-        // the partner keeps its Rp and sources again: Attached.SNK
+        // the partner keeps its Rp and sources again: Attached.SNK once
+        // the debounce is up
         f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
         f.ccAlert();
         f.vbus.setVoltage(5000);
+        check(!f.tcpc.sinking && f.client.attached_snk == 0);
+        f.timer.expire();
         check(f.tcpc.sinking && f.client.attached_snk == 1);
         check(f.client.advertisement == usbc::rp_value::usb_default);
     }
 
-    // nothing at all in TryWait.SNK: back to toggling
+    // ... or on the VBUS report arriving after the debounce
+    {
+        fixture f;
+        drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client};
+        tc.start();
+
+        f.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        f.timer.expire(); // -> Try.SRC
+        f.vbus.setVoltage(0);
+        f.timer.expire(); // tDRPTry -> TryWait.SNK
+        f.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.timer.expire(); // tCCDebounce, no VBUS yet
+        check(!f.tcpc.sinking && !f.timer.armed);
+        f.vbus.setVoltage(5000);
+        check(f.tcpc.sinking && f.client.attached_snk == 1);
+        check(f.client.advertisement == usbc::rp_value::p_3a0);
+    }
+
+    // both pins open in TryWait.SNK: tPDDebounce, then back to toggling
+    // - a flap within it does not restart the tCCDebounce
     {
         fixture f;
         drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client};
@@ -297,11 +369,53 @@ int typeCDrpTrySrcTests()
         f.vbus.setVoltage(5000);
         f.timer.expire(); // -> Try.SRC
         f.vbus.setVoltage(0);
-        f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
         f.timer.expire(); // tDRPTry -> TryWait.SNK
-        f.timer.expire(); // tDRPTryWait: nothing -> Unattached.SNK
-        check(f.tcpc.pull == usbc::cc_pull::rd);
+        auto const debounce_started = f.timer.starts;
+
+        f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
+        f.ccAlert();
+        check(f.try_timer.armed); // tPDDebounce
+        f.tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
+        f.ccAlert(); // the Rp is back in time
+        check(!f.try_timer.armed && f.timer.armed && f.timer.starts == debounce_started);
+
+        f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.try_timer.expire(); // tPDDebounce: the partner is gone -> Unattached.SNK
+        check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.starts == debounce_started + 1);
+        f.timer.expire(); // the Rd slice ends: toggling
+        check(f.tcpc.pull == usbc::cc_pull::rp);
         check(f.client.attached_snk == 0 && f.client.attached_src == 0);
+    }
+
+    // the sink leaves Attached.SRC: a source-preferring port goes to
+    // TryWait.SNK once VBUS is down, not back to toggling
+    {
+        fixture f;
+        drp tc{f.tcpc, f.vbus, f.timer, f.try_timer, f.client};
+        tc.start();
+        f.timer.expire(); // Rp phase
+        f.tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+        f.ccAlert();
+        f.timer.expire(); // tCCDebounce -> Attached.SRC
+        check(f.tcpc.sourcing && f.client.attached_src == 1);
+        f.vbus.setVoltage(5000);
+
+        f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+        f.ccAlert(); // the sink is gone: Rd, VBUS being removed
+        check(!f.tcpc.sourcing && f.vbus.discharging && f.tcpc.pull == usbc::cc_pull::rd);
+        f.vbus.setVoltage(0); // vSafe0V -> TryWait.SNK
+        check(!f.vbus.discharging && f.timer.armed);
+        auto const debounce_started = f.timer.starts;
+
+        // the partner turned source: Rp and VBUS attach after tCCDebounce
+        f.tcpc.line_state = {usbc::cc_state::snk_power_1a5, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.vbus.setVoltage(5000);
+        check(!f.tcpc.sinking && f.timer.starts == debounce_started);
+        f.timer.expire();
+        check(f.tcpc.sinking && f.client.attached_snk == 1);
+        check(f.client.advertisement == usbc::rp_value::p_1a5);
     }
 
     // a flapping partner cannot extend tDRPTry: the budget is Try.SRC's
@@ -372,7 +486,7 @@ int typeCDrpTrySrcTests()
         f.ccAlert();          // Rd lost, the debounce restarts once more
         f.try_timer.expire(); // ... and fails -> TryWait.SNK, not monitoring again
         check(f.tcpc.pull == usbc::cc_pull::rd);
-        check(f.timer.armed && !f.try_timer.armed); // tDRPTryWait running
+        check(f.timer.armed && !f.try_timer.armed); // TryWait.SNK's tCCDebounce running
         check(f.client.attached_src == 0);
     }
 
@@ -705,6 +819,16 @@ int typeCDrpRoleLockTests()
         f.vbus.setVoltage(5000);
         f.timer.expire(); // tCCDebounce
         check(f.tcpc.sinking && f.client.attached_snk == 1);
+
+        // an Rp vanishing during its debounce would send the DRP on to
+        // the Rp phase: locked, another Rd slice instead
+        f.vbus.setVoltage(0);
+        check(f.client.detached == 1 && f.tcpc.pull == usbc::cc_pull::rd);
+        f.ccAlert(); // the source is still there
+        f.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
+        f.ccAlert();
+        f.timer.expire(); // tPDDebounce
+        check(f.tcpc.pull == usbc::cc_pull::rd && f.timer.armed);
     }
 
     // source preference, locked: where the port would try Rp it
