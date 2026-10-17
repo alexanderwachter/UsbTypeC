@@ -22,4 +22,18 @@ zephyr_include_directories(
     ${CMAKE_CURRENT_LIST_DIR}/include
 )
 
+# "west build -t dot" draws the state machines of the image just built,
+# for mtl's fsmview: the tables come from the ELF's symbols, every
+# instantiation as the image runs it, the graphs from the stack's and
+# the application's headers through mtl's generator
+add_custom_target(dot
+    COMMAND ${PYTHON_EXECUTABLE} ${ZEPHYR_MTL_MODULE_DIR}/tools/dotgen/dotgen.py
+            ${CMAKE_CURRENT_LIST_DIR}/../include ${APPLICATION_SOURCE_DIR}
+            --elf ${PROJECT_BINARY_DIR}/${KERNEL_ELF_NAME} --nm ${CMAKE_NM}
+            -o ${CMAKE_BINARY_DIR}/dot
+    DEPENDS ${ZEPHYR_FINAL_EXECUTABLE}
+    COMMENT "Writing the graphs of the image's state machines into ${CMAKE_BINARY_DIR}/dot"
+    VERBATIM
+)
+
 endif()
