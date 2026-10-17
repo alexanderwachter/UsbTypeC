@@ -37,3 +37,6 @@ add_custom_target(dot
 )
 
 endif()
+
+# Drivers the stack's boards need, independent of the stack itself
+add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/drivers)

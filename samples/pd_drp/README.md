@@ -14,14 +14,23 @@ duty cycle selects the DCDC output voltage (5/9/15 V), GPIOs gate the
 DCDC and the VBUS source switch, and the ADC-based vbus driver
 measures and discharges VBUS.
 
+On a NUCLEO-G474RE with the X-NUCLEO-DRP1M1 shield the source is the
+shield's SOURCE path, 5 V from the Nucleo's rail through the CN4
+jumper: the TCPP03-M20 power path controller switches it onto VBUS,
+opens and closes the sink path, discharges VBUS and carries the VCONN
+switch (registered as the UCPD driver's VCONN callbacks). The offer
+of 1.5 A presumes the rail is fed from E5V/VIN, not from the ST-LINK's
+USB alone.
+
 Role swaps are full PD exchanges. A DR_Swap flips the data role on the
 partner's Accept. A PR_Swap runs the spec's choreography: Accept, the
 old source's transition to off, the PS_RDY hand-off, and the Type-C
 termination flip at the Assert_Rd/Assert_Rp moments - the connection
 layer's swap standby suspends detach detection while VBUS is
 legitimately absent, and its tPSSourceOff/tPSSourceOn timeouts restart
-connection resolution if the partner never completes. The joystick
-triggers the requests: SEL a PR_Swap, LEFT a DR_Swap; the partner's
+connection resolution if the partner never completes. The buttons
+trigger the requests: `sw0` a PR_Swap, `sw1` a DR_Swap (the eval
+board's joystick SEL and LEFT; a Nucleo has only `sw0`); the partner's
 incoming requests are the engine tables' questions, answered by the
 injected observers' `check(usbc::pe::pr_swap_allowed)` and kin - the
 answers are what enable the features.
@@ -48,11 +57,18 @@ west build -b stm32g081b_eval usbc/samples/pd_drp
 west flash
 ```
 
+With the shield:
+
+```sh
+west build -b nucleo_g474re --shield x_nucleo_drp1m1 usbc/samples/pd_drp
+```
+
 ## Requirements
 
 A board whose devicetree provides a `usb-c-connector` node with `tcpc`
-and `vbus` phandles, dual power-role support, a
-`zephyr,usb-c-pwrctrl` node (aliased `usbc-port0-pwrctrl`) for the
-source power path, and two buttons (`sw0`, `sw1` aliases). The DRP
+and `vbus` phandles, dual power-role support, a source power path -
+either a `zephyr,usb-c-pwrctrl` node (aliased `usbc-port0-pwrctrl`)
+or a `ppc` phandle on the connector switching a fixed 5 V rail - and
+a button (`sw0` alias; `sw1` adds the DR_Swap trigger). The DRP
 actively drives both terminations, so the TCPC must not be strapped
 for dead-battery Rd.

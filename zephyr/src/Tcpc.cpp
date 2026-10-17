@@ -7,6 +7,7 @@
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
 
+#include <zephyr/drivers/usb_c/usbc_ppc.h>
 #include <zephyr/logging/log.h>
 
 #include <algorithm>
@@ -94,6 +95,11 @@ Tcpc::Tcpc(device const* dev) : dev_(dev)
     k_work_init(&alert_work_, &Tcpc::notifyWork);
 }
 
+Tcpc::Tcpc(device const* dev, device const* ppc) : dev_(dev), ppc_(ppc)
+{
+    k_work_init(&alert_work_, &Tcpc::notifyWork);
+}
+
 void Tcpc::setAlertHandler(alert_callback callback, void* context)
 {
     callback_ = callback;
@@ -154,7 +160,8 @@ bool Tcpc::setPlugOrientation(plug_orientation orientation)
 // path is the board's own, as with a port protector's gate
 bool Tcpc::sourceVbus(bool enable)
 {
-    int const ret = tcpc_set_src_ctrl(dev_, enable);
+    int const ret =
+        ppc_ != nullptr ? ppc_set_src_ctrl(ppc_, enable) : tcpc_set_src_ctrl(dev_, enable);
     if (ret != 0 && ret != -ENOSYS) {
         LOG_ERR("switching source VBUS %s failed (%d)", enable ? "on" : "off", ret);
         return false;
@@ -164,7 +171,8 @@ bool Tcpc::sourceVbus(bool enable)
 
 bool Tcpc::sinkVbus(bool enable)
 {
-    int const ret = tcpc_set_snk_ctrl(dev_, enable);
+    int const ret =
+        ppc_ != nullptr ? ppc_set_snk_ctrl(ppc_, enable) : tcpc_set_snk_ctrl(dev_, enable);
     if (ret != 0 && ret != -ENOSYS) {
         LOG_ERR("switching sink VBUS %s failed (%d)", enable ? "on" : "off", ret);
         return false;

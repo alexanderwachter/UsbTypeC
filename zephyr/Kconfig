@@ -38,3 +38,6 @@ module-str = USB Type-C stack
 source "subsys/logging/Kconfig.template.log_config"
 
 endif # USB_TYPEC_STACK
+
+# Drivers the stack's boards need, independent of the stack itself
+rsource "drivers/Kconfig"

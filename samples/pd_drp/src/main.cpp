@@ -21,8 +21,10 @@
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
 
+#include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/pwm.h>
+#include <zephyr/drivers/usb_c/usbc_tcpc.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -32,7 +34,22 @@
 LOG_MODULE_REGISTER(pd_drp_sample, LOG_LEVEL_INF);
 
 #define USBC_PORT0_NODE DT_ALIAS(usbc_port0)
+
+// The source power path is the board's: the STM32G081B-EVAL's DCDC
+// behind a PWM voltage select (zephyr,usb-c-pwrctrl, aliased
+// usbc-port0-pwrctrl), or a fixed 5 V rail that the connector's power
+// path controller (ppc) switches onto VBUS - the X-NUCLEO-DRP1M1
 #define PWRCTRL_NODE DT_ALIAS(usbc_port0_pwrctrl)
+#define HAS_PWRCTRL DT_NODE_EXISTS(PWRCTRL_NODE)
+#define HAS_PPC DT_NODE_HAS_PROP(USBC_PORT0_NODE, ppc)
+
+#if HAS_PPC
+#define PPC_NODE DT_PROP(USBC_PORT0_NODE, ppc)
+#if DT_NODE_HAS_COMPAT(PPC_NODE, st_tcpp03_m20)
+#define PPC_SWITCHES_VCONN 1
+#include <zephyr/drivers/usb_c/tcpp03_m20.h>
+#endif
+#endif
 
 namespace {
 
@@ -62,12 +79,34 @@ struct Power : usbc::SinkPower<Power> {
     void onContractLost() { LOG_WRN("sink contract lost, back to vSafe5V"); }
 };
 
-// The eval board's source power path: a PWM duty cycle selects the
-// DCDC output voltage, GPIOs gate the DCDC and the VBUS source
-// switch. The settled report comes from the stack's work queue, never
+// The supply's settled report comes from the stack's work queue, never
 // synchronously - the engine is mid-transition when setOutput() runs
-// (no output-voltage feedback on this board, as in Zephyr's sample)
-struct Supply : usbc::SourceSupply<Supply> {
+// (no output-voltage feedback on these boards, as in Zephyr's sample)
+struct QueuedReadyReport {
+    k_work work{};
+    usbc::supply_ready_callback callback = nullptr;
+    void* context = nullptr;
+
+    QueuedReadyReport()
+    {
+        k_work_init(&work, [](k_work* item) {
+            auto* self = CONTAINER_OF(item, QueuedReadyReport, work);
+            self->callback(self->context, true);
+        });
+    }
+
+    void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
+    {
+        callback = cb;
+        context = ctx;
+    }
+    void reportReady() { k_work_submit_to_queue(&usbc::zephyr::workQueue(), &work); }
+};
+
+#if HAS_PWRCTRL
+// The eval board's source power path: a PWM duty cycle selects the
+// DCDC output voltage, GPIOs gate the DCDC and the VBUS source switch
+struct Supply : usbc::SourceSupply<Supply>, QueuedReadyReport {
     // duty cycles measured for the eval board's DCDC (50 us period)
     static constexpr uint32_t pulseFor(usbc::millivolt voltage)
     {
@@ -82,17 +121,6 @@ struct Supply : usbc::SourceSupply<Supply> {
     pwm_dt_spec const voltage_select = PWM_DT_SPEC_GET(PWRCTRL_NODE);
     gpio_dt_spec const source_en = GPIO_DT_SPEC_GET(PWRCTRL_NODE, source_en_gpios);
     gpio_dt_spec const dcdc_en = GPIO_DT_SPEC_GET(PWRCTRL_NODE, dcdc_en_gpios);
-    k_work work{};
-    usbc::supply_ready_callback callback = nullptr;
-    void* context = nullptr;
-
-    Supply()
-    {
-        k_work_init(&work, [](k_work* item) {
-            auto* self = CONTAINER_OF(item, Supply, work);
-            self->callback(self->context, true);
-        });
-    }
 
     bool init()
     {
@@ -101,21 +129,34 @@ struct Supply : usbc::SourceSupply<Supply> {
                pwm_set_pulse_dt(&voltage_select, pulseFor(0)) == 0;
     }
 
-    void setReadyCallback(usbc::supply_ready_callback cb, void* ctx)
-    {
-        callback = cb;
-        context = ctx;
-    }
     bool setOutput(usbc::millivolt voltage, usbc::milliamp current_limit)
     {
         LOG_INF("supply: %d mV, %d mA", voltage, current_limit);
         if (pwm_set_pulse_dt(&voltage_select, pulseFor(voltage)) != 0) {
             return false;
         }
-        k_work_submit_to_queue(&usbc::zephyr::workQueue(), &work);
+        reportReady();
         return true;
     }
 };
+#else
+// A fixed 5 V rail: the power path controller's source switch puts it
+// onto VBUS (Tcpc::sourceVbus), so vSafe5V is the only operating point
+// and the connector's source-pdos offer nothing else
+struct Supply : usbc::SourceSupply<Supply>, QueuedReadyReport {
+    bool init() { return true; }
+
+    bool setOutput(usbc::millivolt voltage, usbc::milliamp current_limit)
+    {
+        LOG_INF("supply: %d mV, %d mA", voltage, current_limit);
+        if (voltage != 5000) {
+            return false;
+        }
+        reportReady();
+        return true;
+    }
+};
+#endif
 static_assert(usbc::concepts::source_supply<Supply>);
 
 // Signals that the power supply is live at the contract's operating
@@ -132,7 +173,7 @@ struct ContractMonitor : usbc::SourcePower<ContractMonitor> {
 };
 
 // The injected vconn_port: connects the VCONN switch - behind the
-// TCPC driver on this board - and answers the engines' question
+// TCPC driver on both boards - and answers the engines' question
 // whether the port may take the role. The answer brings the VCONN
 // machine's sourcing states and the engines' VCONN_Swap states in; a
 // port without it compiles the feature out
@@ -142,8 +183,22 @@ struct VconnPolicy : fsm::observing<VconnPolicy> {
     void notifyEntry(usbc::vconn::vconn_switch vconn) { tcpc.setVconn(vconn.on); }
     bool check(usbc::pe::vconn_swap_allowed) { return true; }
 
-    usbc::zephyr::Tcpc& tcpc; // this board's switch sits behind the TCPC
+    usbc::zephyr::Tcpc& tcpc;
 };
+
+#ifdef PPC_SWITCHES_VCONN
+// The switch itself sits in the power path controller: the UCPD driver
+// asks these callbacks, naming the CC pin that carries VCONN
+int switchVconn(device const*, device const*, tc_cc_polarity polarity, bool enable)
+{
+    return tcpp03_m20_set_vconn(DEVICE_DT_GET(PPC_NODE), polarity, enable);
+}
+
+int dischargeVconn(device const*, device const*, tc_cc_polarity, bool enable)
+{
+    return tcpp03_m20_set_vconn_discharge(DEVICE_DT_GET(PPC_NODE), enable);
+}
+#endif
 
 // Answers the engines' questions on the partner's PR_Swap and
 // DR_Swap - this board always agrees; the answers are what enable
@@ -193,8 +248,16 @@ using Port = usbc::PdDrp<
     SwapPolicy>;
 #endif
 
-usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
-usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
+device const* const tcpc_device = DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc));
+device const* const vbus_device = DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus));
+#if HAS_PPC
+// The VBUS paths and the discharge are the power path controller's
+usbc::zephyr::Tcpc tcpc{tcpc_device, DEVICE_DT_GET(PPC_NODE)};
+usbc::zephyr::Vbus vbus{vbus_device, DEVICE_DT_GET(PPC_NODE)};
+#else
+usbc::zephyr::Tcpc tcpc{tcpc_device};
+usbc::zephyr::Vbus vbus{vbus_device};
+#endif
 usbc::pd_drp_timers<usbc::zephyr::Timer> timers;
 
 usbc::PowerPolicy sink_policy{5000, 27000}; // at least 5 W, aim for 27 W
@@ -243,10 +306,11 @@ Port port{
 };
 #endif
 
-// The joystick triggers the PD swap messaging, submitted to the
-// stack's queue - the serialization the swap calls require. The
-// request goes on the wire; the roles change once the partner accepts
-// and the PS_RDY hand-off completes
+// The buttons trigger the PD swap messaging (sw0 a PR_Swap, sw1 a
+// DR_Swap where the board has a second one), submitted to the stack's
+// queue - the serialization the swap calls require. The request goes
+// on the wire; the roles change once the partner accepts and the
+// PS_RDY hand-off completes
 void powerSwap(k_work*)
 {
     if (!port.swapPowerRole()) {
@@ -256,6 +320,13 @@ void powerSwap(k_work*)
     LOG_INF("PR_Swap sent");
 }
 
+K_WORK_DEFINE(power_swap_work, powerSwap);
+
+gpio_dt_spec const power_button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
+gpio_callback power_button_cb;
+
+#define HAS_DATA_BUTTON DT_NODE_EXISTS(DT_ALIAS(sw1))
+#if HAS_DATA_BUTTON
 void dataSwap(k_work*)
 {
     if (!port.swapDataRole()) {
@@ -265,13 +336,11 @@ void dataSwap(k_work*)
     LOG_INF("DR_Swap sent");
 }
 
-K_WORK_DEFINE(power_swap_work, powerSwap);
 K_WORK_DEFINE(data_swap_work, dataSwap);
 
-gpio_dt_spec const power_button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
 gpio_dt_spec const data_button = GPIO_DT_SPEC_GET(DT_ALIAS(sw1), gpios);
-gpio_callback power_button_cb;
 gpio_callback data_button_cb;
+#endif
 
 void setupButton(
     gpio_dt_spec const& button,
@@ -293,15 +362,22 @@ int main()
         LOG_ERR("supply hardware init failed");
         return -1;
     }
+#ifdef PPC_SWITCHES_VCONN
+    tcpc_set_vconn_cb(tcpc_device, switchVconn, nullptr);
+    tcpc_set_vconn_discharge_cb(tcpc_device, dischargeVconn, nullptr);
+#endif
     port.start(); // leave Disabled: toggle Rd/Rp, resolve with the partner
 
     setupButton(power_button, power_button_cb, [](const device*, gpio_callback*, uint32_t) {
         k_work_submit_to_queue(&usbc::zephyr::workQueue(), &power_swap_work);
     });
+#if HAS_DATA_BUTTON
     setupButton(data_button, data_button_cb, [](const device*, gpio_callback*, uint32_t) {
         k_work_submit_to_queue(&usbc::zephyr::workQueue(), &data_swap_work);
     });
-
-    LOG_INF("USB PD dual-role port running; SEL: power role swap, LEFT: data role swap");
+    LOG_INF("USB PD dual-role port running; sw0: power role swap, sw1: data role swap");
+#else
+    LOG_INF("USB PD dual-role port running; sw0: power role swap");
+#endif
     return 0;
 }

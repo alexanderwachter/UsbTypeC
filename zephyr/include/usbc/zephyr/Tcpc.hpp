@@ -8,10 +8,12 @@
  * delivered from the stack's work queue (WorkQueue.hpp) - the stack's
  * serialized context. readAlert() drains the accumulated flags.
  * The PD revision from setMessageHeaderInfo() cannot be forwarded -
- * Zephyr's set_roles carries no revision. Ports whose VBUS switches
- * live outside the TCPC (dedicated PPC, GPIO) wrap or replace
- * sourceVbus()/sinkVbus(). The stack expects single transmission
- * attempts: configure the driver without hardware retries.
+ * Zephyr's set_roles carries no revision. A port whose VBUS switches
+ * sit in a power path controller (usbc_ppc.h) names its device in the
+ * constructor: sourceVbus()/sinkVbus() drive the PPC's paths then.
+ * Other arrangements (GPIO switches) wrap or replace them. The stack
+ * expects single transmission attempts: configure the driver without
+ * hardware retries.
  *
  * The instance is pinned: the driver holds its address for the alert
  * callback.
@@ -35,6 +37,7 @@ namespace usbc::zephyr {
 class Tcpc {
 public:
     explicit Tcpc(device const* dev);
+    Tcpc(device const* dev, device const* ppc);
     Tcpc(Tcpc const&) = delete;
     Tcpc& operator=(Tcpc const&) = delete;
 
@@ -63,6 +66,7 @@ private:
     static void notifyWork(k_work* work);
 
     device const* dev_;
+    device const* ppc_ = nullptr;
     k_work alert_work_{};
     alert_callback callback_ = nullptr;
     void* context_ = nullptr;

@@ -1,0 +1,7 @@
+shield:
+  name: x_nucleo_drp1m1
+  full_name: X-NUCLEO-DRP1M1
+  vendor: st
+  supported_features:
+    - usb-c
+    - usb-device

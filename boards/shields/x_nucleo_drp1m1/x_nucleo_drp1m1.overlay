@@ -1,0 +1,63 @@
+/*
+ * Copyright (c) 2026 Alexander Wachter
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * X-NUCLEO-DRP1M1: USB Type-C Power Delivery dual role power expansion
+ * board with TCPP03-M20 port protection, on the Nucleo-64 connectors.
+ *
+ *   VBUS    Arduino A0, through 200 k (upper) / 40.2 k (lower)
+ *   CC1     Arduino D10 (ST morpho CN10 pin 17); also CN10 pin 23 (D7)
+ *   CC2     Arduino D5  (ST morpho CN10 pin 27); also CN10 pin 26
+ *   D+      ST morpho CN10 pin 12
+ *   D-      ST morpho CN10 pin 14
+ *   SCL     Arduino D15 (CN10 pin 3)
+ *   SDA     Arduino D14 (CN10 pin 5)
+ *   ENABLE  ST morpho CN10 pin 2
+ *   FLGn    Arduino D0 (CN10 pin 37) - the Nucleo-64's console RX
+ *   IANA    Arduino A4 (VBUS current, 42 V/V across 7 mOhm)
+ *   SOURCE / SINK terminal voltages: Arduino A1 / A2, same divider
+ *
+ * The CC and USB data lines are the MCU's UCPD and USB alternate
+ * functions: the board overlay next to this file routes them.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/gpio/st-morpho-header.h>
+
+/ {
+	aliases {
+		usbc-port0 = &x_nucleo_drp1m1_port;
+	};
+
+	x_nucleo_drp1m1_vbus: vbus-x-nucleo-drp1m1 {
+		compatible = "zephyr,usb-c-vbus-adc";
+		io-channels = <&arduino_adc 0>;
+		output-ohms = <40200>;
+		full-ohms = <(200000 + 40200)>;
+	};
+
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		x_nucleo_drp1m1_port: usbc-port@0 {
+			compatible = "usb-c-connector";
+			reg = <0>;
+			vbus = <&x_nucleo_drp1m1_vbus>;
+			ppc = <&x_nucleo_drp1m1_ppc>;
+			power-role = "dual";
+		};
+	};
+};
+
+&arduino_i2c {
+	status = "okay";
+
+	/* I2C_ADD is pulled low: address 0x34 */
+	x_nucleo_drp1m1_ppc: tcpp03@34 {
+		compatible = "st,tcpp03-m20";
+		reg = <0x34>;
+		enable-gpios = <&st_morpho_header ST_MORPHO_R_2 GPIO_ACTIVE_HIGH>;
+	};
+};

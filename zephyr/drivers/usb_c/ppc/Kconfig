@@ -1,0 +1,12 @@
+# Copyright (c) 2026 Alexander Wachter
+# SPDX-License-Identifier: Apache-2.0
+
+config USBC_PPC_TCPP03_M20
+	bool "STMicroelectronics TCPP03-M20 port protection"
+	default y
+	depends on DT_HAS_ST_TCPP03_M20_ENABLED
+	depends on USBC_PPC_DRIVER
+	select I2C
+	select GPIO
+	help
+	  Power path controller driver for the ST TCPP03-M20

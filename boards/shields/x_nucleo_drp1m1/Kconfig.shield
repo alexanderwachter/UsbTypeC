@@ -1,0 +1,5 @@
+# Copyright (c) 2026 Alexander Wachter
+# SPDX-License-Identifier: Apache-2.0
+
+config SHIELD_X_NUCLEO_DRP1M1
+	def_bool $(shields_list_contains,x_nucleo_drp1m1)

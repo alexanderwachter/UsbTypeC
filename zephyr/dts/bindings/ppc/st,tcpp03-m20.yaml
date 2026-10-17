@@ -1,0 +1,34 @@
+# Copyright (c) 2026 Alexander Wachter
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  STMicroelectronics TCPP03-M20 USB Type-C port protection for dual
+  role power, controlled over I2C: gate drivers for the external
+  N-MOSFETs of the sink (consumer) and source (provider) VBUS paths,
+  VBUS and VCONN discharge, a VCONN switch onto either CC pin, CC and
+  VBUS overvoltage protection, VBUS overcurrent protection, and fault
+  flags on the open-drain FLGn pin.
+
+  The I2C address is 0x34 with I2C_ADD low, 0x35 with it high.
+
+compatible: "st,tcpp03-m20"
+
+include: i2c-device.yaml
+
+properties:
+  enable-gpios:
+    type: phandle-array
+    description: |
+      The ENABLE pin. Low holds the device in reset: its dead-battery Rd
+      sits on the CC pins and the I2C registers are cleared. The driver
+      drives it high at init. Leave the property out on a board that
+      ties the pin high.
+
+  irq-gpios:
+    type: phandle-array
+    description: |
+      The FLGn pin, open drain, active low. In the normal power mode it
+      signals a fault (overvoltage, overcurrent, overtemperature); the
+      driver reads the flag register then and reports through the PPC
+      event handler. Leave the property out when the pin does not reach
+      the MCU.

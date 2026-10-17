@@ -7,6 +7,7 @@
 #include <usbc/zephyr/Vbus.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
 
+#include <zephyr/drivers/usb_c/usbc_ppc.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_DECLARE(usb_typec, CONFIG_USB_TYPEC_STACK_LOG_LEVEL);
@@ -28,6 +29,12 @@ constexpr tc_vbus_level toZephyr(vbus_level level)
 
 Vbus::Vbus(device const* dev, std::chrono::milliseconds poll_interval)
     : dev_(dev), poll_interval_(poll_interval)
+{
+    k_work_init_delayable(&work_, &Vbus::poll);
+}
+
+Vbus::Vbus(device const* dev, device const* ppc, std::chrono::milliseconds poll_interval)
+    : dev_(dev), ppc_(ppc), poll_interval_(poll_interval)
 {
     k_work_init_delayable(&work_, &Vbus::poll);
 }
@@ -68,7 +75,8 @@ bool Vbus::meets(vbus_level level)
 
 bool Vbus::discharge(bool on)
 {
-    int const ret = usbc_vbus_discharge(dev_, on);
+    int const ret =
+        ppc_ != nullptr ? ppc_set_vbus_discharge(ppc_, on) : usbc_vbus_discharge(dev_, on);
     if (ret != 0) {
         LOG_ERR("switching VBUS discharge %s failed (%d)", on ? "on" : "off", ret);
     }
