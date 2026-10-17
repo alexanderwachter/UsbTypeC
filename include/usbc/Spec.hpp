@@ -46,8 +46,7 @@ inline constexpr unsigned dc_src_drp_min = 30; // dcSRC.DRP, percent of tDRP at 
 inline constexpr unsigned dc_src_drp_max = 70;
 // one role's slice of the toggle: dcSRC.DRP min * tDRP min to max * max
 inline constexpr timeout_range t_drp_pw{milliseconds{15}, milliseconds{70}};
-inline constexpr timeout_range t_drp_try{milliseconds{75}, milliseconds{150}};       // tDRPTry
-inline constexpr timeout_range t_drp_try_wait{milliseconds{400}, milliseconds{800}}; // tDRPTryWait
+inline constexpr timeout_range t_drp_try{milliseconds{75}, milliseconds{150}}; // tDRPTry
 inline constexpr timeout_range t_try_cc_debounce{
     milliseconds{10},
     milliseconds{20}

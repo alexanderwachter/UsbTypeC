@@ -73,6 +73,7 @@ static_assert(drpTableChecked<
                   tc::drp::try_snk_timer_ranges<default_drp_timing>>>());
 static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::none>> == 1);
 static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::source>> == 2);
+static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::sink>> == 2);
 
 static_assert(tc::watch_events_consistent_v<tc::tc_sink_table>);
 static_assert(tc::watch_events_consistent_v<tc::tc_source_table>);

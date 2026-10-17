@@ -296,13 +296,14 @@ int typeCSourceTests()
         tcpc.callback(tcpc.context);
     };
 
-    // sink attaches on CC2: debounce, then VBUS applied (already at vSafe0V)
+    // sink attaches on CC2: debounce with a load on VBUS, then VBUS
+    // applied (already at vSafe0V)
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_rd};
     ccAlert();
-    check(timer.armed);
+    check(timer.armed && vbus.discharging);
     check(!tcpc.sourcing); // not before the debounce completes
     timer.expire();
-    check(tcpc.sourcing);
+    check(tcpc.sourcing && !vbus.discharging);
     check(tcpc.orientation == usbc::plug_orientation::cc2);
     check(client.attached == 1 && client.orientation == usbc::plug_orientation::cc2);
     vbus.setVoltage(5000); // the supply raises VBUS
@@ -328,12 +329,14 @@ int typeCSourceTests()
     check(!tcpc.sourcing && !vbus.discharging);
     check(client.detached == 2);
 
-    // Rd stable but VBUS not yet at vSafe0V: attach waits for it
+    // Rd stable but VBUS not yet at vSafe0V: attach waits for it, the
+    // load still applied
     vbus.setVoltage(5000);
     tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
     ccAlert();
     timer.expire();
     check(!tcpc.sourcing && client.attached == 2); // debounced, waiting
+    check(vbus.discharging);
     vbus.setVoltage(0);
     check(tcpc.sourcing && client.attached == 3);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
@@ -387,7 +390,7 @@ int typeCSourceTests()
     ccAlert(); // the next sink, during the discharge
     check(!timer.armed);
     vbus.setVoltage(0);
-    check(!vbus.discharging && timer.armed); // AttachWait.SRC, tCCDebounce
+    check(vbus.discharging && timer.armed); // AttachWait.SRC, tCCDebounce
     timer.expire();
     check(tcpc.sourcing && client.attached == 5);
     check(client.orientation == usbc::plug_orientation::cc2);

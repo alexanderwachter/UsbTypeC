@@ -5,10 +5,10 @@
  * advertisement and enters AttachWait.SRC when a sink or an accessory
  * appears - Rd on either pin, or Ra on both (4.5.2.2.7.2; Ra on one
  * pin alone is a cable without a device). AttachWait.SRC debounces a
- * single Rd for tCCDebounce, requires VBUS at vSafe0V before applying
- * power (the debounce outcome asks the driver;
- * attach_wait_src_debounced waits for the report when it is not there
- * yet, like the sink's sub-state waits for vSafe5V), and leaves for
+ * single Rd for tCCDebounce with a load on VBUS (4.5.2.2.8.1), requires
+ * VBUS at vSafe0V before applying power (the debounce outcome asks the
+ * driver; attach_wait_src_debounced waits for the report when it is not
+ * there yet, like the sink's sub-state waits for vSafe5V), and leaves for
  * the table's open exit the moment the sink is gone - both pins open,
  * or open and Ra - without a debounce (4.5.2.2.8.2, "within
  * tSRCDisconnect, as quickly as possible"). Rd on both pins or Ra on
@@ -131,11 +131,12 @@ struct attach_wait_src : source_state {
     }
     using source_state::source_state;
 
-    // debouncing: the outcome asks the driver whether VBUS is at
-    // vSafe0V, the debounced wait arms the report when it is not
+    // debouncing, with a load on VBUS so it reaches vSafe0V within
+    // tVsafe0V (4.5.2.2.8.1): the outcome asks the driver whether it
+    // is there, the debounced wait arms the report when it is not
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rp},
-        vbus_power{vbus_path::open},
+        vbus_power{vbus_path::safe0v},
         vbus_level{vbus_level::unwatched}
     );
 
@@ -147,12 +148,13 @@ struct attach_wait_src : source_state {
 };
 
 // AttachWait.SRC with a stable single Rd, waiting for VBUS at vSafe0V
+// (the sink's capacitors may hold charge: the load stays applied)
 struct attach_wait_src_debounced : source_state {
     using source_state::source_state;
 
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rp},
-        vbus_power{vbus_path::open},
+        vbus_power{vbus_path::safe0v},
         vbus_level{vbus_level::safe0v}
     );
 };
