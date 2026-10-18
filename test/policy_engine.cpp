@@ -128,7 +128,10 @@ static_assert(wide.select(offered, sink_low)->position == 2); // 20 V excluded
 static_assert(wide.select(offered, sink_low)->operating_current == 2000);
 static_assert(wide.select(offered, sink_low)->voltage == 9000);
 
-// the specification's Power/PD notation, encoded as state annotations
+// the specification's Power/PD notation, encoded as state annotations:
+// the power level on every state, the PD status only where the spec
+// marks it definitively - a state marked Connected/not Connected
+// carries none
 namespace spec_notation {
 using namespace usbc::pe;
 using enum power_level;
@@ -136,15 +139,15 @@ using enum pd_status;
 
 static_assert(
     state::pe_snk_startup::power == default_power &&
-    state::pe_snk_startup::pd == connected_or_not_connected
+    !state::pe_snk_startup::annotations.has<pd_status>
 );
 static_assert(
     state::pe_snk_discovery::power == default_power &&
-    state::pe_snk_discovery::pd == connected_or_not_connected
+    !state::pe_snk_discovery::annotations.has<pd_status>
 );
 static_assert(
     state::pe_snk_wait_for_capabilities::power == default_power &&
-    state::pe_snk_wait_for_capabilities::pd == connected_or_not_connected
+    !state::pe_snk_wait_for_capabilities::annotations.has<pd_status>
 );
 static_assert(
     state::pe_snk_evaluate_capability::power == default_power &&
@@ -183,20 +186,19 @@ static_assert(
 );
 static_assert(
     state::pe_snk_hard_reset::power == contract_or_default &&
-    state::pe_snk_hard_reset::pd == connected_or_not_connected
+    !state::pe_snk_hard_reset::annotations.has<pd_status>
 );
 static_assert(
     state::pe_snk_transition_to_default::power == transition &&
     state::pe_snk_transition_to_default::pd == not_connected
 );
 
-// the note derives from the enums: single source of truth
-static_assert(state::pe_snk_ready::dot_note == "Power: Explicit Contract | PD: Connected");
-static_assert(state::pe_snk_startup::dot_note == "Power: Default | PD: Connected/not Connected");
+// both are observed from the annotation set
 static_assert(
-    state::pe_snk_soft_reset::dot_note ==
-    "Power: Default/implicit or explicit contract | PD: Connected"
+    state::pe_snk_ready::annotations.get<power_level>() == explicit_contract &&
+    state::pe_snk_ready::annotations.get<pd_status>() == connected
 );
+static_assert(state::pe_snk_transition_to_default::annotations.get<pd_status>() == not_connected);
 } // namespace spec_notation
 
 // extended header round-trip

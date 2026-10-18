@@ -125,11 +125,11 @@ using namespace usbc::pe::state;
 
 static_assert(
     pe_src_startup::power == power_level::default_power &&
-    pe_src_startup::pd == pd_status::connected_or_not_connected
+    !pe_src_startup::annotations.has<pd_status>
 );
 static_assert(
     pe_src_send_capabilities::power == power_level::default_power &&
-    pe_src_send_capabilities::pd == pd_status::connected_or_not_connected
+    !pe_src_send_capabilities::annotations.has<pd_status>
 );
 static_assert(
     pe_src_discovery::power == power_level::default_power &&
@@ -157,13 +157,17 @@ static_assert(
 );
 static_assert(
     pe_src_hard_reset::power == power_level::contract_or_default &&
-    pe_src_hard_reset::pd == pd_status::connected_or_not_connected
+    !pe_src_hard_reset::annotations.has<pd_status>
 );
 static_assert(
     pe_src_transition_to_default::power == power_level::transition &&
     pe_src_transition_to_default::pd == pd_status::not_connected
 );
-static_assert(pe_src_ready::dot_note == "Power: Explicit Contract | PD: Connected");
+static_assert(
+    pe_src_ready::annotations.get<power_level>() == power_level::explicit_contract &&
+    pe_src_ready::annotations.get<pd_status>() == pd_status::connected
+);
+static_assert(pe_src_discovery::annotations.get<pd_status>() == pd_status::not_connected);
 
 } // namespace spec_notation
 
