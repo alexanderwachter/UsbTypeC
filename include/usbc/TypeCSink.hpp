@@ -118,10 +118,15 @@ struct error_recovery {
     static constexpr auto timeout = t_error_recovery;
 };
 
-// The sensed line plus the internal-transition handler keeping it
-// current without disturbing a running debounce
+// The sensed line, kept current by the constructor a state entered on
+// a CC event inherits and by the internal-transition handler for the
+// events it absorbs without disturbing a running debounce
 struct sink_state {
     explicit sink_state(line_status& line_ref) : line(line_ref) {}
+    sink_state(event::cc_changed const& event, line_status& line_ref) : line(line_ref)
+    {
+        line.cc = event.cc;
+    }
 
     using contexts = fsm::contexts<line_status>;
 
@@ -149,10 +154,6 @@ struct unattached_snk : sink_state {
 };
 
 struct attach_wait_snk : sink_state {
-    attach_wait_snk(event::cc_changed const& event, line_status& line_ref) : sink_state(line_ref)
-    {
-        line.cc = event.cc;
-    }
     using sink_state::sink_state;
 
     // debouncing: the outcome asks the driver whether VBUS is present,
@@ -186,11 +187,6 @@ struct attach_wait_snk_debounced : sink_state {
 // Rp returns within tPDDebounce (USB PD signaling opens one pin
 // briefly, never both for that long)
 struct attach_wait_snk_open : sink_state {
-    attach_wait_snk_open(event::cc_changed const& event, line_status& line_ref)
-        : sink_state(line_ref)
-    {
-        line.cc = event.cc;
-    }
     using sink_state::sink_state;
 
     static constexpr auto annotations = fsm::annotate(
@@ -225,9 +221,8 @@ struct attached_snk : sink_state {
     // entered on a CC event (the DRP's TryWait.SNK attach): the payload
     // lands on the line before the attach is resolved from it
     attached_snk(event::cc_changed const& event, line_status& line_ref, attachment& attached_ref)
-        : sink_state(line_ref), attached(attached_ref)
+        : sink_state(event, line_ref), attached(attached_ref)
     {
-        line.cc = event.cc;
         attachFresh();
     }
     // entered from a PD-directed role swap's standby (the DRP layer),

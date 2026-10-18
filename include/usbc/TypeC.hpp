@@ -166,10 +166,19 @@ struct vbus_power {
 
 // The sensed line, for the port's whole life: the latest CC status
 // (interpreted through the presented pull). Every state keeps it
-// current through its internal-transition handler, the debounce
-// guards decide on it - the status that was stable for the debounce
-// is the reported one, not a fresh read at the timeout. VBUS is not
-// kept: a decision on it asks the driver (vbus_at_safe0v, vbus_at_safe5v)
+// current - the role states' constructor records the event a state is
+// entered on, their internal-transition handler the ones it absorbs -
+// and the debounce guards decide on it. The status is recorded rather
+// than asked of an injected observer because the machine needs the
+// REPORTED value: the status that was stable for the debounce, as of
+// the event being processed - the machine is queued, so a cache
+// written ahead of the queue or a fresh read at the timeout may be
+// newer than the event the machine is looking at - and because the
+// Attached states resolve plug orientation, data role and the Rp
+// advertisement from it in their constructors, which reach contexts,
+// not observers. VBUS is the opposite case: a measurement, not a fact
+// to remember, so a decision on it asks the driver (vbus_at_safe0v,
+// vbus_at_safe5v)
 struct line_status {
     cc_status cc = {.cc1 = cc_state::snk_open, .cc2 = cc_state::snk_open};
 };

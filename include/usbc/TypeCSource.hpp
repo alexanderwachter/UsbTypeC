@@ -95,10 +95,15 @@ struct error_recovery_src {
     static constexpr auto timeout = t_error_recovery;
 };
 
-// The sensed line plus the internal-transition handler keeping it
-// current without disturbing a running debounce
+// The sensed line, kept current by the constructor a state entered on
+// a CC event inherits and by the internal-transition handler for the
+// events it absorbs without disturbing a running debounce
 struct source_state {
     explicit source_state(line_status& line_ref) : line(line_ref) {}
+    source_state(event::cc_changed const& event, line_status& line_ref) : line(line_ref)
+    {
+        line.cc = event.cc;
+    }
 
     using contexts = fsm::contexts<line_status>;
 
@@ -125,10 +130,6 @@ struct unattached_src : source_state {
 };
 
 struct attach_wait_src : source_state {
-    attach_wait_src(event::cc_changed const& event, line_status& line_ref) : source_state(line_ref)
-    {
-        line.cc = event.cc;
-    }
     using source_state::source_state;
 
     // debouncing, with a load on VBUS so it reaches vSafe0V within
@@ -220,11 +221,6 @@ private:
 
 // Discharges VBUS to vSafe0V before presenting Rp for a new attach
 struct unattached_wait_src : source_state {
-    unattached_wait_src(event::cc_changed const& event, line_status& line_ref)
-        : source_state(line_ref)
-    {
-        line.cc = event.cc;
-    }
     using source_state::source_state;
 
     static constexpr auto annotations = fsm::annotate(

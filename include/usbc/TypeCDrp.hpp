@@ -245,9 +245,9 @@ struct debouncing_termination : ROLE_STATE {
         line_status& line_ref,
         try_phase& phase_ref
     )
-        : debouncing_termination(line_ref, phase_ref)
+        : ROLE_STATE(event, line_ref), phase(phase_ref)
     {
-        this->line.cc = event.cc;
+        phase.termination_seen = true;
     }
     debouncing_termination(line_status& line_ref, try_phase& phase_ref)
         : ROLE_STATE(line_ref), phase(phase_ref)
@@ -351,9 +351,8 @@ struct try_wait_snk_state : state::sink_state {
         line_status& line_ref,
         try_wait_snk_phase& phase_ref
     )
-        : try_wait_snk_state(line_ref, phase_ref)
+        : sink_state(event, line_ref), phase(phase_ref)
     {
-        line.cc = event.cc;
     }
     try_wait_snk_state(line_status& line_ref, try_wait_snk_phase& phase_ref)
         : sink_state(line_ref), phase(phase_ref)
@@ -426,9 +425,14 @@ struct try_wait_snk : state::sink_state {
 // vSafe0V within tVBUSOFF. The connection's attachment is reset here
 // like in the Unattached states: the next attach resolves afresh.
 // Where the port goes on once VBUS is down is the preference's
-// business; CC reports are absorbed meanwhile and the line is read on
-// the way out
+// business; the line is recorded on entry and kept current meanwhile,
+// and read on the way out
 struct removing_vbus : state::sink_state {
+    removing_vbus(event::cc_changed const& event, line_status& line_ref, attachment& attached)
+        : sink_state(event, line_ref)
+    {
+        attached = {};
+    }
     removing_vbus(line_status& line_ref, attachment& attached) : sink_state(line_ref)
     {
         attached = {};
@@ -465,10 +469,6 @@ struct try_snk_wait : state::sink_state {
 // never for that long)
 template<drp_timing const& TIMING>
 struct try_snk_monitor : state::sink_state {
-    try_snk_monitor(event::cc_changed const& event, line_status& line_ref) : sink_state(line_ref)
-    {
-        line.cc = event.cc;
-    }
     using state::sink_state::sink_state;
 
     static constexpr auto annotations = fsm::annotate(
@@ -484,10 +484,6 @@ struct try_snk_monitor : state::sink_state {
 // present attaches
 template<drp_timing const& TIMING>
 struct try_snk_debounce : state::sink_state {
-    try_snk_debounce(event::cc_changed const& event, line_status& line_ref) : sink_state(line_ref)
-    {
-        line.cc = event.cc;
-    }
     using state::sink_state::sink_state;
 
     static constexpr auto annotations = fsm::annotate(
