@@ -61,9 +61,10 @@ using Sink = usbc::TypeCSink<
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
 usbc::zephyr::Timer timer;
+usbc::zephyr::Timer cc_timer; // the CC debounce
 AttachLogger logger;
 mtl::zephyr::TraceLogger state_logger;
-Sink sink{tcpc, vbus, timer, logger, state_logger};
+Sink sink{tcpc, vbus, timer, cc_timer, logger, state_logger};
 
 } // namespace
 

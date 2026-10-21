@@ -1,9 +1,11 @@
 /*
- * Common ground of the USB Type-C connection layers: the CC debounce
- * time, the CC change event, and the vbus_watcher observer arming the
- * vbus driver with each state's watched level and answering the
- * tables' questions about VBUS now. The sink and source layers live
- * in TypeCSink.hpp and TypeCSource.hpp.
+ * Common ground of the USB Type-C connection layers: the spec's
+ * debounce times, the CcWatcher observer debouncing the CC pins by
+ * each state's rule and reporting the status that held as
+ * event::cc_detected, and the VbusWatcher observer arming the vbus
+ * driver with each state's watched level and answering the tables'
+ * questions about VBUS now. The sink and source layers live in
+ * TypeCSink.hpp and TypeCSource.hpp.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -18,14 +20,33 @@
 #include <mtl/StateMachine.hpp>
 
 #include <chrono>
+#include <optional>
 #include <tuple>
+#include <type_traits>
 
 namespace usbc {
 
 namespace tc {
 
-inline constexpr auto t_cc_debounce = std::chrono::milliseconds{150};        // tCCDebounce
-inline constexpr auto t_pd_debounce = std::chrono::milliseconds{15};         // tPDDebounce
+// One debounce time of a state's CC rule: how long a status has to
+// hold before it counts as detected - a spec time (Table 4-33) as its
+// count of milliseconds, or at_once. An enum: a byte per time on every
+// monitoring state, and the DOT graphs show the name
+enum class debounce_time : std::uint8_t {
+    at_once = 0,
+    t_pd_debounce = 15,
+    t_try_cc_debounce = 15,
+    t_cc_debounce = 150,
+};
+
+constexpr std::chrono::milliseconds durationOf(debounce_time time)
+{
+    return std::chrono::milliseconds{static_cast<std::underlying_type_t<debounce_time>>(time)};
+}
+
+inline constexpr auto t_cc_debounce = durationOf(debounce_time::t_cc_debounce);
+inline constexpr auto t_pd_debounce = durationOf(debounce_time::t_pd_debounce);
+inline constexpr auto t_try_cc_debounce = durationOf(debounce_time::t_try_cc_debounce);
 inline constexpr auto t_error_recovery = std::chrono::milliseconds{50};      // tErrorRecovery
 inline constexpr auto t_hard_reset_window = std::chrono::milliseconds{6000}; // > tNoResponse
 
@@ -47,6 +68,19 @@ constexpr bool isRa(cc_state state)
     return state == cc_state::src_ra;
 }
 
+// A source connection as a sink detects it: Rp on at least one pin
+constexpr bool sourcePresent(cc_status status)
+{
+    return isRp(status.cc1) || isRp(status.cc2);
+}
+
+// A sink or accessory connection as a source detects it: Rd on either
+// pin, or Ra on both
+constexpr bool sinkPresent(cc_status status)
+{
+    return isRd(status.cc1) || isRd(status.cc2) || (isRa(status.cc1) && isRa(status.cc2));
+}
+
 // PD3 collision avoidance, seen from the sink: the source's Rp reads
 // as SinkTxOk (3.0 A advertisement) or SinkTxNG
 constexpr bool sinkTxOk(cc_status status)
@@ -56,7 +90,10 @@ constexpr bool sinkTxOk(cc_status status)
 
 namespace event {
 
-struct cc_changed {
+// The CC status that held for the state's debounce (CcWatcher's
+// report; the spec's "detected"), the only form in which the CC pins
+// reach the connection machines
+struct cc_detected {
     cc_status cc;
 };
 struct started {}; // start(): leave Disabled, apply the terminations
@@ -161,47 +198,22 @@ struct vbus_power {
     constexpr bool operator==(vbus_power const&) const = default;
 };
 
-// Machine-owned contexts of the connection layer, split by lifetime;
-// a state declares only the ones it touches.
-
-// The sensed line, for the port's whole life: the latest CC status
-// (interpreted through the presented pull). Every state keeps it
-// current - the role states' constructor records the event a state is
-// entered on, their internal-transition handler the ones it absorbs -
-// and the debounce guards decide on it. The status is recorded rather
-// than asked of an injected observer because the machine needs the
-// REPORTED value: the status that was stable for the debounce, as of
-// the event being processed - the machine is queued, so a cache
-// written ahead of the queue or a fresh read at the timeout may be
-// newer than the event the machine is looking at - and because the
-// Attached states resolve plug orientation, data role and the Rp
-// advertisement from it in their constructors, which reach contexts,
-// not observers. VBUS is the opposite case: a measurement, not a fact
-// to remember, so a decision on it asks the driver (vbus_at_safe0v,
-// vbus_at_safe5v)
-struct line_status {
-    cc_status cc = {.cc1 = cc_state::snk_open, .cc2 = cc_state::snk_open};
-};
-
-// One connection's attachment: the plug orientation and data role a
-// fresh attach resolves, kept across a hard-reset window and a power
-// role swap (a power swap leaves the data role alone, per the PD
-// spec). The Unattached anchors reset it; `resolved` tells Attached.SNK
-// whether VBUS returning resumes the connection or attaches afresh
+// The one machine-owned context of the connection layer: one
+// connection's attachment. The detected CC status the attach rests on
+// (the states waiting for a VBUS report after a detection keep it here
+// for the Attached state to resolve plug orientation and the Rp
+// advertisement from, and attached_partner reports it), the plug
+// orientation and data role a fresh attach resolves, kept across a
+// hard-reset window and a power role swap (a power swap leaves the
+// data role alone, per the PD spec). The Unattached anchors reset it;
+// `resolved` tells Attached.SNK whether VBUS returning resumes the
+// connection or attaches afresh. The CC status itself is no context:
+// the decision and the status arrive together in event::cc_detected
 struct attachment {
+    cc_status detected = {.cc1 = cc_state::snk_open, .cc2 = cc_state::snk_open};
     plug_orientation orientation = plug_orientation::cc1;
     data_role data = data_role::ufp;
     bool resolved = false;
-};
-
-// One DRP Try phase, shared by its composite state and its sub-states.
-// The phase's time budget applies while the wanted termination has not
-// been detected: once a sub-state has seen it, the budget running out
-// is only recorded - the debounce may still attach, but its failure
-// ends the phase instead of resuming it
-struct try_phase {
-    bool termination_seen = false;
-    bool expired = false;
 };
 
 // The one place tying a VBUS level to the events its reports become:
@@ -261,8 +273,8 @@ struct vbus_at_safe5v {};
 // the callback's meaning through the level it armed last, and answers
 // the tables' questions about VBUS now
 template<concepts::vbus VBUS>
-struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
-    explicit vbus_watcher(VBUS& vbus_ref) : vbus(vbus_ref) {}
+struct VbusWatcher : fsm::observing<VbusWatcher<VBUS>> {
+    explicit VbusWatcher(VBUS& vbus_ref) : vbus(vbus_ref) {}
 
     // the states carry their watch level in their annotation sets
     void notifyEntry(vbus_level level)
@@ -281,12 +293,12 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
     {
         static_assert(
             fsm::all_states_carry_v<TABLE, vbus_level>,
-            "vbus_watcher: every state must annotate its vbus_level "
+            "VbusWatcher: every state must annotate its vbus_level "
             "(vbus_level::unwatched switches monitoring off)"
         );
         static_assert(
             watch_events_consistent_v<TABLE>,
-            "vbus_watcher: a watching state must handle its level's met report"
+            "VbusWatcher: a watching state must handle its level's met report"
         );
     }
 
@@ -294,21 +306,150 @@ struct vbus_watcher : fsm::observing<vbus_watcher<VBUS>> {
     vbus_level monitored = vbus_level::unwatched;
 };
 
+// --- CC debounce -------------------------------------------------------------
+
+// Annotation of a connection state monitoring the CC pins - its rule:
+// the debounce time of a termination (a source's Rp seen through Rd, a
+// sink's Rd or Ra seen through Rp) and of the open line. CcWatcher
+// applies it and reports the status that held as event::cc_detected; a
+// state without the annotation does not monitor the pins
+struct cc_debounce {
+    debounce_time termination;
+    debounce_time open;
+    constexpr bool operator==(cc_debounce const&) const = default;
+};
+
+// Guard question answered by CcWatcher: a CC status is under debounce
+// right now. The DRP's Try walls apply only while the wanted
+// termination "has not yet been detected"
+struct cc_state_pending {};
+
+using cc_detected_callback = void (*)(void* context, cc_status cc);
+
+// The debounce times applied, within the spec's ranges
+static_assert(spec::t_pd_debounce.contains(t_pd_debounce));
+static_assert(spec::t_try_cc_debounce.contains(t_try_cc_debounce));
+static_assert(spec::t_cc_debounce.contains(t_cc_debounce));
+
+// Debounces the CC pins by the connection state's rule, on one timer.
+// Injected into the connection machine, it observes the state's rule
+// and the pull it presents; the TCPC's reports come in through
+// report(), the status that held goes out through the callback (the
+// port frontend turns it into event::cc_detected). A rule change
+// evaluates the last report under the new rule - the spec counts a
+// debounce from the state's entry - except after a pull change, when
+// the last report means nothing until the TCPC has measured the line
+// afresh; a state without a rule stops the watcher. A report equal to
+// the last one is no change and leaves a running debounce alone; a
+// report that differs restarts it, so at the timeout the last report is
+// the status that held. The timer's callback arrives in the stack's
+// serialized context (mtl timer contract), like the TCPC's reports
+template<fsm::concepts::timer TIMER>
+struct CcWatcher : fsm::observing<CcWatcher<TIMER>> {
+    explicit CcWatcher(TIMER& timer_ref) : timer_(timer_ref) {}
+
+    void notifyEntry(cc_termination) { reported_ = false; }
+
+    void notifyEntry(cc_debounce rule)
+    {
+        rule_ = rule;
+        evaluate();
+    }
+
+    void notifyExit(cc_debounce)
+    {
+        rule_.reset();
+        timer_.stop();
+        pending_ = false;
+    }
+
+    bool check(cc_state_pending) const { return pending_; }
+
+    // the TCPC's report
+    void report(cc_status cc)
+    {
+        if (reported_ && cc == status_) {
+            return;
+        }
+        status_ = cc;
+        reported_ = true;
+        evaluate();
+    }
+
+    void setCallback(cc_detected_callback callback, void* context)
+    {
+        callback_ = callback;
+        context_ = context;
+    }
+
+private:
+    void evaluate()
+    {
+        if (!reported_ || !rule_) {
+            return;
+        }
+        auto const time = terminationPresent() ? rule_->termination : rule_->open;
+        if (time == debounce_time::at_once) {
+            timer_.stop();
+            pending_ = false;
+            detected();
+        } else {
+            debounceFor(durationOf(time)); // a running timer is rescheduled
+        }
+    }
+
+    void debounceFor(std::chrono::milliseconds time)
+    {
+        pending_ = true;
+        timer_.start(
+            time,
+            [](void* watcher) { static_cast<CcWatcher*>(watcher)->debounced(); },
+            this
+        );
+    }
+
+    void debounced()
+    {
+        pending_ = false;
+        detected();
+    }
+
+    void detected()
+    {
+        if (callback_ != nullptr) {
+            callback_(context_, status_);
+        }
+    }
+
+    // the TCPC reports in the presented role's encoding: a sink sees
+    // snk_* states, a source src_* states
+    bool terminationPresent() const { return sourcePresent(status_) || sinkPresent(status_); }
+
+    TIMER& timer_;
+    cc_status status_{};
+    std::optional<cc_debounce> rule_{};
+    bool reported_ = false;
+    bool pending_ = false;
+    cc_detected_callback callback_ = nullptr;
+    void* context_ = nullptr;
+};
+
 // The driver-facing frontend every connection layer shares (CRTP):
 // start() wiring, the TCPC alert pump with residual forwarding to the
-// observers providing onPdAlert, the vbus report mapped through the
-// armed level's family, and the seeding of a partner already present.
-// The derived port provides tcpc_, vbus_ (the watcher), observers_,
-// and sm_, and befriends this base
+// observers providing onPdAlert, the CC reports handed to the
+// CcWatcher and its detections turned into events, the vbus report
+// mapped through the armed level's family. The derived port provides
+// tcpc_, vbus_ (the watcher), cc_ (the watcher), observers_, and sm_,
+// and befriends this base
 template<typename DERIVED, concepts::tcpc TCPC, concepts::vbus VBUS>
 class port_frontend {
 protected:
     // Leaves Disabled through the started event; when it fires, the
     // callbacks register, the monitor re-arms for its initial report,
-    // and a present partner is seeded from the CC status. A second
-    // start() does nothing (the queued process() reports acceptance,
-    // not whether the transition fired - the latch keeps this
-    // idempotent)
+    // and the line as it is reaches the watcher (a partner plugged in
+    // before has no alert to announce it). A second start() does
+    // nothing (the queued process() reports acceptance, not whether the
+    // transition fired - the latch keeps this idempotent)
     void startPort()
     {
         if (started_) {
@@ -317,6 +458,12 @@ protected:
         started_ = true;
         auto& self = derived();
         self.sm_.process(event::started{});
+        self.cc_.setCallback(
+            [](void* frontend, cc_status cc) {
+                static_cast<port_frontend*>(frontend)->ccDetected(cc);
+            },
+            this
+        );
         self.vbus_.vbus.setCallback(
             [](void* frontend, bool met) { static_cast<port_frontend*>(frontend)->vbusEvent(met); },
             this
@@ -326,7 +473,9 @@ protected:
             this
         );
         self.vbus_.vbus.monitor(self.vbus_.monitored); // deliver the initial condition
-        seedCcState();
+        if (auto const cc = self.tcpc_.readCcStatus()) {
+            self.cc_.report(*cc);
+        }
     }
 
 private:
@@ -340,7 +489,7 @@ private:
         if (auto const alerts = self.tcpc_.readAlert()) {
             if (any(*alerts & alert_status::cc_status_changed)) {
                 if (auto const cc = self.tcpc_.readCcStatus()) {
-                    self.sm_.process(event::cc_changed{*cc});
+                    self.cc_.report(*cc);
                     std::apply(
                         [&](auto&... observer) { (forwardCcStatus(observer, *cc), ...); },
                         self.observers_
@@ -364,15 +513,20 @@ private:
         }
     }
 
-    // The fresh CC status after the machine processed it - the PD
-    // layer reads the source's Rp as SinkTxOk/SinkTxNG (PD3 collision
-    // avoidance)
+    // The raw CC status, undebounced - the PD layer reads the source's
+    // Rp as SinkTxOk/SinkTxNG (PD3 collision avoidance)
     static void forwardCcStatus(auto& observer, cc_status cc)
     {
         if constexpr (requires { observer.onCcStatus(cc); }) {
             observer.onCcStatus(cc);
         }
     }
+
+    // The status that held for the state's debounce: the watcher's
+    // report may arrive from within a state entry's rule change; sm_
+    // is an fsm::QueuedMachine, which delivers it after the running
+    // transition completes
+    void ccDetected(cc_status cc) { derived().sm_.process(event::cc_detected{cc}); }
 
     // The vbus driver reports the condition the watcher armed; the
     // event follows the level's family - events a table does not
@@ -393,17 +547,6 @@ private:
             self.sm_.process(event::vbus_present{});
         } else {
             self.sm_.process(event::vbus_removed{});
-        }
-    }
-
-    // A partner plugged in before construction has no alert to
-    // announce it
-    void seedCcState()
-    {
-        auto& self = derived();
-        auto const cc = self.tcpc_.readCcStatus();
-        if (cc && (isRp(cc->cc1) || isRp(cc->cc2) || isRd(cc->cc1) || isRd(cc->cc2))) {
-            self.sm_.process(event::cc_changed{*cc});
         }
     }
 

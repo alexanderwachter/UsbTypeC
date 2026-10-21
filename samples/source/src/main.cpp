@@ -42,9 +42,10 @@ using Source =
 usbc::zephyr::Tcpc tcpc{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc))};
 usbc::zephyr::Vbus vbus{DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus))};
 usbc::zephyr::Timer timer;
+usbc::zephyr::Timer cc_timer; // the CC debounce
 AttachLogger logger;
 // Default Rp advertisement: the board sources default USB current
-Source source{tcpc, vbus, timer, usbc::rp_value::usb_default, logger};
+Source source{tcpc, vbus, timer, cc_timer, usbc::rp_value::usb_default, logger};
 
 } // namespace
 

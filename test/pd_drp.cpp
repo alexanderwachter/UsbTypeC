@@ -248,7 +248,7 @@ int pdDrpTests()
     tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
     ccAlert();
     vbus.setVoltage(5000);
-    timers.tc.expire(); // tCCDebounce
+    timers.cc.expire(); // tCCDebounce
     check(tcpc.sinking && port.powerRole() == usbc::power_role::sink);
     check(port.dataRole() == usbc::data_role::ufp);
     check(tcpc.header_info.power == usbc::power_role::sink);

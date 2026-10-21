@@ -68,6 +68,7 @@ enum class cc_state : std::uint8_t {
 struct cc_status {
     cc_state cc1;
     cc_state cc2;
+    constexpr bool operator==(cc_status const&) const = default;
 };
 
 // The CC line carrying the CC wire; VCONN, when enabled, is applied to

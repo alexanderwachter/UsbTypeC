@@ -70,7 +70,7 @@ namespace usbc {
 template<fsm::concepts::timer TIMER>
 struct pd_drp_timers {
     TIMER tc;
-    TIMER tc_try; // the timeouts inside a Try phase (preference != none)
+    TIMER cc; // the CC debounce
     TIMER sink_prl;
     TIMER sink_pe;
     TIMER sink_swap; // the timeouts inside a swap exchange (a swap feature on)
@@ -133,7 +133,7 @@ public:
           ),
           vconn_(timers.vconn, watch_, observers...),
           router_(tcpc, sink_engine_, source_engine_, *this),
-          drp_(tcpc, vbus, timers.tc, timers.tc_try, advertisement, router_, observers...)
+          drp_(tcpc, vbus, timers.tc, timers.cc, advertisement, router_, observers...)
     {
         // a DRP answers Get_Source_Cap/Get_Sink_Cap in either role
         sink_engine_.provideSourceCapabilities(source_capabilities);

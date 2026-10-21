@@ -16,6 +16,8 @@
 // No timeout-value assertions in these tests: every state timeout is
 // formally verified against the spec ranges at compile time by the
 // fsm::timeouts_within_bounds check next to each transition table.
+// The CC debounce runs on the cc_timer (the CcWatcher's), the
+// connection states' timeouts on the timer.
 
 using namespace std::chrono_literals;
 
@@ -154,17 +156,21 @@ int typeCTests()
     mock_vbus vbus;
     mock_tc_client client;
     manual_timer timer;
-    sink tc{tcpc, vbus, timer, client};
+    manual_timer cc_timer;
+    sink tc{tcpc, vbus, timer, cc_timer, client};
 
     // construction rests in Disabled: nothing registered, nothing driven
     check(tcpc.callback == nullptr && vbus.monitored == usbc::vbus_level::unwatched);
 
     // start() applies Unattached.SNK: Rd presented, sink path off,
-    // nothing measured (a source is detected on CC), callbacks registered
+    // nothing measured (a source is detected on CC), callbacks
+    // registered; the open line is detected at once - nothing to
+    // debounce
     tc.start();
     check(tcpc.pull == usbc::cc_pull::rd && !tcpc.sinking);
     check(vbus.monitored == usbc::vbus_level::unwatched);
     check(tcpc.callback != nullptr);
+    check(!timer.armed && !cc_timer.armed);
 
     // a CC alert travels through the alert handler the sink registered
     auto const ccAlert = [&] {
@@ -172,33 +178,37 @@ int typeCTests()
         tcpc.callback(tcpc.context);
     };
 
-    // source attaches: Rp seen, debounce runs, VBUS arrives mid-debounce
-    // without restarting it
+    // source attaches: Rp seen at once, AttachWait.SNK debounces it for
+    // tCCDebounce on the CC timer, VBUS arriving mid-debounce does not
+    // restart it
     tcpc.line_state = {usbc::cc_state::snk_power_1a5, usbc::cc_state::snk_open};
     ccAlert();
-    check(timer.armed);
-    auto const starts_before = timer.starts;
+    check(cc_timer.armed && !timer.armed);
+    auto const starts_before = cc_timer.starts;
     vbus.setVoltage(5000);
-    check(timer.starts == starts_before && timer.armed);
+    check(cc_timer.starts == starts_before && cc_timer.armed);
 
-    timer.expire(); // debounce complete: attach
+    cc_timer.expire(); // the Rp is detected, VBUS present: attach
     check(tcpc.sinking);
     check(tcpc.orientation == usbc::plug_orientation::cc1);
     check(client.attached == 1 && client.orientation == usbc::plug_orientation::cc1);
     check(client.advertisement == usbc::rp_value::p_1a5);
     check(vbus.monitored == usbc::vbus_level::sink_disconnect);
 
-    // detach: VBUS drops below vSinkDisconnect
+    // detach: VBUS drops below vSinkDisconnect - and the Rp still
+    // there is debounced again by AttachWait.SNK
     vbus.setVoltage(0);
     check(!tcpc.sinking);
     check(client.detached == 1);
     check(vbus.monitored == usbc::vbus_level::unwatched);
+    check(cc_timer.armed);
 
     // attach with VBUS arriving after the debounce, flipped orientation
     tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_power_3a0};
     ccAlert();
-    timer.expire();
-    check(!tcpc.sinking && client.attached == 1); // debounced, waiting for VBUS
+    cc_timer.expire();
+    check(!tcpc.sinking && client.attached == 1); // detected, waiting for VBUS
+    check(vbus.monitored == usbc::vbus_level::safe5v);
     vbus.setVoltage(5000);
     check(tcpc.sinking);
     check(client.attached == 2 && client.orientation == usbc::plug_orientation::cc2);
@@ -209,46 +219,48 @@ int typeCTests()
     // a CC change during the debounce restarts it
     tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_open};
     ccAlert();
-    auto const restart_before = timer.starts;
+    auto const restart_before = cc_timer.starts;
     tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
     ccAlert();
-    check(timer.starts == restart_before + 1);
+    check(cc_timer.starts == restart_before + 1);
 
-    // ... and the line going open restarts the shorter tPDDebounce:
-    // the Rp returning in time resumes the tCCDebounce afresh
+    // ... and the line going open starts the shorter tPDDebounce: the
+    // Rp returning in time resumes the tCCDebounce afresh
     tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
     ccAlert();
-    check(timer.starts == restart_before + 2);
+    check(cc_timer.starts == restart_before + 2);
     tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
     ccAlert();
-    check(timer.starts == restart_before + 3);
+    check(cc_timer.starts == restart_before + 3);
     // ... while open for tPDDebounce returns to Unattached.SNK (a
-    // second open report keeps the running tPDDebounce)
+    // second open report is no change and keeps the running
+    // tPDDebounce)
     tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
     ccAlert();
     ccAlert();
-    check(timer.starts == restart_before + 4 && timer.armed);
-    timer.expire();
+    check(cc_timer.starts == restart_before + 4 && cc_timer.armed);
+    cc_timer.expire();
     check(!tcpc.sinking && client.attached == 2 && client.detached == 2);
+    check(!cc_timer.armed);
 
     // open lines reported in Unattached.SNK are not a source: nothing
     // starts
     ccAlert();
-    check(!timer.armed);
+    check(!cc_timer.armed);
 
-    // both lines with Rp (debug accessory) is not an attach: the port
-    // waits in AttachWait.SNK for the line to change, and the lines
-    // going open leave after tPDDebounce
+    // both lines with Rp (debug accessory) is not an attach: detected
+    // after tCCDebounce, the port waits in AttachWait.SNK for the line
+    // to change, and the lines going open leave after tPDDebounce
     tcpc.line_state = {usbc::cc_state::snk_default, usbc::cc_state::snk_default};
     ccAlert();
     vbus.setVoltage(5000);
-    timer.expire();
-    check(!tcpc.sinking && client.attached == 2 && !timer.armed);
+    cc_timer.expire();
+    check(!tcpc.sinking && client.attached == 2 && !cc_timer.armed);
     vbus.setVoltage(0);
     tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
     ccAlert();
-    check(timer.armed);
-    timer.expire();
+    check(cc_timer.armed);
+    cc_timer.expire();
     check(client.attached == 2 && client.detached == 2);
 
     // PD alert bits reach a client providing onPdAlert(); CC bits do not
@@ -257,8 +269,9 @@ int typeCTests()
         mock_vbus pd_vbus;
         mock_pd_forwarding_client pd_client;
         manual_timer pd_timer;
+        manual_timer pd_cc_timer;
         usbc::TypeCSink<mock_tcpc, mock_vbus, manual_timer, mock_pd_forwarding_client>
-            pd_tc{pd_tcpc, pd_vbus, pd_timer, pd_client};
+            pd_tc{pd_tcpc, pd_vbus, pd_timer, pd_cc_timer, pd_client};
         pd_tc.start();
 
         pd_tcpc.alerts |=
@@ -278,37 +291,39 @@ int typeCSourceTests()
     mock_vbus vbus;
     mock_src_client client;
     manual_timer timer;
-    source tc{tcpc, vbus, timer, usbc::rp_value::p_3a0, client};
+    manual_timer cc_timer;
+    source tc{tcpc, vbus, timer, cc_timer, usbc::rp_value::p_3a0, client};
 
     // construction rests in Disabled: nothing registered, nothing driven
     check(tcpc.callback == nullptr && vbus.monitored == usbc::vbus_level::unwatched);
 
     // start() applies Unattached.SRC: Rp with the configured
     // advertisement, source path off, nothing monitored while resting
-    // (AttachWait re-arms vSafe0V and gets the fresh arm-report)
     tc.start();
     check(tcpc.pull == usbc::cc_pull::rp && tcpc.rp == usbc::rp_value::p_3a0);
     check(!tcpc.sourcing && !vbus.discharging);
     check(vbus.monitored == usbc::vbus_level::unwatched);
+    check(!cc_timer.armed);
 
     auto const ccAlert = [&] {
         tcpc.alerts |= usbc::alert_status::cc_status_changed;
         tcpc.callback(tcpc.context);
     };
 
-    // sink attaches on CC2: debounce with a load on VBUS, then VBUS
-    // applied (already at vSafe0V)
+    // sink attaches on CC2: tCCDebounce on the CC timer with a load on
+    // VBUS, then VBUS applied (already at vSafe0V)
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_rd};
     ccAlert();
-    check(timer.armed && vbus.discharging);
+    check(cc_timer.armed && vbus.discharging);
     check(!tcpc.sourcing); // not before the debounce completes
-    timer.expire();
+    cc_timer.expire();
     check(tcpc.sourcing && !vbus.discharging);
     check(tcpc.orientation == usbc::plug_orientation::cc2);
     check(client.attached == 1 && client.orientation == usbc::plug_orientation::cc2);
     vbus.setVoltage(5000); // the supply raises VBUS
 
-    // detach: Rd removed, discharge to vSafe0V before re-presenting
+    // detach: Rd removed at once, discharge to vSafe0V before
+    // re-presenting
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     ccAlert();
     check(!tcpc.sourcing && vbus.discharging);
@@ -319,7 +334,7 @@ int typeCSourceTests()
     // attach with Ra on the other pin: still a single Rd, on CC1
     tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_ra};
     ccAlert();
-    timer.expire();
+    cc_timer.expire();
     check(tcpc.sourcing && client.attached == 2);
     check(client.orientation == usbc::plug_orientation::cc1);
 
@@ -329,13 +344,13 @@ int typeCSourceTests()
     check(!tcpc.sourcing && !vbus.discharging);
     check(client.detached == 2);
 
-    // Rd stable but VBUS not yet at vSafe0V: attach waits for it, the
+    // Rd detected but VBUS not yet at vSafe0V: attach waits for it, the
     // load still applied
     vbus.setVoltage(5000);
     tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
     ccAlert();
-    timer.expire();
-    check(!tcpc.sourcing && client.attached == 2); // debounced, waiting
+    cc_timer.expire();
+    check(!tcpc.sourcing && client.attached == 2); // detected, waiting
     check(vbus.discharging);
     vbus.setVoltage(0);
     check(tcpc.sourcing && client.attached == 3);
@@ -343,44 +358,46 @@ int typeCSourceTests()
     ccAlert();
     check(client.detached == 3);
 
-    // both lines with Rd (debug accessory) is not an attach: the port
-    // waits in AttachWait.SRC for the line to change
+    // both lines with Rd (debug accessory) is not an attach: detected
+    // after tCCDebounce, the port waits in AttachWait.SRC for the line
+    // to change
     tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_rd};
     ccAlert();
-    timer.expire();
-    check(!tcpc.sourcing && client.attached == 3 && !timer.armed);
+    cc_timer.expire();
+    check(!tcpc.sourcing && client.attached == 3 && !cc_timer.armed);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     ccAlert();
 
     // a CC change during the debounce restarts it
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_rd};
     ccAlert();
-    auto const restart_before = timer.starts;
+    auto const restart_before = cc_timer.starts;
     tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
     ccAlert();
-    check(timer.starts == restart_before + 1);
+    check(cc_timer.starts == restart_before + 1);
     // ... and the sink going away leaves at once, no debounce
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     ccAlert();
-    check(!timer.armed && !tcpc.sourcing && client.attached == 3);
+    check(!cc_timer.armed && !tcpc.sourcing && client.attached == 3);
 
-    // the same after the debounce, while waiting for vSafe0V: open
+    // the same after the detection, while waiting for vSafe0V: open
     // and Ra on the other pin is a cable without a sink
     vbus.setVoltage(5000);
     tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
     ccAlert();
-    timer.expire();
+    cc_timer.expire();
     check(vbus.monitored == usbc::vbus_level::safe0v);
     tcpc.line_state = {usbc::cc_state::src_ra, usbc::cc_state::src_open};
     ccAlert();
     check(vbus.monitored == usbc::vbus_level::unwatched && client.attached == 3);
     vbus.setVoltage(0);
 
-    // a sink arriving while VBUS is still discharging after a detach is
-    // debounced as soon as vSafe0V is reached
+    // a sink arriving while VBUS is still discharging after a detach
+    // is detected on reaching vSafe0V (UnattachedWait.SRC does not
+    // monitor the pins) and debounced with the load applied
     tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
     ccAlert();
-    timer.expire();
+    cc_timer.expire();
     check(tcpc.sourcing && client.attached == 4);
     vbus.setVoltage(5000);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
@@ -388,10 +405,10 @@ int typeCSourceTests()
     check(!tcpc.sourcing && vbus.discharging && client.detached == 4);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_rd};
     ccAlert(); // the next sink, during the discharge
-    check(!timer.armed);
+    check(!cc_timer.armed);
     vbus.setVoltage(0);
-    check(vbus.discharging && timer.armed); // AttachWait.SRC, tCCDebounce
-    timer.expire();
+    check(vbus.discharging && cc_timer.armed); // AttachWait.SRC, tCCDebounce
+    cc_timer.expire();
     check(tcpc.sourcing && client.attached == 5);
     check(client.orientation == usbc::plug_orientation::cc2);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
@@ -402,27 +419,29 @@ int typeCSourceTests()
     // a cable without a sink (Ra on one pin) does not enter
     // AttachWait.SRC; Ra on both pins (audio accessory) does, and
     // waits there for the line to change
+    tcpc.line_state = {usbc::cc_state::src_ra, usbc::cc_state::src_open};
     ccAlert();
-    check(!timer.armed);
+    check(!cc_timer.armed);
     tcpc.line_state = {usbc::cc_state::src_ra, usbc::cc_state::src_ra};
     ccAlert();
-    check(timer.armed);
-    timer.expire();
-    check(!tcpc.sourcing && client.attached == 5 && !timer.armed);
+    check(cc_timer.armed);
+    cc_timer.expire();
+    check(!tcpc.sourcing && client.attached == 5 && !cc_timer.armed);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     ccAlert();
 
-    // a sink already present at start() is seeded from CC status
+    // a sink already present at start() is reported from the CC status
     {
         mock_tcpc seeded_tcpc;
         mock_vbus seeded_vbus;
         mock_src_client seeded_client;
         manual_timer seeded_timer;
+        manual_timer seeded_cc_timer;
         seeded_tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
-        source seeded{seeded_tcpc, seeded_vbus, seeded_timer, seeded_client};
+        source seeded{seeded_tcpc, seeded_vbus, seeded_timer, seeded_cc_timer, seeded_client};
         seeded.start();
-        check(seeded_timer.armed); // debounce started right away
-        seeded_timer.expire();
+        check(seeded_cc_timer.armed); // debounce started right away
+        seeded_cc_timer.expire();
         check(seeded_tcpc.sourcing && seeded_client.attached == 1);
         check(seeded_tcpc.rp == usbc::rp_value::usb_default);
     }

@@ -193,7 +193,7 @@ int pdSinkFacadeTests()
     tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
     ccAlert();
     vbus.setVoltage(5000);
-    timers.tc.expire(); // tCCDebounce
+    timers.cc.expire(); // tCCDebounce
     check(tcpc.sinking);
     check(timers.pe.armed); // SinkWaitCapTimer runs
     negotiate();
@@ -289,7 +289,7 @@ int pdSourceFacadeTests()
     // a sink appears: attach, advertise, grant its Request
     tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
     ccAlert();
-    timers.tc.expire(); // tCCDebounce (VBUS at vSafe0V)
+    timers.cc.expire(); // tCCDebounce (VBUS at vSafe0V)
     check(tcpc.sourcing);
     check(
         transmittedType(tcpc) ==
@@ -354,7 +354,7 @@ int pdSourceFacadeTests()
         silent_tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
         silent_tcpc.alerts |= usbc::alert_status::cc_status_changed;
         silent_tcpc.callback(silent_tcpc.context);
-        silent_timers.tc.expire(); // attach: the capabilities go out
+        silent_timers.cc.expire(); // attach: the capabilities go out
         confirm();                 // GoodCRC: a PD sink is present
 
         for (int reset = 0; reset <= usbc::spec::n_hard_reset_count; ++reset) {

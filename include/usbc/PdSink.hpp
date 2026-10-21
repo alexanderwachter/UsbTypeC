@@ -41,6 +41,7 @@ namespace usbc {
 template<fsm::concepts::timer TIMER>
 struct pd_sink_timers {
     TIMER tc;
+    TIMER cc; // the CC debounce
     TIMER prl;
     TIMER pe;
     TIMER swap; // the engine's swap exchanges: a single-role port never arms it
@@ -86,7 +87,7 @@ public:
                              watch_,
                              observers...
                          ),
-          router_{*this}, sink_(tcpc, vbus, timers.tc, router_, observers...)
+          router_{*this}, sink_(tcpc, vbus, timers.tc, timers.cc, router_, observers...)
     {
     }
 

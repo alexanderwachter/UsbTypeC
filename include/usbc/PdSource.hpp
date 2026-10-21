@@ -40,6 +40,7 @@ namespace usbc {
 template<fsm::concepts::timer TIMER>
 struct pd_source_timers {
     TIMER tc;
+    TIMER cc; // the CC debounce
     TIMER prl;
     TIMER pe;
     TIMER swap; // the engine's swap exchanges: a single-role port never arms it
@@ -89,7 +90,8 @@ public:
                              watch_,
                              observers...
                          ),
-          router_{*this}, source_(tcpc, vbus, timers.tc, advertisement, router_, observers...)
+          router_{*this},
+          source_(tcpc, vbus, timers.tc, timers.cc, advertisement, router_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted

@@ -34,21 +34,18 @@ static_assert(fsm::all_states_reachable_v<prl::tx_table>);
 
 // --- Type-C connection layers ------------------------------------------------
 
+// The CC debounce runs in the CcWatcher, outside the machines; its
+// times are checked against the spec ranges where they are defined
 static_assert(fsm::timeouts_within_bounds_v<
               tc::tc_sink_table,
-              fsm::timer_ranges<
-                  tc::sink_timer_ranges,
-                  tc::error_recovery_timer_range,
-                  tc::hard_reset_timer_ranges>>);
+              fsm::timer_ranges<tc::error_recovery_timer_range, tc::hard_reset_timer_ranges>>);
 static_assert(fsm::all_states_reachable_v<tc::tc_sink_table>);
 
-static_assert(fsm::timeouts_within_bounds_v<
-              tc::tc_source_table,
-              fsm::timer_ranges<tc::source_timer_ranges, tc::source_recovery_timer_range>>);
+static_assert(fsm::timeouts_within_bounds_v<tc::tc_source_table, tc::source_recovery_timer_range>);
 static_assert(fsm::all_states_reachable_v<tc::tc_source_table>);
 
-// The Try phases are composite states: the proofs cover their
-// submachines' states too
+// The connection machines are flat: a Try wall is a state's own
+// timeout, the debounce the watcher's
 template<drp_preference PREFERENCE, mtl::concepts::typelist RANGES>
 constexpr bool drpTableChecked()
 {
@@ -72,8 +69,8 @@ static_assert(drpTableChecked<
                   tc::drp::core_timer_ranges<default_drp_timing>,
                   tc::drp::try_snk_timer_ranges<default_drp_timing>>>());
 static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::none>> == 1);
-static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::source>> == 2);
-static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::sink>> == 2);
+static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::source>> == 1);
+static_assert(fsm::levels_v<tc::drp::table_for_t<default_drp_timing, drp_preference::sink>> == 1);
 
 static_assert(tc::watch_events_consistent_v<tc::tc_sink_table>);
 static_assert(tc::watch_events_consistent_v<tc::tc_source_table>);
