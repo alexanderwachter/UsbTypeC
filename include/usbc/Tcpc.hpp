@@ -25,11 +25,15 @@
  *
  * Failure contract: functions returning bool report whether the driver
  * accepted the operation (e.g. the bus transfer succeeded); read_*
- * functions return std::nullopt on failure. transmit() is a single
- * transmission attempt whose outcome arrives as a transmit_* alert
- * after the driver's GoodCRC handling; retransmission is the protocol
- * layer's job (PD spec PRL_Tx), so a TCPI-based driver shall configure
- * zero hardware retries.
+ * functions return std::nullopt on failure. transmit() reports its
+ * outcome as a transmit_* alert: success on GoodCRC, discarded when an
+ * incoming message pre-empted it, failed without a GoodCRC. Who
+ * retransmits is the transport's declaration (retransmission below):
+ * by default transmit() is one attempt and the protocol layer runs
+ * CRCReceiveTimer and the nRetryCount retransmissions, as the spec's
+ * PRL_Tx does; a transport doing that itself - a TCPC in the TCPCI
+ * sense - declares `static constexpr bool retransmits = true;` and
+ * reports one outcome per message, failed once its retries are spent.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -153,6 +157,19 @@ concept tcpc = requires(
 // wherever the board routes it, connected through the vconn_port
 // object injected into the port (Vconn.hpp)
 
+} // namespace concepts
+
+// Who runs CRCReceiveTimer and the nRetryCount retransmissions of a
+// message: the protocol layer, as the spec's PRL_Tx does, or a
+// transport doing it itself - a TCPC in the TCPCI sense - which then
+// reports one outcome per message
+enum class retransmission : std::uint8_t {
+    protocol_layer,
+    transport,
+};
+
+namespace concepts {
+
 // PD message transport; a Type-C-only port needs none of it
 template<typename T>
 concept pd_transport = requires(
@@ -165,11 +182,22 @@ concept pd_transport = requires(
 ) {
     { t.setMessageHeaderInfo(header_info) } -> std::same_as<bool>;
     { t.setReceiveDetect(detect) } -> std::same_as<bool>;
-    { t.transmit(message) } -> std::same_as<bool>; // one attempt, outcome via alert
+    { t.transmit(message) } -> std::same_as<bool>; // outcome via alert
     { t.transmit(signal) } -> std::same_as<bool>;
     { t.receive(receive_buffer) } -> std::same_as<bool>;
 };
 
+// A transport running CRCReceiveTimer and the retransmissions itself
+template<typename T>
+concept retransmitting_transport = pd_transport<T> && requires {
+    { T::retransmits } -> std::same_as<bool const&>;
+} && T::retransmits;
+
 } // namespace concepts
+
+template<concepts::pd_transport TCPC>
+inline constexpr retransmission retransmission_of =
+    concepts::retransmitting_transport<TCPC> ? retransmission::transport
+                                             : retransmission::protocol_layer;
 
 } // namespace usbc

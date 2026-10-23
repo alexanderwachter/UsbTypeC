@@ -11,9 +11,12 @@
  * Zephyr's set_roles carries no revision. A port whose VBUS switches
  * sit in a power path controller (usbc_ppc.h) names its device in the
  * constructor: sourceVbus()/sinkVbus() drive the PPC's paths then.
- * Other arrangements (GPIO switches) wrap or replace them. The stack
- * expects single transmission attempts: configure the driver without
- * hardware retries.
+ * Other arrangements (GPIO switches) wrap or replace them. Zephyr's
+ * TCPC API is the TCPCI contract: the driver runs CRCReceiveTimer and
+ * the nRetryCount retransmissions and reports one outcome per message
+ * (success on GoodCRC, failed once its retries are spent), so this
+ * adapter declares `retransmits` and the protocol layer leaves the
+ * retransmission to it.
  *
  * The instance is pinned: the driver holds its address for the alert
  * callback.
@@ -40,6 +43,9 @@ public:
     Tcpc(device const* dev, device const* ppc);
     Tcpc(Tcpc const&) = delete;
     Tcpc& operator=(Tcpc const&) = delete;
+
+    // the driver runs CRCReceiveTimer and the retransmissions
+    static constexpr bool retransmits = true;
 
     void setAlertHandler(alert_callback callback, void* context);
     std::optional<alert_status> readAlert();

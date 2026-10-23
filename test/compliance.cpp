@@ -29,8 +29,18 @@ using namespace usbc;
 
 // --- protocol layer ----------------------------------------------------------
 
-static_assert(fsm::timeouts_within_bounds_v<prl::tx_table, prl::prl_timer_ranges>);
-static_assert(fsm::all_states_reachable_v<prl::tx_table>);
+// Both forms of the transmit machine: with the spec's retransmission
+// loop, and without it for a transport retransmitting itself
+template<retransmission WHO_RETRANSMITS>
+constexpr bool prlTableChecked()
+{
+    using table = prl::tx_table<WHO_RETRANSMITS>;
+    static_assert(fsm::timeouts_within_bounds_v<table, prl::prl_timer_ranges<WHO_RETRANSMITS>>);
+    static_assert(fsm::all_states_reachable_v<table>);
+    return true;
+}
+static_assert(prlTableChecked<retransmission::protocol_layer>());
+static_assert(prlTableChecked<retransmission::transport>());
 
 // --- Type-C connection layers ------------------------------------------------
 

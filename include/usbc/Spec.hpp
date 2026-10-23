@@ -71,6 +71,14 @@ inline constexpr milliamp i_rp_3a0 = 3000;
 inline constexpr timeout_range t_receive{microseconds{900}, microseconds{1100}}; // tReceive
 inline constexpr timeout_range t_hard_reset_complete{milliseconds{0}, milliseconds{5}};
 
+// How long the protocol layer waits for the outcome of a transport
+// that runs CRCReceiveTimer and the nRetryCount retransmissions itself
+// (a TCPC in the TCPCI sense). No spec timer: it only bounds a
+// transport that never answers. The minimum clears the longest
+// legitimate sequence, four PD 2.0 transmissions with their tReceive
+// each; the maximum is a practical bound for the compile-time check
+inline constexpr timeout_range t_transmit_outcome{milliseconds{20}, milliseconds{200}};
+
 // Policy engine timing
 inline constexpr timeout_range t_sender_response{milliseconds{24}, milliseconds{30}};
 inline constexpr timeout_range t_chunking_not_supported{milliseconds{40}, milliseconds{50}};

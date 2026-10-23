@@ -65,6 +65,14 @@ struct mock_client {
 };
 static_assert(usbc::concepts::prl_client<mock_client>);
 
+// --- a transport retransmitting itself ---------------------------------------
+struct retransmitting_tcpc : mock_tcpc {
+    static constexpr bool retransmits = true;
+};
+static_assert(usbc::concepts::retransmitting_transport<retransmitting_tcpc>);
+static_assert(!usbc::concepts::retransmitting_transport<mock_tcpc>);
+static_assert(usbc::retransmission_of<mock_tcpc> == usbc::retransmission::protocol_layer);
+
 // --- compile-time checks ----------------------------------------------------
 namespace compile_time {
 
@@ -261,6 +269,43 @@ int protocolLayerTests()
     check(tcpc.transmit_count == attempts_before_retries + 3 && timer.armed);
     timer.expire(); // retries exhausted
     check(!timer.armed && client.tx_error == 2);
+
+    // A transport retransmitting itself (a TCPC in the TCPCI sense):
+    // one hand-off per request, its outcome is final, and the wait for
+    // it is bounded
+    {
+        retransmitting_tcpc transport;
+        mock_client transport_client;
+        manual_timer outcome_timer;
+        usbc::ProtocolLayer<retransmitting_tcpc, manual_timer> retransmitting_prl{
+            transport,
+            outcome_timer,
+            transport_client
+        };
+        static_assert(
+            decltype(retransmitting_prl)::who_retransmits == usbc::retransmission::transport
+        );
+
+        check(retransmitting_prl.transmit(makeRequest()) && transmittedId(transport) == 0);
+        check(outcome_timer.armed && outcome_timer.duration == usbc::prl::t_transmit_outcome);
+        retransmitting_prl.onAlert(usbc::alert_status::transmit_success);
+        check(transport_client.tx_done == 1 && !outcome_timer.armed);
+
+        // the transport's failure is the transmission error, no retry here
+        check(retransmitting_prl.transmit(makeRequest()) && transmittedId(transport) == 1);
+        retransmitting_prl.onAlert(usbc::alert_status::transmit_failed);
+        check(transport.transmit_count == 2 && !outcome_timer.armed);
+        check(transport_client.tx_error == 1);
+
+        // a transport that never reports: transmission error on the bound
+        check(retransmitting_prl.transmit(makeRequest()) && transmittedId(transport) == 2);
+        outcome_timer.expire();
+        check(transport.transmit_count == 3 && !outcome_timer.armed);
+        check(transport_client.tx_error == 2);
+        check(retransmitting_prl.transmit(makeRequest()) && transmittedId(transport) == 3);
+        retransmitting_prl.onAlert(usbc::alert_status::transmit_success);
+        check(transport_client.tx_done == 2);
+    }
 
     return failures;
 }
