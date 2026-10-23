@@ -322,10 +322,23 @@ int typeCSourceTests()
     check(client.attached == 1 && client.orientation == usbc::plug_orientation::cc2);
     vbus.setVoltage(5000); // the supply raises VBUS
 
-    // detach: Rd removed at once, discharge to vSafe0V before
-    // re-presenting
+    // the Rd gone is debounced within tSRCDisconnect: a dead-battery
+    // sink's Rd gaps while it hands over from its port protector to
+    // its own pull-down, and the attach survives the gap
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     ccAlert();
+    check(cc_timer.armed && tcpc.sourcing && client.detached == 0);
+    check(cc_timer.duration == usbc::tc::t_src_disconnect);
+    tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_rd};
+    ccAlert(); // the Rd is back before the debounce ends
+    check(!cc_timer.armed && tcpc.sourcing && client.detached == 0 && client.attached == 1);
+
+    // detach: Rd removed for tSRCDisconnect, discharge to vSafe0V
+    // before re-presenting
+    tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
+    ccAlert();
+    check(tcpc.sourcing); // not before the debounce completes
+    cc_timer.expire();
     check(!tcpc.sourcing && vbus.discharging);
     check(client.detached == 1);
     vbus.setVoltage(0);       // discharge complete
@@ -341,6 +354,7 @@ int typeCSourceTests()
     // detach with VBUS already at vSafe0V skips UnattachedWait.SRC
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     ccAlert();
+    cc_timer.expire(); // tSRCDisconnect
     check(!tcpc.sourcing && !vbus.discharging);
     check(client.detached == 2);
 
@@ -356,6 +370,7 @@ int typeCSourceTests()
     check(tcpc.sourcing && client.attached == 3);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     ccAlert();
+    cc_timer.expire(); // tSRCDisconnect
     check(client.detached == 3);
 
     // both lines with Rd (debug accessory) is not an attach: detected
@@ -402,6 +417,7 @@ int typeCSourceTests()
     vbus.setVoltage(5000);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     ccAlert();
+    cc_timer.expire(); // tSRCDisconnect
     check(!tcpc.sourcing && vbus.discharging && client.detached == 4);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_rd};
     ccAlert(); // the next sink, during the discharge
@@ -413,6 +429,7 @@ int typeCSourceTests()
     check(client.orientation == usbc::plug_orientation::cc2);
     tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     ccAlert();
+    cc_timer.expire(); // tSRCDisconnect
     vbus.setVoltage(0);
     check(client.detached == 5);
 

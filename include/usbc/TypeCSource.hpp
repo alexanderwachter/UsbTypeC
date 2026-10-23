@@ -167,15 +167,16 @@ struct attached_src {
     }
     attached_src(event::swap_abort const&, attachment& attached_ref) : attached(attached_ref) {}
 
-    // sourcing: detach detection is CC-based, at once; the comparator
-    // rests
+    // sourcing: detach detection is CC-based, within tSRCDisconnect -
+    // a dead-battery sink's Rd may gap while it hands over from its
+    // port protector to its own pull-down; the comparator rests
     static constexpr auto annotations = fsm::annotate(
         cc_termination{cc_pull::rp},
         vbus_power{vbus_path::safe5v},
         vbus_level{vbus_level::unwatched},
         attached_role{power_role::source},
         pd_connection{},
-        cc_debounce{.termination = debounce_time::at_once, .open = debounce_time::at_once}
+        cc_debounce{.termination = debounce_time::at_once, .open = debounce_time::t_src_disconnect}
     );
 
     // the attach report, the CC polarity and the partner, observed as

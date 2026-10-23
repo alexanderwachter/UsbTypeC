@@ -211,10 +211,11 @@ int typeCDrpTests()
     check(f.client.orientation == usbc::plug_orientation::cc2);
     f.vbus.setVoltage(5000); // the supply raises VBUS
 
-    // the sink leaves: Rd at once while VBUS is removed, then toggling
-    // resumes at Rd (Unattached.SNK)
+    // the sink leaves (debounced within tSRCDisconnect): Rd at once
+    // while VBUS is removed, then toggling resumes at Rd (Unattached.SNK)
     f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
     f.ccAlert();
+    f.cc_timer.expire();
     check(!f.tcpc.sourcing && f.vbus.discharging);
     check(f.tcpc.pull == usbc::cc_pull::rd && !f.timer.armed);
     check(f.client.detached == 2);
@@ -264,6 +265,7 @@ int typeCDrpTests()
 
         g.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
         g.ccAlert(); // the sink is gone: Rd, VBUS being removed
+        g.cc_timer.expire();
         check(g.tcpc.pull == usbc::cc_pull::rd && g.vbus.discharging);
         g.tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
         g.ccAlert(); // ... and the partner presents Rp meanwhile
@@ -291,6 +293,7 @@ int typeCDrpTests()
 
         g.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
         g.ccAlert();
+        g.cc_timer.expire(); // tSRCDisconnect
         g.tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_power_3a0};
         g.ccAlert();
         g.vbus.setVoltage(0); // vSafe0V: AttachWait.SNK
@@ -433,6 +436,7 @@ int typeCDrpTrySrcTests()
 
         f.tcpc.line_state = {usbc::cc_state::src_open, usbc::cc_state::src_open};
         f.ccAlert(); // the sink is gone: Rd, VBUS being removed
+        f.cc_timer.expire();
         check(!f.tcpc.sourcing && f.vbus.discharging && f.tcpc.pull == usbc::cc_pull::rd);
         f.vbus.setVoltage(0); // vSafe0V -> TryWait.SNK
         check(!f.vbus.discharging && f.timer.armed);

@@ -65,9 +65,16 @@
 	hbitclkdiv = <27>;
 	pinctrl-0 = <&ucpd1_cc1_pb6 &ucpd1_cc2_pb4>;
 	pinctrl-names = "default";
-};
 
-/* No dead-battery property: the TCPP01-M12 presents the Rd itself. */
+	/*
+	 * The TCPP01-M12 presents the dead-battery Rd only while unpowered;
+	 * once VBUS feeds the shield's LDO it releases it. The MCU's own
+	 * dead-battery pull-downs hold the Rd from there until the stack
+	 * presents its own: without this, a source sees the Rd vanish during
+	 * boot and removes VBUS again.
+	 */
+	dead-battery;
+};
 
 zephyr_udc0: &usb {
 	pinctrl-0 = <&usb_dm_pa11 &usb_dp_pa12>;

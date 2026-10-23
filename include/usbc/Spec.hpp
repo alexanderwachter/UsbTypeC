@@ -39,6 +39,8 @@ using std::chrono::milliseconds;
 // CC timing
 inline constexpr timeout_range t_cc_debounce{milliseconds{100}, milliseconds{200}}; // tCCDebounce
 inline constexpr timeout_range t_pd_debounce{milliseconds{10}, milliseconds{20}};   // tPDDebounce
+// tSRCDisconnect: how long a source may take to act on SRC.Open
+inline constexpr timeout_range t_src_disconnect{milliseconds{0}, milliseconds{20}};
 
 // DRP timing
 inline constexpr timeout_range t_drp{milliseconds{50}, milliseconds{100}}; // tDRP toggle period

@@ -36,6 +36,7 @@ enum class debounce_time : std::uint8_t {
     at_once = 0,
     t_pd_debounce = 15,
     t_try_cc_debounce = 15,
+    t_src_disconnect = 15,
     t_cc_debounce = 150,
 };
 
@@ -47,6 +48,7 @@ constexpr std::chrono::milliseconds durationOf(debounce_time time)
 inline constexpr auto t_cc_debounce = durationOf(debounce_time::t_cc_debounce);
 inline constexpr auto t_pd_debounce = durationOf(debounce_time::t_pd_debounce);
 inline constexpr auto t_try_cc_debounce = durationOf(debounce_time::t_try_cc_debounce);
+inline constexpr auto t_src_disconnect = durationOf(debounce_time::t_src_disconnect);
 inline constexpr auto t_error_recovery = std::chrono::milliseconds{50};      // tErrorRecovery
 inline constexpr auto t_hard_reset_window = std::chrono::milliseconds{6000}; // > tNoResponse
 
@@ -329,6 +331,7 @@ using cc_detected_callback = void (*)(void* context, cc_status cc);
 // The debounce times applied, within the spec's ranges
 static_assert(spec::t_pd_debounce.contains(t_pd_debounce));
 static_assert(spec::t_try_cc_debounce.contains(t_try_cc_debounce));
+static_assert(spec::t_src_disconnect.contains(t_src_disconnect));
 static_assert(spec::t_cc_debounce.contains(t_cc_debounce));
 
 // Debounces the CC pins by the connection state's rule, on one timer.
