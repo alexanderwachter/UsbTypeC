@@ -1,0 +1,17 @@
+/*
+ * Copyright (c) 2026 Alexander Wachter
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * NUCLEO-G0B1RE with the X-NUCLEO-DRP1M1 shield (--shield
+ * x_nucleo_drp1m1): the port's capabilities. The source offer is the
+ * shield's SOURCE path, fed with 5 V from the Nucleo's rail through
+ * the CN4 jumper and switched onto VBUS by the TCPP03-M20.
+ */
+
+#include <zephyr/dt-bindings/usb-c/pd.h>
+
+&x_nucleo_drp1m1_port {
+	sink-pdos = <PDO_FIXED(5000, 100, 0)>;
+	source-pdos = <PDO_FIXED(5000, 1500, 0)>;
+};

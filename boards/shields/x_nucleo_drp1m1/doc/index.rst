@@ -74,18 +74,22 @@ switch and discharge, which that API has no operations for, are
 (``zephyr/drivers/usb_c/tcpp03_m20.h``): a UCPD-based port registers them
 as the TCPC driver's VCONN callbacks.
 
-FLGn is not wired in the board overlays: on the Nucleo-64 it lands on the
-LPUART1 RX of the ST-LINK virtual COM port. Without it the driver reports
-no fault events and does not write the recovery word an overcurrent trip
-needs; wire ``irq-gpios`` of the ``st,tcpp03-m20`` node on a board that
-frees the pin. The current and terminal voltage outputs are not described
-either.
+FLGn lands on Arduino D0, the RX of the Nucleo-64's Arduino serial. Where
+that UART is the ST-LINK virtual COM port (the NUCLEO-G474RE's LPUART1)
+the pin stays with the console and the board overlay leaves ``irq-gpios``
+of the ``st,tcpp03-m20`` node out: the driver then reports no fault
+events and does not write the recovery word an overcurrent trip needs.
+Where the console is another UART (the NUCLEO-G0B1RE's USART2) the board
+overlay disables the Arduino serial and wires the flag. The current and
+terminal voltage outputs are not described.
 
 The TCPP03-M20 starts in its dead-battery mode (sink path closed, Rd on
-CC) until the driver enables it, and the stack opens the sink path when
-the port starts: a Nucleo powered from VBUS alone, through the shield's
-LDO, loses its supply at that moment. Power the Nucleo through its
-ST-LINK or E5V/VIN.
+CC); the driver's init takes it to normal mode with both paths open, so
+a Nucleo powered from VBUS alone, through the shield's LDO, loses its
+supply at that moment. Power the Nucleo through its ST-LINK or E5V/VIN.
+The MCU's own dead-battery pull-downs (``dead-battery`` on the UCPD node
+of the board overlay) keep the Rd from there until the stack presents its
+own.
 
 Requirements
 ************
@@ -100,6 +104,14 @@ boards:
   on PB15, the shield's second CC2 link), the TIM3 PWM (D5) and DAC1 (A2)
   are disabled. The board does not describe its Arduino analog header, so
   the board overlay of the shield provides the ``arduino_adc`` mapping.
+- ``nucleo_g0b1re``: UCPD1 on PA8 / PB15 (the shield's CN10 pin 23 / 26
+  links), USB on PA11 / PA12 (FDCAN1 and I2C2 are disabled because they
+  own those pins on the board), ADC1_IN0 for VBUS, I2C1 on PB8 / PB9,
+  ENABLE on PC8, FLGn on PC5 (USART1, the Arduino serial, is disabled).
+  SPI1 and FDCAN2 (D10 is the shield's second CC1 link), the TIM3 PWM
+  (D5, the second CC2 link) and DAC1 (A2) are disabled. The
+  ``arduino_adc`` mapping comes from the board overlay of the shield as
+  well.
 
 Programming
 ***********

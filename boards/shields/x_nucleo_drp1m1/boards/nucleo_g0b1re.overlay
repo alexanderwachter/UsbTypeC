@@ -1,0 +1,123 @@
+/*
+ * Copyright (c) 2026 Alexander Wachter
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * X-NUCLEO-DRP1M1 on the NUCLEO-G0B1RE.
+ *
+ *   CC1     CN10 pin 23        PA8   UCPD1_CC1
+ *   CC2     CN10 pin 26        PB15  UCPD1_CC2
+ *   D+      CN10 pin 12        PA12  USB_DP
+ *   D-      CN10 pin 14        PA11  USB_DM
+ *   VBUS    A0                 PA0   ADC1_IN0
+ *   SCL     D15 / CN10 pin 3   PB8   I2C1_SCL
+ *   SDA     D14 / CN10 pin 5   PB9   I2C1_SDA
+ *   ENABLE  CN10 pin 2         PC8   GPIO
+ *   FLGn    D0 / CN10 pin 37   PC5   GPIO, open drain
+ *
+ * The shield also ties CC1 to D10 (PB0) and CC2 to D5 (PB4), the UCPD
+ * pins of an STM32G4 host: both must stay inputs. FLGn lands on the
+ * USART1 RX of the Arduino serial, not on the console (USART2), so the
+ * fault flag reaches the driver here.
+ */
+
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/gpio/st-morpho-header.h>
+
+/ {
+	/* The board does not describe its Arduino analog header yet. */
+	arduino_adc: analog-connector {
+		compatible = "arduino,uno-adc";
+		#io-channel-cells = <1>;
+		io-channel-map = <0 &adc1 0>,	/* A0 = PA0 = ADC1_IN0 */
+				 <1 &adc1 1>,	/* A1 = PA1 = ADC1_IN1 */
+				 <2 &adc1 4>,	/* A2 = PA4 = ADC1_IN4 */
+				 <3 &adc1 9>,	/* A3 = PB1 = ADC1_IN9 */
+				 <4 &adc1 15>,	/* A4 = PB11 = ADC1_IN15 */
+				 <5 &adc1 16>;	/* A5 = PB12 = ADC1_IN16 */
+	};
+};
+
+&x_nucleo_drp1m1_port {
+	tcpc = <&ucpd1>;
+};
+
+&x_nucleo_drp1m1_ppc {
+	irq-gpios = <&st_morpho_header ST_MORPHO_R_37 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+};
+
+&adc1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/*
+	 * The divider feeds the ADC from 33 kOhm; the default (shortest)
+	 * sampling time cannot charge the sampling capacitor from that and
+	 * reads near zero. The longest one, 160.5 cycles, is 10 us.
+	 */
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_MAX>;
+		zephyr,resolution = <12>;
+		zephyr,vref-mv = <3300>;
+	};
+};
+
+&ucpd1 {
+	status = "okay";
+
+	/*
+	 * ucpd_clk is HSI at 16 MHz. The half-bit clock should be about
+	 * 600 kHz: 16 MHz / 27 = 592.6 kHz, giving tTransitionWindow
+	 * 8 x 1.687 us = 13.5 us and tInterFrameGap 17 x 1.687 us = 28.7 us.
+	 */
+	psc-ucpdclk = <1>;
+	hbitclkdiv = <27>;
+	pinctrl-0 = <&ucpd1_cc1_pa8 &ucpd1_cc2_pb15>;
+	pinctrl-names = "default";
+
+	/*
+	 * The TCPP03-M20 presents the dead-battery Rd only in hibernate; the
+	 * driver's init takes it to normal mode. The MCU's own dead-battery
+	 * pull-downs hold the Rd from there until the stack presents its own
+	 */
+	dead-battery;
+};
+
+/* PA11 / PA12 carry the shield's USB data lines; the board's USB node
+ * already owns them. */
+&fdcan1 {
+	status = "disabled";
+};
+
+&i2c2 {
+	status = "disabled";
+};
+
+/* PB0 (D10) is the shield's second CC1 link: the board's SPI1 chip select
+ * and FDCAN2 RX. */
+&spi1 {
+	status = "disabled";
+};
+
+&fdcan2 {
+	status = "disabled";
+};
+
+/* PB4 (D5) is the shield's second CC2 link: the board's PWM output. */
+&pwm3 {
+	status = "disabled";
+};
+
+/* PA4 (A2) is the shield's SINK terminal voltage: the board's DAC output. */
+&dac1 {
+	status = "disabled";
+};
+
+/* PC5 (D0) is FLGn: the board's USART1 RX. */
+&usart1 {
+	status = "disabled";
+};

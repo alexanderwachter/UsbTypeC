@@ -14,7 +14,7 @@ duty cycle selects the DCDC output voltage (5/9/15 V), GPIOs gate the
 DCDC and the VBUS source switch, and the ADC-based vbus driver
 measures and discharges VBUS.
 
-On a NUCLEO-G474RE with the X-NUCLEO-DRP1M1 shield the source is the
+On a NUCLEO-G474RE or NUCLEO-G0B1RE with the X-NUCLEO-DRP1M1 shield the source is the
 shield's SOURCE path, 5 V from the Nucleo's rail through the CN4
 jumper: the TCPP03-M20 power path controller switches it onto VBUS,
 opens and closes the sink path, discharges VBUS and carries the VCONN
@@ -61,6 +61,7 @@ With the shield:
 
 ```sh
 west build -b nucleo_g474re --shield x_nucleo_drp1m1 usbc/samples/pd_drp
+west build -b nucleo_g0b1re --shield x_nucleo_drp1m1 usbc/samples/pd_drp
 ```
 
 ## Requirements
