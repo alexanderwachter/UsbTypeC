@@ -29,17 +29,15 @@ LOG_MODULE_REGISTER(tcpp03_m20, CONFIG_USBC_PPC_LOG_LEVEL);
 #define TCPP03_CONTROL_VCONN_CC1       BIT(0)
 #define TCPP03_CONTROL_VCONN_CC2       BIT(1)
 #define TCPP03_CONTROL_VCONN_MASK      (TCPP03_CONTROL_VCONN_CC1 | TCPP03_CONTROL_VCONN_CC2)
-#define TCPP03_CONTROL_PROVIDER_GATE   BIT(2) /* source path closed */
-#define TCPP03_CONTROL_CONSUMER_GATE   BIT(3) /* sink path closed */
+/* Opposite polarities (DS13618 figure 11): GDP=1 closes, GDC=1 opens */
+#define TCPP03_CONTROL_PROVIDER_CLOSED BIT(2)
+#define TCPP03_CONTROL_CONSUMER_OPEN   BIT(3)
 #define TCPP03_CONTROL_POWER_NORMAL    BIT(4)
 #define TCPP03_CONTROL_POWER_LOW       BIT(5)
 #define TCPP03_CONTROL_POWER_MASK      (TCPP03_CONTROL_POWER_NORMAL | TCPP03_CONTROL_POWER_LOW)
 #define TCPP03_CONTROL_POWER_HIBERNATE 0 /* the reset value: dead-battery Rd on CC */
 #define TCPP03_CONTROL_VBUS_DISCHARGE  BIT(6)
 #define TCPP03_CONTROL_VCONN_DISCHARGE BIT(7)
-
-/* The overcurrent recovery word (DS13618 tables 15 and 16) keeps the power mode and sets bit 3 */
-#define TCPP03_OVERCURRENT_RECOVERY BIT(3)
 
 /* Flag register bits */
 #define TCPP03_FLAG_OCP_VCONN BIT(0)
@@ -137,24 +135,26 @@ static int tcpp03_exit_dead_battery_mode(const struct device *dev)
 
 static int tcpp03_is_vbus_source(const struct device *dev)
 {
-	return tcpp03_read_acknowledged(dev, TCPP03_CONTROL_PROVIDER_GATE);
+	return tcpp03_read_acknowledged(dev, TCPP03_CONTROL_PROVIDER_CLOSED);
 }
 
 static int tcpp03_is_vbus_sink(const struct device *dev)
 {
-	return tcpp03_read_acknowledged(dev, TCPP03_CONTROL_CONSUMER_GATE);
+	int open = tcpp03_read_acknowledged(dev, TCPP03_CONTROL_CONSUMER_OPEN);
+
+	return open < 0 ? open : !open;
 }
 
 static int tcpp03_set_snk_ctrl(const struct device *dev, bool enable)
 {
-	return tcpp03_update_control(dev, TCPP03_CONTROL_CONSUMER_GATE,
-				     enable ? TCPP03_CONTROL_CONSUMER_GATE : 0);
+	return tcpp03_update_control(dev, TCPP03_CONTROL_CONSUMER_OPEN,
+				     enable ? 0 : TCPP03_CONTROL_CONSUMER_OPEN);
 }
 
 static int tcpp03_set_src_ctrl(const struct device *dev, bool enable)
 {
-	return tcpp03_update_control(dev, TCPP03_CONTROL_PROVIDER_GATE,
-				     enable ? TCPP03_CONTROL_PROVIDER_GATE : 0);
+	return tcpp03_update_control(dev, TCPP03_CONTROL_PROVIDER_CLOSED,
+				     enable ? TCPP03_CONTROL_PROVIDER_CLOSED : 0);
 }
 
 static int tcpp03_set_vbus_discharge(const struct device *dev, bool enable)
@@ -246,28 +246,17 @@ static void tcpp03_report(struct tcpp03_data *data, enum usbc_ppc_event event)
 }
 
 /*
- * An overcurrent opened the VCONN switches and both gates and holds
- * them until the recovery word. The written state is first brought to
- * what the device applies, so the recovery leaves everything the
- * device opened open and the driver agreeing with it
+ * An overcurrent opened the VCONN switches and both paths and holds
+ * them until the recovery word (DS13618 tables 15 and 16): the power
+ * mode with both paths open, which stays the written state
  */
 static void tcpp03_recover_from_overcurrent(const struct device *dev)
 {
 	struct tcpp03_data *data = dev->data;
-	uint8_t acknowledged;
-	uint8_t power_mode;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
-
-	if (tcpp03_read_register(dev, TCPP03_REG_ACKNOWLEDGE, &acknowledged) == 0) {
-		data->control = acknowledged;
-	}
-
-	power_mode = data->control & TCPP03_CONTROL_POWER_MASK;
-	if (tcpp03_write_control(dev, power_mode | TCPP03_OVERCURRENT_RECOVERY) == 0) {
-		tcpp03_write_control(dev, power_mode);
-	}
-
+	tcpp03_write_control(dev, (data->control & TCPP03_CONTROL_POWER_MASK) |
+					  TCPP03_CONTROL_CONSUMER_OPEN);
 	k_mutex_unlock(&data->lock);
 }
 
@@ -276,7 +265,7 @@ static void tcpp03_handle_flags(struct k_work *work)
 	struct tcpp03_data *data = CONTAINER_OF(work, struct tcpp03_data, flag_work);
 	const struct device *dev = data->dev;
 	/* the role at the fault: the written intent, the device may have opened the gate */
-	bool sourcing = (data->control & TCPP03_CONTROL_PROVIDER_GATE) != 0;
+	bool sourcing = (data->control & TCPP03_CONTROL_PROVIDER_CLOSED) != 0;
 	uint8_t flags;
 
 	if (tcpp03_read_register(dev, TCPP03_REG_FLAGS, &flags) != 0) {
@@ -379,7 +368,8 @@ static int tcpp03_init(const struct device *dev)
 
 	data->control = TCPP03_CONTROL_POWER_HIBERNATE;
 
-	ret = tcpp03_write_control(dev, TCPP03_CONTROL_POWER_NORMAL);
+	/* Normal mode with both paths open: leaving hibernate ends the dead-battery sink path */
+	ret = tcpp03_write_control(dev, TCPP03_CONTROL_POWER_NORMAL | TCPP03_CONTROL_CONSUMER_OPEN);
 	if (ret != 0) {
 		return ret;
 	}
