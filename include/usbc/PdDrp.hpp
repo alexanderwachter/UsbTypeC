@@ -420,10 +420,13 @@ private:
                     snk.vbusRemoved();
                     src.attachedAfterSwap(data, revision, ids);
                 } else {
-                    src.attached();
                     // only a fresh source attach starts VCONN, and
-                    // only when the cable presents Ra
+                    // only when the cable presents Ra; before the
+                    // engine's first message - switching VCONN
+                    // reconfigures the CC lines, which aborts a
+                    // transmission in flight
                     port.vconn_.attachedSource(raPresent(partner.cc));
+                    src.attached();
                 }
             }
         }
