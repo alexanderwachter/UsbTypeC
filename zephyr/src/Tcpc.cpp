@@ -141,6 +141,7 @@ std::optional<cc_status> Tcpc::readCcStatus()
         LOG_ERR("reading the CC status failed (%d)", ret);
         return std::nullopt;
     }
+    LOG_DBG("cc1 %d, cc2 %d (pull %d)", cc1, cc2, static_cast<int>(pull_));
     return cc_status{fromVoltage(cc1, pull_), fromVoltage(cc2, pull_)};
 }
 
@@ -153,6 +154,7 @@ bool Tcpc::setPlugOrientation(plug_orientation orientation)
     if (ret != 0) {
         LOG_ERR("setting the CC polarity failed (%d)", ret);
     }
+    LOG_DBG("PD on cc%d", orientation == plug_orientation::cc1 ? 1 : 2);
     return ret == 0;
 }
 
@@ -166,6 +168,7 @@ bool Tcpc::sourceVbus(bool enable)
         LOG_ERR("switching source VBUS %s failed (%d)", enable ? "on" : "off", ret);
         return false;
     }
+    LOG_DBG("source VBUS %s", enable ? "on" : "off");
     return true;
 }
 
@@ -186,6 +189,7 @@ bool Tcpc::setVconn(bool enable)
     if (ret != 0) {
         LOG_ERR("switching VCONN %s failed (%d)", enable ? "on" : "off", ret);
     }
+    LOG_DBG("VCONN %s", enable ? "on" : "off");
     return ret == 0;
 }
 
