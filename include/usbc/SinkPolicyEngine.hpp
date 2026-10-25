@@ -40,21 +40,26 @@
  * counted (nHardResetCount, then Error Recovery is requested through
  * portReport), and PR_Swap/DR_Swap run their full exchanges.
  *
- * Integration: the engine drives a pd_transport driver through its own
- * ProtocolLayer - itself an observer of the engine's machine, executing
- * the states' prl::reset_action annotations and transmitting the
- * pd_message a state publishes through values() - and
- * runs from construction on, resting in PE_SNK_Discovery until VBUS is
- * reported. The application injects its own observers into the machine;
- * the power side is one of them: derive from SinkPower (CRTP) and
- * implement setLimit/onContract/onContractLost. Extra observers (e.g.
- * for logging) see exactly the annotated edges of the DOT diagram. Feed
- * TCPC alerts into onAlert() and the Type-C layer's attach/detach into
- * vbusPresent() and vbusRemoved() - a sink's attach implies VBUS. After
- * a hard reset the engine waits in Discovery for the Type-C layer to
- * report the returning VBUS. Everything runs in the stack's serialized
- * context; observer callbacks may originate from the timer context (mtl
- * timer contract).
+ * Integration: the engine is the client of the port's protocol layer
+ * while live - its layer port, an observer of the engine's machine,
+ * executes the states' prl::reset_action annotations and transmits the
+ * pd_message a state publishes through values() - and runs from
+ * construction on, resting in PE_SNK_Discovery until the attach. The
+ * engine observes the connection machine itself: Attached.SNK's
+ * attach fact (tc::attached_as_sink: a fresh attach or VBUS back
+ * after the hard-reset window goes live, a completed power role swap
+ * continues; the source's Rp seeds PD3 collision avoidance), the data
+ * role the connection holds, a DRP's swap standby toward the sink
+ * role (this engine takes the layer over mid-swap), Attached.SRC
+ * after a completed swap (this engine retires) and the PD
+ * connection's exit (the detach). The application injects its own
+ * observers into the machine; the power side is one of them: derive
+ * from SinkPower (CRTP) and implement setLimit/onContract/
+ * onContractLost. Extra observers (e.g. for logging) see exactly the
+ * annotated edges of the DOT diagram. After a hard reset the engine
+ * waits in Discovery for the connection layer to report the returning
+ * VBUS. Everything runs in the stack's serialized context; observer
+ * callbacks may originate from the timer context (mtl timer contract).
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -62,6 +67,7 @@
 
 #pragma once
 
+#include <usbc/Cc.hpp>
 #include <usbc/Message.hpp>
 #include <usbc/PdPhy.hpp>
 #include <usbc/Pdo.hpp>
@@ -69,6 +75,7 @@
 #include <usbc/PortControl.hpp>
 #include <usbc/ProtocolLayer.hpp>
 #include <usbc/SinkLoad.hpp>
+#include <usbc/TypeC.hpp>
 #include <usbc/Units.hpp>
 
 #include <mtl/StateMachine.hpp>
@@ -512,7 +519,7 @@ struct pe_snk_swap_transition_to_off {
     // port - both compile-time facts of this state
     static constexpr auto annotations = fsm::annotate(
         standby_limit{v_safe_5v},
-        enter_swap_standby{power_role::source}
+        tc::enter_swap_standby{power_role::source}
     );
 };
 
@@ -525,7 +532,7 @@ struct pe_snk_swap_assert_rp {
     static constexpr pd_status pd = pd_status::connected;
 
     static constexpr auto annotations = fsm::annotate(
-        assert_new_role{power_role::source}
+        tc::assert_new_role{power_role::source}
     );
 };
 
@@ -573,7 +580,7 @@ struct pe_snk_swap_source_on_seen {
     static constexpr auto annotations = fsm::annotate(
         power,
         pd,
-        swap_completed{}
+        tc::swap_completed{}
     );
 };
 
@@ -596,7 +603,7 @@ struct pe_snk_transition_to_default {
         power,
         pd,
         restore_default_action{},
-        hard_reset_window{}
+        tc::hard_reset_window{}
     );
 
     using contexts = fsm::contexts<pe_negotiation>;
@@ -928,23 +935,24 @@ private:
 };
 
 template<
-    concepts::pd_phy PHY,
+    concepts::protocol_layer PRL,
     fsm::concepts::timer TIMER,
     concepts::sink_policy POLICY,
     typename... OBSERVERs>
 class SinkPolicyEngine : public pe::PolicyEngineBase<
-                             SinkPolicyEngine<PHY, TIMER, POLICY, OBSERVERs...>,
+                             SinkPolicyEngine<PRL, TIMER, POLICY, OBSERVERs...>,
                              power_role::sink,
                              pe::pe_sink_table,
-                             PHY,
+                             PRL,
                              TIMER,
                              POLICY,
-                             OBSERVERs...> {
+                             OBSERVERs...>,
+                         public fsm::observing<SinkPolicyEngine<PRL, TIMER, POLICY, OBSERVERs...>> {
     using base = pe::PolicyEngineBase<
         SinkPolicyEngine,
         power_role::sink,
         pe::pe_sink_table,
-        PHY,
+        PRL,
         TIMER,
         POLICY,
         OBSERVERs...>;
@@ -952,40 +960,91 @@ class SinkPolicyEngine : public pe::PolicyEngineBase<
 
 public:
     // The observers are injected into the engine's machine after the
-    // protocol layer, and into the protocol layer's machine; a
-    // SinkPower-derived one supplies the power side.
+    // layer port; a SinkPower-derived one supplies the power side.
     // pe_timer runs the engine's states, swap_timer the sub-states of a
     // swap exchange (never armed without a swap feature)
     SinkPolicyEngine(
-        PHY& phy,
-        TIMER& prl_timer,
+        PRL& prl,
         TIMER& pe_timer,
         TIMER& swap_timer,
         std::span<sink_capability const> capabilities,
         POLICY& policy,
         OBSERVERs&... observers
     )
-        : base(phy, prl_timer, pe_timer, swap_timer, observers...), policy_(policy),
-          sm_(this->timed_, this->prl_, gates_, policy_, observers...)
+        : base(prl, pe_timer, swap_timer), policy_(policy),
+          sm_(this->timed_, this->port_, gates_, policy_, observers...)
     {
         this->sink_capabilities_ = capabilities;
         sm_.process(pe::event::started{}); // rest in Discovery until VBUS
     }
 
-    // The Type-C layer reports attach: for a sink, VBUS is present; the
-    // engine goes live and its protocol layer takes the PHY
+    // --- the connection machine's facts ---------------------------------------
+
+    // the data role the connection holds, ahead of the attach (set
+    // order): the header carries it from the first message on
+    void notifyEntry(tc::attached_data_role attached) { data_role_ = attached.role; }
+
+    // Attached.SNK entered: a fresh attach or VBUS back after the
+    // hard-reset window starts the negotiation, the completion of a
+    // power role swap continues it (this engine is live mid-swap); the
+    // source's Rp seeds the PD3 collision-avoidance view, CC reports
+    // keep it current from here
+    void notifyEntry(tc::attached_as_sink const& attach)
+    {
+        sinkTxChanged(tc::sinkTxOk(attach.cc));
+        if (attach.origin == tc::attach_origin::completed_power_role_swap) {
+            finishSwap();
+        } else {
+            vbusPresent();
+        }
+    }
+
+    // Attached.SRC entered completing a power role swap: this engine
+    // ran the swap and retires, the source engine continues the
+    // connection on the layer
+    void notifyEntry(tc::attached_as_source const& attach)
+    {
+        if (attach.origin == tc::attach_origin::completed_power_role_swap) {
+            vbusRemoved();
+        }
+    }
+
+    // The old source asserted Rd mid PR_Swap: this engine takes the
+    // layer over for the PS_RDY exchange (the standby toward the
+    // source role leaves this engine live)
+    void notifyEntry(tc::swap_standby standby)
+    {
+        if (standby.to == power_role::sink) {
+            startSwapWaitSourceOn();
+        }
+    }
+
+    // the one real detach; the engine that is live retires
+    void notifyExit(tc::pd_connection)
+    {
+        if (this->isLive()) {
+            vbusRemoved();
+        }
+    }
+
+    // PD3 collision avoidance: the connection layer forwards every CC
+    // report, the source's Rp reads as SinkTxOk (3.0 A) / SinkTxNG
+    void onCcStatus(cc_status cc) { sinkTxChanged(tc::sinkTxOk(cc)); }
+
+    // --- the same, as calls ----------------------------------------------------
+
+    // Attach: for a sink, VBUS is present; the engine goes live as the
+    // layer's client
     void vbusPresent()
     {
-        this->prl_.claimPhy();
+        this->takeLayer(data_role_);
         sm_.process(pe::event::vbus_present{});
     }
 
-    // ... and detach: negotiation state is gone, back to Discovery;
-    // the next partner negotiates its own revision
+    // ... and detach: negotiation state is gone, back to Discovery
     void vbusRemoved()
     {
-        this->prl_.releasePhy();
-        this->prl_.resetRevision();
+        this->leaveLayer();
         this->setBistTestData(false); // the test mode ends with the partner
         pending_sequence_.reset();
         sm_.process(pe::event::vbus_removed{});
@@ -1034,14 +1093,11 @@ public:
     // carries the preserved data role (the entered state seeds the
     // context with it); the negotiated revision and the MessageID
     // lifecycle hold for the connection - a swap is no reset trigger
-    // (6.7.1) - and are handed over from the retiring engine
-    void
-    startSwapWaitSourceOn(data_role role, pd_revision revision, prl::message_id_state const& ids)
+    // (6.7.1) - on the one layer both engines share
+    void startSwapWaitSourceOn()
     {
-        this->prl_.seedRevision(revision);
-        this->prl_.seedMessageIds(ids);
-        this->prl_.claimPhy();
-        sm_.process(pe::event::swap_wait_source_on{role});
+        this->takeLayer(data_role_);
+        sm_.process(pe::event::swap_wait_source_on{data_role_});
     }
 
     // A DRP announces its source-role capabilities: Get_Source_Cap is
@@ -1221,7 +1277,8 @@ private:
     }
 
     POLICY& policy_;
-    bool sink_tx_ok_ = true;                                      // last Rp seen (SinkTxOk/NG)
+    data_role data_role_ = data_role::ufp; // the connection's, as the attach delivers it
+    bool sink_tx_ok_ = true;               // last Rp seen (SinkTxOk/NG)
     std::optional<pe::atomic_message_sequence> pending_sequence_; // parked under SinkTxNG
     gate_watch gates_{*this};
     // the policy rides in the pack to answer the table's questions
@@ -1231,7 +1288,7 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         typename base::timeouts,
-        ProtocolLayer<PHY, TIMER, OBSERVERs...>,
+        typename base::PrlPort,
         gate_watch,
         POLICY,
         OBSERVERs...>

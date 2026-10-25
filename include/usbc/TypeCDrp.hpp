@@ -406,21 +406,10 @@ struct try_wait_src_timed_out {
 inline constexpr auto t_ps_source_off = std::chrono::milliseconds{835}; // tPSSourceOff
 inline constexpr auto t_ps_source_on = std::chrono::milliseconds{435};  // tPSSourceOn
 
-// The window of a PR_Swap where the roles change hands: power paths
-// off, Rd presented, VBUS not watched and the CC pins not monitored -
-// VBUS is legitimately absent and the partner's terminations flap,
-// neither is a detach. The timeout is the safety net for a PD layer
-// that never completes: a swap without the partner's PS_RDY has
-// failed, and connection resolution restarts from Unattached.SNK
-
-// Annotation marking that window and the role the swap heads for:
-// completeSwap()/abortSwap() only mean something inside it (the facade
-// asks the machine), and the PD layer hands its engines over on it.
-// The PD connection holds throughout - the standbys carry its tag
-struct swap_standby {
-    power_role to;
-    constexpr bool operator==(swap_standby const&) const = default;
-};
+// The swap standbys (tc::swap_standby, TypeC.hpp): the timeout is the
+// safety net for a PD layer that never completes - a swap without the
+// partner's PS_RDY has failed, and connection resolution restarts from
+// Unattached.SNK
 
 // The old sink, waiting for the old source's PS_RDY before taking over
 struct swap_standby_to_src {
@@ -815,10 +804,7 @@ public:
 private:
     friend tc::port_frontend<TypeCDrp, CC, VBUS>;
 
-    bool inSwapStandby() const
-    {
-        return sm_.template annotation<tc::drp::swap_standby>().has_value();
-    }
+    bool inSwapStandby() const { return sm_.template annotation<tc::swap_standby>().has_value(); }
 
     static bool allowsSourcing(auto& observer)
     {

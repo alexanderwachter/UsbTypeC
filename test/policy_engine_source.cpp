@@ -227,7 +227,7 @@ std::uint8_t transmittedType(mock_phy const& phy)
 struct recovery_watch : fsm::observing<recovery_watch> {
     int requests = 0;
 
-    void notifyEntry(usbc::pe::request_error_recovery) { ++requests; }
+    void notifyEntry(usbc::tc::request_error_recovery) { ++requests; }
 };
 
 // The engine's optional swap features follow the injected policy
@@ -249,6 +249,8 @@ int policyEngineSourceTests()
         usbc::pdo::makeFixedSource(9000, 3000)
     };
 
+    using Layer = usbc::ProtocolLayer<mock_phy, manual_timer>;
+
     mock_cc cc;
     mock_phy phy;
     manual_timer prl_timer;
@@ -257,16 +259,16 @@ int policyEngineSourceTests()
     swap_capable_policy policy;
     mock_supply supply;
     mock_power power;
+    Layer prl{phy, prl_timer};
     usbc::SourcePolicyEngine<
         mock_cc,
-        mock_phy,
+        Layer,
         manual_timer,
         swap_capable_policy,
         mock_supply,
         mock_power>
         pe{cc,
-           phy,
-           prl_timer,
+           prl,
            pe_timer,
            swap_timer,
            source_caps,
@@ -274,6 +276,7 @@ int policyEngineSourceTests()
            policy,
            supply,
            power};
+    prl.claimPhy(); // the connection layer's part: the PHY reports to the layer
 
     auto deliver = [&](usbc::pd_message const& message) { phy.injectMessage(message); };
     auto txSuccess = [&] { phy.transmitted(usbc::transmit_outcome::success); };
@@ -283,19 +286,19 @@ int policyEngineSourceTests()
         phy.transmitted(usbc::transmit_outcome::failed);
     };
 
-    // construction configured the roles and rests in Startup with the
-    // supply at vSafe5V defaults
-    check(phy.header_info.power == usbc::power_role::source);
-    check(any(phy.detect & usbc::receive_detect::sop));
+    // construction rests in Startup with the supply at vSafe5V defaults
     check(!pe_timer.armed && phy.transmit_count == 0);
     check(supply.sets == 1 && supply.voltage == usbc::pe::v_safe_5v);
     check(cc.rp == usbc::rp_value::usb_default); // the advertisement, no contract
 
-    // the Type-C layer reports the sink: the protocol layer takes the
-    // PHY, capabilities go out
-    check(!phy.claimed());
+    // the Type-C layer reports the sink: the engine becomes the
+    // layer's client - the header says source - and the capabilities
+    // go out
+    check(!pe.isLive());
     pe.attached();
-    check(phy.claimed());
+    check(pe.isLive());
+    check(phy.header_info.power == usbc::power_role::source);
+    check(phy.header_info.data == usbc::data_role::dfp);
     check(
         transmittedType(phy) ==
         static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities)
@@ -414,7 +417,7 @@ int policyEngineSourceTests()
     pe.detached();
     check(power.lost == 2);
     check(!pe_timer.armed);
-    check(!phy.claimed());                       // the PHY is released
+    check(!pe.isLive());                         // the layer has no client
     check(cc.rp == usbc::rp_value::usb_default); // the advertisement again
 
     // a PD-incapable sink: the advertisement fails nCapsCount times,
@@ -446,9 +449,10 @@ int policyEngineSourceTests()
         mock_supply silent_supply;
         mock_power silent_power;
         recovery_watch watch;
+        Layer silent_prl{silent_phy, silent_prl_timer};
         usbc::SourcePolicyEngine<
             mock_cc,
-            mock_phy,
+            Layer,
             manual_timer,
             usbc::RequestPolicy,
             mock_supply,
@@ -456,8 +460,7 @@ int policyEngineSourceTests()
             recovery_watch>
             silent{
                 silent_cc,
-                silent_phy,
-                silent_prl_timer,
+                silent_prl,
                 silent_pe_timer,
                 silent_swap_timer,
                 source_caps,
@@ -467,6 +470,7 @@ int policyEngineSourceTests()
                 silent_power,
                 watch
             };
+        silent_prl.claimPhy();
         auto confirm = [&] { silent_phy.transmitted(usbc::transmit_outcome::success); };
 
         silent.attached();

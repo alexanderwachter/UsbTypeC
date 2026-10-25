@@ -93,6 +93,12 @@ constexpr bool sinkTxOk(cc_status status)
     return status.cc1 == cc_state::snk_power_3a0 || status.cc2 == cc_state::snk_power_3a0;
 }
 
+// The cable asks to be powered: Ra on the pin the plug does not use
+constexpr bool raPresent(cc_status status)
+{
+    return status.cc1 == cc_state::src_ra || status.cc2 == cc_state::src_ra;
+}
+
 namespace event {
 
 // The CC status that held for the state's debounce (CcWatcher's
@@ -169,21 +175,62 @@ struct attached_data_role {
     constexpr bool operator==(attached_data_role const&) const = default;
 };
 
-// The partner as the attach resolved it, an instance value of the
-// Attached states delivered on every entry: what brought the port
-// here and the CC status the attach rests on - a sink reads the
-// source's Rp from it (SinkTxOk/SinkTxNG, PD3 collision avoidance), a
-// source whether the cable presents Ra
-struct attached_partner {
+// The attach as the Attached state of each role resolved it, an
+// instance value delivered on every entry: what brought the port here
+// and the CC status the attach rests on. The type names the role, so
+// the sink engine observes the one, the source engine and the vconn
+// machine the other - a sink reads the source's Rp from the status
+// (SinkTxOk/SinkTxNG, PD3 collision avoidance), a source whether the
+// cable presents Ra
+struct attached_as_sink {
     attach_origin origin;
     cc_status cc;
+};
+struct attached_as_source {
+    attach_origin origin;
+    cc_status cc;
+};
+
+// The window of a PR_Swap where the roles change hands (DRP): power
+// paths off, Rd presented, VBUS not watched and the CC pins not
+// monitored - VBUS is legitimately absent and the partner's
+// terminations flap, neither is a detach. The annotation marks that
+// window and the role the swap heads for: completeSwap()/abortSwap()
+// only mean something inside it (the facade asks the machine), and the
+// engines hand the connection over on it. The PD connection holds
+// throughout - the standbys carry its tag
+struct swap_standby {
+    power_role to;
+    constexpr bool operator==(swap_standby const&) const = default;
+};
+
+// What the PD layer directs the connection layer to do: a policy
+// engine state carries one of these in its annotation set, and the
+// port executes it from the engine's machine. All are compile-time
+// facts of their states, comparable for the sets' change suppression
+struct request_error_recovery { // nHardResetCount exhausted
+    constexpr bool operator==(request_error_recovery const&) const = default;
+};
+struct hard_reset_window { // hold the attach while VBUS cycles
+    constexpr bool operator==(hard_reset_window const&) const = default;
+};
+struct enter_swap_standby { // agreed PR_Swap: hold the connection in the
+    power_role role;        // swap standby toward this role
+    constexpr bool operator==(enter_swap_standby const&) const = default;
+};
+struct assert_new_role { // a PR_Swap reached the termination change
+    power_role role;
+    constexpr bool operator==(assert_new_role const&) const = default;
+};
+struct swap_completed { // the new source's PS_RDY: the swap is done
+    constexpr bool operator==(swap_completed const&) const = default;
 };
 
 // The one machine-owned context of the connection layer: one
 // connection's attachment. The detected CC status the attach rests on
 // (the states waiting for a VBUS report after a detection keep it here
 // for the Attached state to resolve plug orientation and the Rp
-// advertisement from, and attached_partner reports it), the plug
+// advertisement from, and the attach fact reports it), the plug
 // orientation and data role a fresh attach resolves, kept across a
 // hard-reset window and a power role swap (a power swap leaves the
 // data role alone, per the PD spec). The Unattached anchors reset it;

@@ -147,12 +147,24 @@ int protocolLayerTests()
     mock_phy phy;
     mock_client client;
     manual_timer timer;
-    usbc::ProtocolLayer<mock_phy, manual_timer> prl{phy, timer, client};
+    usbc::ProtocolLayer<mock_phy, manual_timer> prl{phy, timer};
 
-    // the layer hears the PHY only while it holds it
+    // the client sets itself with the roles the header carries
+    check(!prl.clientIs(client));
+    prl.setClient(client, usbc::power_role::sink, usbc::data_role::ufp);
+    check(prl.clientIs(client));
+    check(phy.header_info.power == usbc::power_role::sink);
+    check(phy.header_info.data == usbc::data_role::ufp);
+    check(phy.header_info.revision == usbc::pd_revision::rev_3_x);
+    prl.setDataRole(usbc::data_role::dfp);
+    check(phy.header_info.data == usbc::data_role::dfp);
+
+    // the layer hears the PHY only while it holds it, listening for
+    // SOP messages and hard resets
     check(!phy.claimed());
     prl.claimPhy();
     check(phy.claimed());
+    check(any(phy.detect & usbc::receive_detect::sop));
 
     // MessageID stamping; one PHY attempt per request, CRCReceiveTimer runs
     check(prl.transmit(makeRequest()));
@@ -278,10 +290,11 @@ int protocolLayerTests()
         manual_timer outcome_timer;
         usbc::ProtocolLayer<retransmitting_phy, manual_timer> retransmitting_prl{
             transport,
-            outcome_timer,
-            transport_client
+            outcome_timer
         };
         static_assert(decltype(retransmitting_prl)::who_retransmits == usbc::retransmission::phy);
+        retransmitting_prl
+            .setClient(transport_client, usbc::power_role::sink, usbc::data_role::ufp);
         retransmitting_prl.claimPhy();
 
         check(retransmitting_prl.transmit(makeRequest()) && transmittedId(transport) == 0);

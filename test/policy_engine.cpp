@@ -280,7 +280,7 @@ std::uint8_t transmittedType(mock_phy const& phy)
 struct recovery_watch : fsm::observing<recovery_watch> {
     int requests = 0;
 
-    void notifyEntry(usbc::pe::request_error_recovery) { ++requests; }
+    void notifyEntry(usbc::tc::request_error_recovery) { ++requests; }
 };
 
 // The engine's optional swap features follow the injected policy
@@ -326,26 +326,30 @@ int policyEngineTests()
         usbc::sink_capability{9000, 3000}
     };
 
+    using Layer = usbc::ProtocolLayer<mock_phy, manual_timer>;
+
     mock_phy phy;
     manual_timer prl_timer;
     manual_timer pe_timer;
     manual_timer swap_timer; // the timeouts inside a swap exchange
     swap_capable_policy policy{5000, 27000};
     mock_power power;
-    usbc::SinkPolicyEngine<mock_phy, manual_timer, swap_capable_policy, mock_power>
-        pe{phy, prl_timer, pe_timer, swap_timer, sink_caps, policy, power};
+    Layer prl{phy, prl_timer};
+    usbc::SinkPolicyEngine<Layer, manual_timer, swap_capable_policy, mock_power>
+        pe{prl, pe_timer, swap_timer, sink_caps, policy, power};
+    prl.claimPhy(); // the connection layer's part: the PHY reports to the layer
 
     auto deliver = [&](usbc::pd_message const& message) { phy.injectMessage(message); };
     auto txSuccess = [&] { phy.transmitted(usbc::transmit_outcome::success); };
 
-    // construction configured the roles and rests in Discovery; the
-    // Type-C layer's attach starts the SinkWaitCapTimer and the
-    // protocol layer takes the PHY
-    check(phy.header_info.power == usbc::power_role::sink);
-    check(any(phy.detect & usbc::receive_detect::sop));
-    check(!pe_timer.armed && !phy.claimed());
+    // construction rests in Discovery; the Type-C layer's attach makes
+    // the engine the layer's client - the header says sink - and
+    // starts the SinkWaitCapTimer
+    check(!pe_timer.armed && !pe.isLive());
     pe.vbusPresent();
-    check(pe_timer.armed && phy.claimed());
+    check(pe_timer.armed && pe.isLive());
+    check(phy.header_info.power == usbc::power_role::sink);
+    check(phy.header_info.data == usbc::data_role::ufp);
 
     // source capabilities: the policy picks 9 V / 3 A (position 2)
     constexpr std::array offered{
@@ -519,13 +523,18 @@ int policyEngineTests()
     deliver(makeControl(usbc::control_message_type::accept));
     check(pe_timer.armed);
 
-    // detach returns to startup, which resets the protocol layer and
-    // restores the default power - the contract in place is reported lost
+    // detach returns to startup and restores the default power - the
+    // contract in place is reported lost; the layer forgets the partner
+    // on the connection's exit (the connection layer's part here), so
+    // the next negotiation starts at MessageID 0
     auto const lost_before_detach = power.lost;
     pe.vbusRemoved();
+    check(!pe.isLive());
+    prl.notifyExit(usbc::tc::pd_connection{});
     check(!pe_timer.armed);
     check(power.lost == lost_before_detach + 1);
     check(power.limit_voltage == 5000 && power.limit_current == usbc::pe::i_default_current);
+    prl.notifyEntry(usbc::tc::pd_connection{});
     pe.vbusPresent();
     deliver(makeSourceCaps(offered));
     check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::data_message_type::request));
@@ -542,18 +551,18 @@ int policyEngineTests()
         manual_timer silent_swap_timer;
         mock_power silent_power;
         recovery_watch watch;
-        usbc::
-            SinkPolicyEngine<mock_phy, manual_timer, usbc::PowerPolicy, mock_power, recovery_watch>
-                silent{
-                    silent_phy,
-                    silent_prl_timer,
-                    silent_pe_timer,
-                    silent_swap_timer,
-                    sink_caps,
-                    policy,
-                    silent_power,
-                    watch
-                };
+        Layer silent_prl{silent_phy, silent_prl_timer};
+        usbc::SinkPolicyEngine<Layer, manual_timer, usbc::PowerPolicy, mock_power, recovery_watch>
+            silent{
+                silent_prl,
+                silent_pe_timer,
+                silent_swap_timer,
+                sink_caps,
+                policy,
+                silent_power,
+                watch
+            };
+        silent_prl.claimPhy();
         auto confirm = [&] { silent_phy.transmitted(usbc::transmit_outcome::success); };
 
         silent.vbusPresent();

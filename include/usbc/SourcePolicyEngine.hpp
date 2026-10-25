@@ -33,18 +33,23 @@
  * hard-reset recovery likewise (_transition_to_default, _recover,
  * _restore_default).
  *
- * Integration: mirror image of the sink engine. The ProtocolLayer is
- * an observer of the machine (the states' prl::reset_action
- * annotations, the pd_message they publish through values()); the
- * application injects its own observers - derive
- * from SourcePower (CRTP) and implement onContract/onContractLost.
- * The supply derives from SourceSupply (CRTP, implement setOutput):
- * injected into the machine, it applies the operating points the
- * states annotate, and the engine feeds its settled callback back as
- * an event. Feed TCPC alerts into onAlert() and the Type-C
- * source layer's attach/detach into attached() and detached().
- * Everything runs in the stack's serialized context; observer
- * callbacks may originate from the timer context (mtl timer contract).
+ * Integration: mirror image of the sink engine. The engine is the
+ * client of the port's protocol layer while live - its layer port, an
+ * observer of the machine, executes the states' prl::reset_action
+ * annotations and transmits the pd_message they publish through
+ * values() - and observes the connection machine itself:
+ * Attached.SRC's attach fact (tc::attached_as_source: a fresh attach
+ * advertises, a completed power role swap continues the connection as
+ * the new source), the data role the connection holds, a DRP's swap
+ * standby toward the sink role (this engine retires, the sink engine
+ * takes the layer over) and the PD connection's exit (the detach).
+ * The application injects its own observers - derive from SourcePower
+ * (CRTP) and implement onContract/onContractLost. The supply derives
+ * from SourceSupply (CRTP, implement setOutput): injected into the
+ * machine, it applies the operating points the states annotate, and
+ * the engine feeds its settled callback back as an event. Everything
+ * runs in the stack's serialized context; observer callbacks may
+ * originate from the timer context (mtl timer contract).
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -59,6 +64,7 @@
 #include <usbc/PolicyEngine.hpp>
 #include <usbc/ProtocolLayer.hpp>
 #include <usbc/SourceSupply.hpp>
+#include <usbc/TypeC.hpp>
 #include <usbc/Units.hpp>
 
 #include <mtl/StateMachine.hpp>
@@ -495,7 +501,7 @@ struct pe_src_swap_assert_rd {
     static constexpr pd_status pd = pd_status::connected;
 
     static constexpr auto annotations = fsm::annotate(
-        assert_new_role{power_role::sink}
+        tc::assert_new_role{power_role::sink}
     );
 };
 
@@ -987,24 +993,26 @@ private:
 
 template<
     concepts::cc CC,
-    concepts::pd_phy PHY,
+    concepts::protocol_layer PRL,
     fsm::concepts::timer TIMER,
     concepts::source_policy POLICY,
     concepts::source_supply SUPPLY,
     typename... OBSERVERs>
-class SourcePolicyEngine : public pe::PolicyEngineBase<
-                               SourcePolicyEngine<CC, PHY, TIMER, POLICY, SUPPLY, OBSERVERs...>,
-                               power_role::source,
-                               pe::pe_source_table,
-                               PHY,
-                               TIMER,
-                               POLICY,
-                               OBSERVERs...> {
+class SourcePolicyEngine
+    : public pe::PolicyEngineBase<
+          SourcePolicyEngine<CC, PRL, TIMER, POLICY, SUPPLY, OBSERVERs...>,
+          power_role::source,
+          pe::pe_source_table,
+          PRL,
+          TIMER,
+          POLICY,
+          OBSERVERs...>,
+      public fsm::observing<SourcePolicyEngine<CC, PRL, TIMER, POLICY, SUPPLY, OBSERVERs...>> {
     using base = pe::PolicyEngineBase<
         SourcePolicyEngine,
         power_role::source,
         pe::pe_source_table,
-        PHY,
+        PRL,
         TIMER,
         POLICY,
         OBSERVERs...>;
@@ -1012,17 +1020,15 @@ class SourcePolicyEngine : public pe::PolicyEngineBase<
 
 public:
     // The observers are injected into the engine's machine after the
-    // protocol layer and the supply driver, and into the protocol
-    // layer's machine; a SourcePower-derived one supplies the contract
-    // notifications. The CC driver presents the PD3 collision-avoidance
-    // Rp (SinkTxOk/SinkTxNG) under an explicit contract and the port's
-    // advertisement otherwise. pe_timer runs the engine's states,
-    // swap_timer the sub-states of a swap exchange (never armed without
-    // a swap feature)
+    // layer port and the supply driver; a SourcePower-derived one
+    // supplies the contract notifications. The CC driver presents the
+    // PD3 collision-avoidance Rp (SinkTxOk/SinkTxNG) under an explicit
+    // contract and the port's advertisement otherwise. pe_timer runs
+    // the engine's states, swap_timer the sub-states of a swap exchange
+    // (never armed without a swap feature)
     SourcePolicyEngine(
         CC& cc,
-        PHY& phy,
-        TIMER& prl_timer,
+        PRL& prl,
         TIMER& pe_timer,
         TIMER& swap_timer,
         std::span<std::uint32_t const> capabilities,
@@ -1031,9 +1037,9 @@ public:
         SUPPLY& supply,
         OBSERVERs&... observers
     )
-        : base(phy, prl_timer, pe_timer, swap_timer, observers...), cc_(cc),
-          advertisement_(advertisement), policy_(policy), supply_(supply),
-          sm_(this->timed_, this->prl_, action_driver_, supply_, policy_, observers...)
+        : base(prl, pe_timer, swap_timer), cc_(cc), advertisement_(advertisement), policy_(policy),
+          supply_(supply),
+          sm_(this->timed_, this->port_, action_driver_, supply_, policy_, observers...)
     {
         this->source_capabilities_ = capabilities;
         supply_.setReadyCallback(
@@ -1047,20 +1053,55 @@ public:
         );
     }
 
-    // The Type-C source layer reports the attached sink: the engine
-    // goes live, its protocol layer takes the PHY, and it advertises
+    // --- the connection machine's facts ---------------------------------------
+
+    // the data role the connection holds, ahead of the attach (set
+    // order): the header carries it from the first message on
+    void notifyEntry(tc::attached_data_role attached) { data_role_ = attached.role; }
+
+    // Attached.SRC entered: a fresh attach advertises, the completion
+    // of a power role swap continues the connection as the new source
+    // (the sink engine retired on the same fact, in either order)
+    void notifyEntry(tc::attached_as_source const& attach)
+    {
+        if (attach.origin == tc::attach_origin::completed_power_role_swap) {
+            attachedAfterSwap();
+        } else {
+            attached();
+        }
+    }
+
+    // The old source asserted Rd mid PR_Swap: this engine ran the swap
+    // and retires, the sink engine takes the layer over
+    void notifyEntry(tc::swap_standby standby)
+    {
+        if (standby.to == power_role::sink) {
+            detached();
+        }
+    }
+
+    // the one real detach; the engine that is live retires
+    void notifyExit(tc::pd_connection)
+    {
+        if (this->isLive()) {
+            detached();
+        }
+    }
+
+    // --- the same, as calls ----------------------------------------------------
+
+    // The attached sink: the engine goes live as the layer's client
+    // and advertises
     void attached()
     {
-        this->prl_.claimPhy();
+        this->takeLayer(data_role_);
         sm_.process(pe::event::attached{});
     }
 
-    // ... and the detach: everything resets, back to Startup; the
-    // next partner negotiates its own revision
+    // ... and the detach: everything resets, back to Startup
     void detached()
     {
-        this->prl_.releasePhy();
-        this->prl_.resetRevision();
+        this->leaveLayer();
         this->setBistTestData(false); // the test mode ends with the partner
         sm_.process(pe::event::detached{});
     }
@@ -1100,13 +1141,11 @@ public:
     // The event carries the preserved data role (the entered state
     // seeds the context with it); the negotiated revision and the
     // MessageID lifecycle hold for the connection - a swap is no reset
-    // trigger (6.7.1) - and are handed over from the retiring engine
-    void attachedAfterSwap(data_role role, pd_revision revision, prl::message_id_state const& ids)
+    // trigger (6.7.1) - on the one layer both engines share
+    void attachedAfterSwap()
     {
-        this->prl_.seedRevision(revision);
-        this->prl_.seedMessageIds(ids);
-        this->prl_.claimPhy();
-        sm_.process(pe::event::attached_swap{role});
+        this->takeLayer(data_role_);
+        sm_.process(pe::event::attached_swap{data_role_});
     }
 
     // A DRP announces its sink-role capabilities: Get_Sink_Cap is
@@ -1207,6 +1246,7 @@ private:
     rp_value advertisement_;
     POLICY& policy_;
     SUPPLY& supply_;
+    data_role data_role_ = data_role::dfp; // the connection's, as the attach delivers it
     ActionDriver action_driver_{*this};
     // the policy rides in the pack to answer the table's questions
     fsm::QueuedMachine<
@@ -1215,7 +1255,7 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         typename base::timeouts,
-        ProtocolLayer<PHY, TIMER, OBSERVERs...>,
+        typename base::PrlPort,
         ActionDriver,
         SUPPLY,
         POLICY,

@@ -18,15 +18,18 @@
  * the VCONN feature: without an enabling observer the machine runs
  * vconn_off alone and ignores every event.
  *
- * Integration (the PdDrp facade wires all of it): feed the Type-C
- * attach resolution through attachedSource(ra)/detached(), and the
- * engines' VCONN_Swap progress through swapAgreed()/partnerPsRdy()/
- * psRdySent(). Observers injected into the machine see the states'
- * portReport() requests: pe_vcs_turn_on_vconn asks for our PS_RDY
- * (the active engine transmits it), and the tVCONNSourceTimeout
- * expiry asks for a hard reset, acknowledged with
- * swapFailureHandled(). Everything runs in the stack's serialized
- * context; the timer fires from its own context (mtl timer contract).
+ * Integration: the machine observes the connection machine (a fresh
+ * source-role attach with Ra turns VCONN on, the PD connection's exit
+ * turns it off) and both engines' machines (the VCONN_Swap exchange's
+ * progress: agreed, the partner's PS_RDY, our PS_RDY on the wire; a
+ * hard reset issued by an engine acknowledges the failed hand-off),
+ * and answers the engines' question whether this port holds the VCONN
+ * Source role. Its own directions sit in the states' annotations:
+ * pe_vcs_turn_on_vconn asks for our PS_RDY (the live engine transmits
+ * it), the tVCONNSourceTimeout expiry asks for a hard reset - the
+ * PdDrp facade executes both on the live engine. Everything runs in
+ * the stack's serialized context; the timer fires from its own
+ * context (mtl timer contract).
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -35,7 +38,9 @@
 #pragma once
 
 #include <usbc/PolicyEngine.hpp>
+#include <usbc/ProtocolLayer.hpp>
 #include <usbc/Spec.hpp>
+#include <usbc/TypeC.hpp>
 
 #include <mtl/StateMachine.hpp>
 
@@ -85,11 +90,10 @@ namespace concepts {
 // the engines' question whether this port may take the role; the
 // answer is what enables the whole feature
 template<typename T>
-concept vconn_port =
-    requires(T port, vconn::vconn_switch vconn, pe::vconn_swap_allowed question) {
-        port.notifyEntry(vconn);
-        { port.check(question) } -> std::convertible_to<bool>;
-    };
+concept vconn_port = requires(T port, vconn::vconn_switch vconn, pe::vconn_swap_allowed question) {
+    port.notifyEntry(vconn);
+    { port.check(question) } -> std::convertible_to<bool>;
+};
 
 } // namespace concepts
 
@@ -188,19 +192,41 @@ struct vconn_table : vconn_transitions {};
 // The observers carry the vconn_port that enables the feature and
 // drives the switch; without one the machine runs vconn_off alone
 template<fsm::concepts::timer TIMER, typename... OBSERVERs>
-class VconnMachine {
+class VconnMachine : public fsm::observing<VconnMachine<TIMER, OBSERVERs...>> {
 public:
     VconnMachine(TIMER& timer, OBSERVERs&... observers)
         : timer_(timer), timed_(timer_), sm_(timed_, observers...)
     {
     }
 
-    // The Type-C resolution: only a source-role attach with Ra starts
-    // sourcing; a swap entry preserves whatever the role is
+    // The connection machine's facts: only a fresh source-role attach
+    // with Ra starts sourcing (a swap's completion preserves whatever
+    // the role is), the one real detach ends it. Observed ahead of the
+    // source engine: switching VCONN reconfigures the CC lines, which
+    // aborts a transmission in flight
+    void notifyEntry(tc::attached_as_source const& attach)
+    {
+        if (attach.origin == tc::attach_origin::fresh_attach) {
+            attachedSource(tc::raPresent(attach.cc));
+        }
+    }
+    void notifyExit(tc::pd_connection) { detached(); }
+
+    // The engines' VCONN_Swap progress, observed in both engines'
+    // machines; a hard reset issued by an engine is the escalation of
+    // a failed hand-off, which leaves VCONN here
+    void notifyEntry(pe::vconn_swap_agreed) { swapAgreed(); }
+    void notifyEntry(pe::vconn_partner_on) { partnerPsRdy(); }
+    void notifyEntry(pe::vconn_ps_rdy_sent) { psRdySent(); }
+    void notifyEntry(prl::hard_reset_action) { swapFailureHandled(); }
+
+    // The engines' question on the partner's VCONN_Swap: a holder of
+    // the role accepts, relinquishing needs no capability
+    bool check(pe::vconn_source_role_held) const { return isVconnSource(); }
+
+    // The same, as calls
     void attachedSource(bool ra) { sm_.process(vconn::event::attached_source{ra}); }
     void detached() { sm_.process(vconn::event::detached{}); }
-
-    // The engines' VCONN_Swap progress
     void swapAgreed() { sm_.process(vconn::event::swap_agreed{}); }
     void partnerPsRdy() { sm_.process(vconn::event::partner_ps_rdy{}); }
     void psRdySent() { sm_.process(vconn::event::ps_rdy_sent{}); }

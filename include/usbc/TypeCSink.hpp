@@ -206,18 +206,18 @@ struct attached_snk {
     );
 
     // the attach result, the plug orientation, the data role and the
-    // partner, observed as instance values: the clients and loggers
-    // consume the attach info, an application's mux the orientation
-    // and the data role, the PD layer above selects the PHY's CC line
-    // from the orientation, stamps the data role into the header and
-    // acts on the partner (what brought the port here, the source's Rp)
+    // attach itself, observed as instance values: the clients and
+    // loggers consume the attach info, an application's mux the
+    // orientation and the data role, the protocol layer selects the
+    // PHY's CC line from the orientation, the sink engine goes live on
+    // the attach (what brought the port here, the source's Rp)
     auto values() const
     {
         return fsm::annotate(
             attach_info{.orientation = attached.orientation, .advertisement = advertisement_},
             attached.orientation,
             attached_data_role{attached.data},
-            attached_partner{.origin = origin_, .cc = attached.detected}
+            attached_as_sink{.origin = origin_, .cc = attached.detected}
         );
     }
 

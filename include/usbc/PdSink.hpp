@@ -1,21 +1,22 @@
 /*
  * USB PD sink port: the complete single-role port behind one class.
- * Composes the Type-C sink connection layer with the sink policy
- * engine and wires the parts an integration must not miss: the attach
- * feeds the engine, the PD alert bits reach it, the hard-reset window
+ * Composes the Type-C sink connection layer, the port's protocol layer
+ * and the sink policy engine: the layer and the engine observe the
+ * connection machine (the attach goes live, the hard-reset window
  * holds the attach while the source legitimately cycles VBUS through
- * vSafe0V (instead of detaching and renegotiating from scratch), and
- * an exhausted HardResetCounter escalates to Type-C Error Recovery.
- * Engine-tearing actions run straight from the observing hooks: every
- * machine is queued (fsm::QueuedMachine), so an action feeding back
- * into the reporting machine is delivered after the running
- * transition instead of re-entering it.
+ * vSafe0V instead of detaching and renegotiating from scratch, the
+ * connection's exit is the detach), and the engine's directions to the
+ * connection layer - the hard-reset window, Error Recovery after an
+ * exhausted HardResetCounter - are executed on it from the engine's
+ * machine. Every machine is queued (fsm::QueuedMachine), so an action
+ * feeding back into the reporting machine is delivered after the
+ * running transition instead of re-entering it.
  *
- * The user provides the domain pieces only: the drivers (TCPC, VBUS),
- * the timers, the capabilities, the selection policy, and the power
- * effects (a SinkPower-derived class). Extra observers are handed to
- * every machine of the port - connection, engine, protocol layer - so
- * a tracer sees all of them. The optional features
+ * The user provides the domain pieces only: the hardware blocks (CC,
+ * PD PHY, VBUS), the timers, the capabilities, the selection policy,
+ * and the power effects (a SinkPower-derived class). Extra observers
+ * are handed to every machine of the port - connection, engine,
+ * protocol layer - so a tracer sees all of them. The optional features
  * (PR_Swap/DR_Swap/VCONN) stay compiled out - a sink-only port
  * answers the partner's swap requests with Not_Supported.
  *
@@ -25,6 +26,7 @@
 
 #pragma once
 
+#include <usbc/ProtocolLayer.hpp>
 #include <usbc/SinkPolicyEngine.hpp>
 #include <usbc/TypeCSink.hpp>
 
@@ -78,18 +80,17 @@ public:
         POWER& power,
         OBSERVERs&... observers
     )
-        : watch_{*this}, engine_(
-                             phy,
-                             timers.prl,
-                             timers.pe,
-                             timers.swap,
-                             capabilities,
-                             policy,
-                             power,
-                             watch_,
-                             observers...
-                         ),
-          router_{*this, phy}, sink_(cc, vbus, timers.tc, timers.cc, router_, observers...)
+        : prl_(phy, timers.prl, observers...), engine_(
+                                                   prl_,
+                                                   timers.pe,
+                                                   timers.swap,
+                                                   capabilities,
+                                                   policy,
+                                                   power,
+                                                   directions_,
+                                                   observers...
+                                               ),
+          directions_{*this}, sink_(cc, vbus, timers.tc, timers.cc, prl_, engine_, observers...)
     {
     }
 
@@ -97,66 +98,34 @@ public:
     void start() { sink_.start(); }
 
 private:
-    // Injected into the engine's machine: watches the states' port
-    // requests (the swap and VCONN observations cannot occur - their
-    // states are compiled out). Both actions tear the engine down or
-    // suspend its inputs; the queued machines order the fallout
-    struct port_watch : fsm::observing<port_watch> {
-        explicit port_watch(PdSink& port_ref) : port(port_ref) {}
+    // The engine's directions to the connection layer, executed on it
+    // from the engine's machine. A forwarding object, because the two
+    // machines' types are made of their observers' types: the
+    // connection machine lists the engine, so the engine's machine
+    // cannot list the connection port in turn
+    struct connection_directions : fsm::observing<connection_directions> {
+        explicit connection_directions(PdSink& port_ref) : port(port_ref) {}
 
         // terminations removed for tErrorRecovery, resolution
         // restarts; the teardown resets the engine
-        void notifyEntry(pe::request_error_recovery) { port.sink_.errorRecovery(); }
+        void notifyEntry(tc::request_error_recovery) { port.sink_.errorRecovery(); }
         // the attach is held while VBUS legitimately cycles; the
         // engine stays live to await the capabilities
-        void notifyEntry(pe::hard_reset_window) { port.sink_.hardResetWindow(); }
+        void notifyEntry(tc::hard_reset_window) { port.sink_.hardResetWindow(); }
 
         PdSink& port;
     };
 
-    using SinkEngine = SinkPolicyEngine<PHY, TIMER, POLICY, POWER, port_watch, OBSERVERs...>;
+    using Layer = ProtocolLayer<PHY, TIMER, OBSERVERs...>;
+    using SinkEngine =
+        SinkPolicyEngine<Layer, TIMER, POLICY, POWER, connection_directions, OBSERVERs...>;
+    // the layer ahead of the engine: it holds the PHY and the CC line
+    // before the engine's first transmission
+    using Sink = TypeCSink<CC, VBUS, TIMER, Layer, SinkEngine, OBSERVERs...>;
 
-    // The port's internal wiring in the connection machine, observing
-    // the states' declared facts: the PD connection's exit is the one
-    // real detach (its tag spans the hard-reset window, so the
-    // legitimate VBUS cycle is none), the attach's plug orientation
-    // selects the PHY's CC line, every entry of Attached.SNK - fresh,
-    // or VBUS back after the window - reaches the engine as the partner
-    // value, and the CC status (PD3 collision avoidance) is forwarded
-    // from the driver frontend
-    struct router : fsm::observing<router> {
-        router(PdSink& port_ref, PHY& phy_ref) : port(port_ref), phy(phy_ref) {}
-
-        using observes =
-            fsm::annotations<tc::pd_connection, plug_orientation, tc::attached_partner>;
-
-        // the one real detach: the window timing out included
-        void notifyExit(tc::pd_connection) { port.engine_.vbusRemoved(); }
-
-        // the CC wire of the attached cable carries the messaging
-        void notifyEntry(plug_orientation line) { phy.selectCcLine(line); }
-
-        // Attached.SNK entered: seed the collision-avoidance view of
-        // the source's Rp, then the engine learns VBUS is present
-        void notifyEntry(tc::attached_partner const& partner)
-        {
-            port.engine_.sinkTxChanged(tc::sinkTxOk(partner.cc));
-            port.engine_.vbusPresent();
-        }
-
-        // the engine's view of the source's Rp; it acts on it only
-        // through its Ready-state annotations, so no attach gate here
-        void onCcStatus(cc_status cc) { port.engine_.sinkTxChanged(tc::sinkTxOk(cc)); }
-
-        PdSink& port;
-        PHY& phy;
-    };
-
-    using Sink = TypeCSink<CC, VBUS, TIMER, router, OBSERVERs...>;
-
-    port_watch watch_;
+    Layer prl_;
     SinkEngine engine_;
-    router router_;
+    connection_directions directions_;
     Sink sink_;
 };
 

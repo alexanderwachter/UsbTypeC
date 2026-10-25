@@ -1,34 +1,42 @@
 /*
  * USB PD dual-role port: the complete port behind one class. Composes
- * the Type-C DRP connection layer with one policy engine per power
- * role and routes between them internally - the resolved role's engine
- * is activated through the attach observation, the PD alert bits reach
- * the active engine, and the TCPC's message header tracks the current
- * power and data roles.
- *
- * Role swaps are PD-negotiated (PR_Swap/DR_Swap): swapPowerRole() and
- * swapDataRole() send the request through the active engine, and the
- * partner's requests are the engine tables' questions
- * (pe::pr_swap_allowed and kin), answered by the injected observers
- * themselves - every observer reaches every machine of the port - and
- * a holder of the VCONN Source role accepts (pe::vconn_source_role_held,
- * answered here from the vconn machine). The engines
- * run the message choreography (Accept,
- * Transition_to_off, the PS_RDY exchange); this class watches their
- * swap states and flips the Type-C terminations at the spec's
- * Assert_Rd/Assert_Rp moments. A flip tears the old role's engine down
- * and brings the other one up, right from the observing hooks: every
+ * the Type-C DRP connection layer, the port's one protocol layer, one
+ * policy engine per power role and the VCONN machine, each observing
+ * the others' machines: the layer and both engines observe the
+ * connection machine (the resolved role's engine goes live on its
+ * attach fact, the layer holds the PHY for the connection, the swap
+ * standby hands the layer from one engine to the other, the
+ * connection's exit is the detach), the vconn machine observes the
+ * connection machine (a source attach with Ra) and the engines (the
+ * VCONN_Swap's progress), and the engines' directions to the
+ * connection layer - the swap phases, the hard-reset window, Error
+ * Recovery - and the vconn machine's to the live engine - our PS_RDY,
+ * a hard reset - are executed from the reporting machines. Every
  * machine is queued (fsm::QueuedMachine), so what feeds back into the
  * reporting machine is delivered after its running transition instead
  * of re-entering it.
  *
- * The user provides the domain pieces only: the drivers (TCPC, VBUS),
- * the timers, the capabilities and policies of both roles, the power
- * effects (a SinkPower- and a SourcePower-derived class, and the
- * supply). No knowledge of the state machines is required; extra
- * observers (e.g. mtl::zephyr::TraceLogger) are handed to every
- * machine of the port - connection, both engines and their protocol
- * layers, vconn.
+ * Role swaps are PD-negotiated (PR_Swap/DR_Swap): swapPowerRole() and
+ * swapDataRole() send the request through the live engine, and the
+ * partner's requests are the engine tables' questions
+ * (pe::pr_swap_allowed and kin), answered by the injected observers
+ * themselves - every observer reaches every machine of the port - and
+ * a holder of the VCONN Source role accepts (pe::vconn_source_role_held,
+ * answered by the vconn machine). The engines run the message
+ * choreography (Accept, Transition_to_off, the PS_RDY exchange) and
+ * their states direct the Type-C terminations at the spec's
+ * Assert_Rd/Assert_Rp moments. One protocol layer serves both engines
+ * in turn, so a power role swap continues the connection's MessageID
+ * lifecycle and negotiated revision (a swap is no reset trigger,
+ * 6.7.1).
+ *
+ * The user provides the domain pieces only: the hardware blocks (CC,
+ * PD PHY, VBUS), the timers, the capabilities and policies of both
+ * roles, the power effects (a SinkPower- and a SourcePower-derived
+ * class, and the supply). No knowledge of the state machines is
+ * required; extra observers (e.g. mtl::zephyr::TraceLogger) are handed
+ * to every machine of the port - connection, protocol layer, both
+ * engines, vconn.
  *
  * PR_Swap, DR_Swap and VCONN are optional features, enabled by
  * answering: an injected observer answering the engines' question
@@ -47,6 +55,7 @@
 
 #pragma once
 
+#include <usbc/ProtocolLayer.hpp>
 #include <usbc/SinkPolicyEngine.hpp>
 #include <usbc/SourcePolicyEngine.hpp>
 #include <usbc/TypeCDrp.hpp>
@@ -63,18 +72,17 @@
 
 namespace usbc {
 
-// The timers the port runs on: the connection layer's, a protocol
-// plus an engine timer per role and one for the timeouts inside the
-// engine's swap exchanges, and the vconn machine's. One bundle owned
-// by the caller
+// The timers the port runs on: the connection layer's, the protocol
+// layer's, an engine timer per role and one for the timeouts inside
+// the engine's swap exchanges, and the vconn machine's. One bundle
+// owned by the caller
 template<fsm::concepts::timer TIMER>
 struct pd_drp_timers {
     TIMER tc;
     TIMER cc; // the CC debounce
-    TIMER sink_prl;
+    TIMER prl;
     TIMER sink_pe;
     TIMER sink_swap; // the timeouts inside a swap exchange (a swap feature on)
-    TIMER source_prl;
     TIMER source_pe;
     TIMER source_swap;
     TIMER vconn;
@@ -110,21 +118,22 @@ public:
         rp_value advertisement,
         OBSERVERs&... observers
     )
-        : watch_{*this}, sink_engine_(
-                             phy,
-                             timers.sink_prl,
-                             timers.sink_pe,
-                             timers.sink_swap,
-                             sink_capabilities,
-                             sink_policy,
-                             sink_power,
-                             watch_,
-                             observers...
-                         ),
+        : connection_directions_{*this}, engine_directions_{*this},
+          prl_(phy, timers.prl, observers...),
+          vconn_(timers.vconn, engine_directions_, observers...), sink_engine_(
+                                                                      prl_,
+                                                                      timers.sink_pe,
+                                                                      timers.sink_swap,
+                                                                      sink_capabilities,
+                                                                      sink_policy,
+                                                                      sink_power,
+                                                                      vconn_,
+                                                                      connection_directions_,
+                                                                      observers...
+                                                                  ),
           source_engine_(
               cc,
-              phy,
-              timers.source_prl,
+              prl_,
               timers.source_pe,
               timers.source_swap,
               source_capabilities,
@@ -132,12 +141,22 @@ public:
               source_policy,
               supply,
               source_power,
-              watch_,
+              vconn_,
+              connection_directions_,
               observers...
           ),
-          vconn_(timers.vconn, watch_, observers...),
-          router_(phy, sink_engine_, source_engine_, *this),
-          drp_(cc, vbus, timers.tc, timers.cc, advertisement, router_, observers...)
+          drp_(
+              cc,
+              vbus,
+              timers.tc,
+              timers.cc,
+              advertisement,
+              prl_,
+              vconn_,
+              sink_engine_,
+              source_engine_,
+              observers...
+          )
     {
         // a DRP answers Get_Source_Cap/Get_Sink_Cap in either role
         sink_engine_.provideSourceCapabilities(source_capabilities);
@@ -203,18 +222,13 @@ public:
     }
 
     // Sends a DR_Swap, likewise the application's decision; on the
-    // partner's Accept both sides flip and the TCPC header follows
+    // partner's Accept both sides flip and the header follows
     bool swapDataRole()
     {
         if constexpr (!dr_swap_enabled) {
             return false;
         }
-        auto const role = drp_.powerRole();
-        if (!role) {
-            return false;
-        }
-        return *role == power_role::sink ? sink_engine_.requestDataSwap()
-                                         : source_engine_.requestDataSwap();
+        return onLiveEngine([](auto& engine) { return engine.requestDataSwap(); });
     }
 
     // Sends a VCONN_Swap: the application's decision (the partner's
@@ -225,12 +239,7 @@ public:
         if constexpr (!vconn_enabled) {
             return false;
         } else {
-            auto const role = drp_.powerRole();
-            if (!role) {
-                return false;
-            }
-            return *role == power_role::sink ? sink_engine_.requestVconnSwap()
-                                             : source_engine_.requestVconnSwap();
+            return onLiveEngine([](auto& engine) { return engine.requestVconnSwap(); });
         }
     }
 
@@ -262,250 +271,131 @@ private:
         "(notifyEntry(vconn::vconn_switch) as well)"
     );
 
-    // Injected into both engines' machines: watches the swap states'
-    // annotations, and executes the requested port actions right from
-    // the hooks: every machine is queued, so an action that feeds back
-    // into the reporting machine (an engine flip, a vconn
-    // acknowledgment) is delivered after the running transition
-    struct swap_watch : fsm::observing<swap_watch> {
-        explicit swap_watch(PdDrp& port_ref) : port(port_ref) {}
-
-        // the engines' question on the partner's VCONN_Swap: a holder
-        // of the role accepts, relinquishing needs no capability
-        bool check(pe::vconn_source_role_held) { return port.vconn_.isVconnSource(); }
-
-        // an agreed DR_Swap only touches the Type-C context and the
-        // header
-        void notifyEntry(pe::data_role_changed changed)
-        {
-            port.drp_.applyDataRoleSwap();
-            port.router_.dataRoleChanged(changed.role);
+    // The live engine - the layer's client - takes the action; false
+    // while neither is live
+    template<typename ACTION>
+    bool onLiveEngine(ACTION action)
+    {
+        if (sink_engine_.isLive()) {
+            return action(sink_engine_);
         }
+        if (source_engine_.isLive()) {
+            return action(source_engine_);
+        }
+        return false;
+    }
+
+    // The engines' directions to the connection layer, executed on it
+    // from the engines' machines: the Type-C terminations flip at the
+    // spec's Assert_Rd/Assert_Rp moments, the attach is held through a
+    // hard reset's VBUS cycle, an exhausted HardResetCounter removes
+    // the terminations. A forwarding object, because the two machines'
+    // types are made of their observers' types: the connection machine
+    // lists the engines, so an engine's machine cannot list the
+    // connection port in turn
+    struct connection_directions : fsm::observing<connection_directions> {
+        explicit connection_directions(PdDrp& port_ref) : port(port_ref) {}
+
         // the swap is agreed: the standby suspends detach detection
         // while the old source collapses VBUS, and its tPSSourceOff
         // timeout restarts resolution if the PS_RDY never comes; the
         // sink engine stays live for it
-        void notifyEntry(pe::enter_swap_standby) { port.drp_.beginSwapToSource(); }
+        void notifyEntry(tc::enter_swap_standby standby)
+        {
+            if (standby.role == power_role::source) {
+                port.drp_.beginSwapToSource();
+            }
+        }
         // Assert_Rp completes into the source role (the source engine
         // takes over, drives VBUS and answers with PS_RDY); Assert_Rd
         // holds the standby whose tPSSourceOn guards the partner's
         // PS_RDY
-        void notifyEntry(pe::assert_new_role role)
+        void notifyEntry(tc::assert_new_role asserted)
         {
-            if (role.role == power_role::source) {
+            if (asserted.role == power_role::source) {
                 port.drp_.completeSwap();
             } else {
                 port.drp_.beginSwapToSink();
             }
         }
-        void notifyEntry(pe::swap_completed) { port.drp_.completeSwap(); }
+        void notifyEntry(tc::swap_completed) { port.drp_.completeSwap(); }
+        // an agreed DR_Swap flips the connection's data role (the
+        // header follows through the engine's layer port)
+        void notifyEntry(pe::data_role_changed) { port.drp_.applyDataRoleSwap(); }
         // terminations removed for tErrorRecovery, resolution
         // restarts; the teardown resets the engines
-        void notifyEntry(pe::request_error_recovery) { port.drp_.errorRecovery(); }
+        void notifyEntry(tc::request_error_recovery) { port.drp_.errorRecovery(); }
         // the attach is held while VBUS legitimately cycles; the sink
         // engine stays live to await the capabilities
-        void notifyEntry(pe::hard_reset_window) { port.drp_.hardResetWindow(); }
-        // the VCONN hand-off: the engines' progress feeds the vconn
-        // machine, whose own requests come back through the hooks below
-        void notifyEntry(pe::vconn_swap_agreed) { port.vconn_.swapAgreed(); }
-        void notifyEntry(pe::vconn_partner_on) { port.vconn_.partnerPsRdy(); }
-        void notifyEntry(pe::vconn_ps_rdy_sent) { port.vconn_.psRdySent(); }
-        // the vconn machine turned the switch on: the active engine
-        // announces it with PS_RDY
-        void notifyEntry(pe::announce_vconn_on) { port.announceVconnOn(); }
-        // a VCONN hand-off timed out: escalate, VCONN stays here
-        void notifyEntry(pe::request_hard_reset) { port.escalateVconnFailure(); }
+        void notifyEntry(tc::hard_reset_window) { port.drp_.hardResetWindow(); }
 
         PdDrp& port;
     };
 
-    using SinkEngine =
-        SinkPolicyEngine<PHY, TIMER, SINK_POLICY, SINK_POWER, swap_watch, OBSERVERs...>;
+    // The vconn machine's directions to the live engine, executed from
+    // the vconn machine; the same forwarding for the same reason (the
+    // engines' machines list the vconn machine)
+    struct engine_directions : fsm::observing<engine_directions> {
+        explicit engine_directions(PdDrp& port_ref) : port(port_ref) {}
+
+        // the switch is on: the live engine announces it with PS_RDY
+        void notifyEntry(pe::announce_vconn_on)
+        {
+            port.onLiveEngine([](auto& engine) { return engine.sendVconnPsRdy(); });
+        }
+        // a VCONN hand-off timed out: escalate, VCONN stays here (the
+        // vconn machine hears the hard reset from the engine)
+        void notifyEntry(pe::request_hard_reset)
+        {
+            port.onLiveEngine([](auto& engine) { return engine.hardReset(); });
+        }
+
+        PdDrp& port;
+    };
+
+    using Layer = ProtocolLayer<PHY, TIMER, OBSERVERs...>;
+    using Vconn = VconnMachine<TIMER, engine_directions, OBSERVERs...>;
+    using SinkEngine = SinkPolicyEngine<
+        Layer,
+        TIMER,
+        SINK_POLICY,
+        SINK_POWER,
+        Vconn,
+        connection_directions,
+        OBSERVERs...>;
     using SourceEngine = SourcePolicyEngine<
         CC,
-        PHY,
+        Layer,
         TIMER,
         SOURCE_POLICY,
         SUPPLY,
         SOURCE_POWER,
-        swap_watch,
+        Vconn,
+        connection_directions,
+        OBSERVERs...>;
+    // The connection machine's observers in order: the layer holds the
+    // PHY and the CC line before any engine transmits, VCONN switches
+    // before the source engine's first message (switching VCONN
+    // reconfigures the CC lines, which aborts a transmission in
+    // flight), the engines take turns on the layer
+    using Drp = TypeCDrp<
+        CC,
+        VBUS,
+        TIMER,
+        TIMING,
+        PREFERENCE,
+        Layer,
+        Vconn,
+        SinkEngine,
+        SourceEngine,
         OBSERVERs...>;
 
-    // The port's internal wiring, observing the connection machine's
-    // declared facts: the PD connection brackets the engines' life (its
-    // tag spans the hard-reset window and the swap standbys, so neither
-    // is a detach), the attached role names the engine the resolved
-    // role needs, the swap standby hands the engines over, the attach's
-    // plug orientation selects the PHY's CC line, and every entry of an
-    // Attached state - fresh, resumed, or completing a swap - reaches
-    // the live engine as the partner value (data role for the message
-    // header, the CC status for collision avoidance and the cable's
-    // Ra). The CC reports are forwarded from the driver frontend
-    struct router : fsm::observing<router> {
-        router(PHY& phy_ref, SinkEngine& sink_engine, SourceEngine& source_engine, PdDrp& port_ref)
-            : phy(phy_ref), snk(sink_engine), src(source_engine), port(port_ref)
-        {
-        }
-
-        using observes = fsm::annotations<
-            tc::pd_connection,
-            tc::attached_role,
-            tc::drp::swap_standby,
-            plug_orientation,
-            tc::attached_data_role,
-            tc::attached_partner>;
-
-        PHY& phy;
-        SinkEngine& snk;
-        SourceEngine& src;
-        PdDrp& port;
-
-        enum class active_role { none, sink, source };
-        active_role active = active_role::none;
-        data_role data = data_role::ufp; // the message header's data role
-
-        // the one real detach: the live engine resets, VCONN goes down
-        void notifyExit(tc::pd_connection)
-        {
-            switch (active) {
-            case active_role::sink: snk.vbusRemoved(); break;
-            case active_role::source: src.detached(); break;
-            case active_role::none: break;
-            }
-            active = active_role::none;
-            port.vconn_.detached();
-        }
-
-        // the resolved role names the live engine (a swap's completion
-        // included: the standby carries no role)
-        void notifyEntry(tc::attached_role attached)
-        {
-            active = attached.role == power_role::sink ? active_role::sink : active_role::source;
-        }
-
-        // The old source asserted Rd mid PR_Swap: the sink engine takes
-        // over the PS_RDY exchange, continuing the connection's
-        // negotiated revision and MessageID lifecycle (a swap is no
-        // reset trigger, 6.7.1) - captured before the retiring engine's
-        // teardown resets its layer. The other direction hands over on
-        // the swap's completion, the sink engine stays live until then
-        void notifyEntry(tc::drp::swap_standby standby)
-        {
-            if (standby.to == power_role::sink) {
-                auto const revision = src.negotiatedRevision();
-                auto const ids = src.messageIds();
-                src.detached();
-                header(power_role::sink);
-                active = active_role::sink;
-                snk.startSwapWaitSourceOn(data, revision, ids);
-            }
-        }
-
-        // the CC wire of the attached cable carries the messaging;
-        // delivered ahead of the partner value (set order), so the line
-        // is selected before the engine's first transmission
-        void notifyEntry(plug_orientation line) { phy.selectCcLine(line); }
-
-        // the data role the connection holds, ahead of the partner
-        // value (set order), so the header is stamped right
-        void notifyEntry(tc::attached_data_role attached) { data = attached.role; }
-
-        // An Attached state entered, the live engine acts: a fresh
-        // attach or the resume after a hard-reset window starts its
-        // negotiation, the completion of a power swap continues it
-        void notifyEntry(tc::attached_partner const& partner)
-        {
-            bool const completing = partner.origin == tc::attach_origin::completed_power_role_swap;
-            if (active == active_role::sink) {
-                header(power_role::sink);
-                // seed the PD3 collision-avoidance view of the
-                // source's Rp; CC alerts keep it current from here
-                snk.sinkTxChanged(tc::sinkTxOk(partner.cc));
-                if (completing) {
-                    snk.finishSwap(); // already live mid PR_Swap
-                } else {
-                    snk.vbusPresent(); // fresh attach, or VBUS back
-                }
-            } else {
-                header(power_role::source);
-                if (completing) {
-                    // the sink engine's half is done: its revision
-                    // and MessageIDs continue in the source engine
-                    auto const revision = snk.negotiatedRevision();
-                    auto const ids = snk.messageIds();
-                    snk.vbusRemoved();
-                    src.attachedAfterSwap(data, revision, ids);
-                } else {
-                    // only a fresh source attach starts VCONN, and
-                    // only when the cable presents Ra; before the
-                    // engine's first message - switching VCONN
-                    // reconfigures the CC lines, which aborts a
-                    // transmission in flight
-                    port.vconn_.attachedSource(raPresent(partner.cc));
-                    src.attached();
-                }
-            }
-        }
-
-        // PD3 collision avoidance: the sink reads the source's Rp as
-        // SinkTxOk (3.0 A) / SinkTxNG on every CC report
-        void onCcStatus(cc_status cc)
-        {
-            if (active == active_role::sink) {
-                snk.sinkTxChanged(tc::sinkTxOk(cc));
-            }
-        }
-
-        static bool raPresent(cc_status cc)
-        {
-            return cc.cc1 == cc_state::src_ra || cc.cc2 == cc_state::src_ra;
-        }
-
-        // an agreed DR_Swap, from the engine through the swap watch:
-        // the header follows
-        void dataRoleChanged(data_role role)
-        {
-            data = role;
-            header(active == active_role::source ? power_role::source : power_role::sink);
-        }
-
-        void header(power_role power)
-        {
-            phy.setMessageHeaderInfo({power, data, pd_revision::rev_3_x});
-        }
-    };
-
-    // The vconn machine turned the switch on: the active engine
-    // announces it with PS_RDY
-    void announceVconnOn()
-    {
-        if (router_.active == router::active_role::sink) {
-            sink_engine_.sendVconnPsRdy();
-        } else if (router_.active == router::active_role::source) {
-            source_engine_.sendVconnPsRdy();
-        }
-    }
-
-    // A VCONN hand-off timed out: escalate, VCONN stays here. The
-    // acknowledgment feeds back into the reporting vconn machine -
-    // queued, delivered after its timeout transition completed
-    void escalateVconnFailure()
-    {
-        if (router_.active == router::active_role::sink) {
-            sink_engine_.hardReset();
-        } else if (router_.active == router::active_role::source) {
-            source_engine_.hardReset();
-        }
-        vconn_.swapFailureHandled();
-    }
-
-    using Drp = TypeCDrp<CC, VBUS, TIMER, TIMING, PREFERENCE, router, OBSERVERs...>;
-
-    swap_watch watch_;
+    connection_directions connection_directions_;
+    engine_directions engine_directions_;
+    Layer prl_;
+    Vconn vconn_;
     SinkEngine sink_engine_;
     SourceEngine source_engine_;
-    VconnMachine<TIMER, swap_watch, OBSERVERs...> vconn_;
-    router router_;
     Drp drp_;
 };
 

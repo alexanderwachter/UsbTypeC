@@ -29,10 +29,19 @@
  * HardResetCompleteTimer (tHardResetComplete); PHY confirmation or the
  * timer completes it and reports onHardResetSent.
  *
- * The layer hears the PHY only while it holds it: claimPhy() registers
- * its callbacks, releasePhy() clears them - a dual-role port runs one
- * layer per role on the same PHY, and the live engine's layer holds
- * it.
+ * One layer per port, observing the connection machine: the PD
+ * connection's entry claims the PHY (the layer hears it only while it
+ * holds it: claimPhy() registers its callbacks, releasePhy() clears
+ * them), its exit - the one real detach - releases the PHY and forgets
+ * the partner (MessageIDs, revision), and the attach's plug
+ * orientation selects the PHY's CC line. The client - the policy
+ * engine the layer reports to - is set by the engine going live
+ * (setClient with the roles its header carries) and cleared by the
+ * engine retiring; a dual-role port's two engines take turns on the
+ * one layer, so a power role swap continues the connection's MessageID
+ * lifecycle and revision by construction (6.7.1: a swap is no reset
+ * trigger). The engines' layer actions reach the layer through their
+ * own observer, which forwards them only for the client.
  *
  * Execution contract: the transmit functions, reset, claim and release
  * run in the stack's context, and the PHY delivers its callbacks
@@ -45,12 +54,12 @@
  * MessageID: the layer starts at rev 3.x, adopts the lowest revision
  * seen in received SOP messages, stamps it into every transmitted
  * header, and switches nRetryCount (2 for rev 3.x, 3 for rev 2.0) per
- * message - a retransmitting PHY reads it from the header. A client
- * providing onRevision(pd_revision) learns of adoptions - the policy
- * engines update the PHY's GoodCRC header there. The negotiated
- * revision survives a soft reset (reset()), restarts at rev 3.x on a
- * hard reset, and the policy engine clears it on detach
- * (resetRevision()).
+ * message - a retransmitting PHY reads it from the header. The layer
+ * owns the PHY's message header info (the GoodCRC header): the
+ * client's power and data roles from setClient / setDataRole and the
+ * revision as negotiated. The negotiated revision survives a soft
+ * reset (reset()) and restarts at rev 3.x on a hard reset and on
+ * detach.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -61,6 +70,7 @@
 #include <usbc/Message.hpp>
 #include <usbc/PdPhy.hpp>
 #include <usbc/Spec.hpp>
+#include <usbc/TypeC.hpp>
 
 #include <mtl/StateMachine.hpp>
 
@@ -87,22 +97,34 @@ concept prl_client = requires(T client, pd_message const& message) {
     client.onHardResetSent(); // own hard reset signal is on the wire
 };
 
+// The port's protocol layer as a policy engine uses it: transmitting
+// messages, signals and the hard reset, the soft reset scope, the
+// negotiated revision, the header's data role, BIST test data (the
+// client switch is templated on the client and asked of the concrete
+// layer)
+template<typename T>
+concept protocol_layer = requires(
+    T layer,
+    pd_message const& message,
+    transmit_signal signal,
+    sop_type sop,
+    data_role role,
+    bool enable
+) {
+    { layer.transmit(message) } -> std::convertible_to<bool>;
+    { layer.transmit(signal) } -> std::convertible_to<bool>;
+    { layer.transmitHardReset() } -> std::convertible_to<bool>;
+    layer.reset(sop);
+    { layer.revision() } -> std::same_as<pd_revision>;
+    layer.setDataRole(role);
+    layer.setBistTestData(enable);
+};
+
 } // namespace concepts
 
 namespace prl {
 
 inline constexpr std::size_t sop_count = 5; // SOP* types with own MessageID lifecycles
-
-// The per-SOP* MessageID state: the transmit counters and the receive
-// side's stored copies. Handed across a power-role swap like the
-// negotiated revision: 6.7.1 resets the counters only at power-on,
-// Hard Reset, Cable Reset or Soft_Reset - a PR_Swap continues them,
-// even though this stack changes engines (and with them protocol
-// layer instances) mid-swap
-struct message_id_state {
-    std::array<std::uint8_t, sop_count> tx_counter{};
-    std::array<std::optional<std::uint8_t>, sop_count> rx_id{};
-};
 
 inline constexpr auto t_receive = std::chrono::milliseconds{1};             // tReceive
 inline constexpr auto t_transmit_outcome = std::chrono::milliseconds{100};  // a PHY's outcome
@@ -139,10 +161,11 @@ struct tx_ready {
     constexpr bool operator==(tx_ready const&) const = default;
 };
 
-// Commands to the protocol layer: a policy engine state carries one as
-// a static prl_action member and the ProtocolLayer, injected into that
-// machine as an observer, executes it on entry. The note strings feed
-// the states' dot_action diagram labels
+// Commands to the protocol layer: a policy engine state carries one in
+// its annotation set and the engine's layer port, injected into that
+// machine as an observer, executes it on the layer on entry - for the
+// layer's client only. The note strings feed the states' dot_action
+// diagram labels
 struct reset_action {
     static constexpr std::string_view note = "resets the protocol layer";
     // re-resetting an already reset layer changes nothing: a wildcard's
@@ -297,28 +320,74 @@ public:
     using wait_for_phy_response = prl::state::wait_for_phy_response<who_retransmits>;
 
     // The observers ride along in the transmit machine after the
-    // layer's own
-    template<concepts::prl_client CLIENT>
-    ProtocolLayer(PHY& phy, TIMER& timer, CLIENT& client, OBSERVERs&... observers)
-        : phy_(phy), client_(&client), hooks_(&hooks_for<CLIENT>), timer_(timer), timed_(timer_),
-          sm_(timed_, driver_, reporter_, observers...)
+    // layer's own. No client yet: the engine going live sets itself
+    ProtocolLayer(PHY& phy, TIMER& timer, OBSERVERs&... observers)
+        : phy_(phy), timer_(timer), timed_(timer_), sm_(timed_, driver_, reporter_, observers...)
     {
     }
 
-    // The PHY reports to the layer holding it: the live engine's layer
-    // claims it, the retiring one releases it
-    void claimPhy() { phy_.setCallbacks(phy_callbacks, this); }
+    // The engine the layer reports to, with the roles its header
+    // carries; set by the engine going live, cleared by the one
+    // retiring (only its own entry: a DRP's engines hand over in either
+    // order), asked by the engines' layer ports before forwarding an
+    // action
+    template<concepts::prl_client CLIENT>
+    void setClient(CLIENT& client, power_role power_role, data_role data_role)
+    {
+        client_ = &client;
+        hooks_ = &hooks_for<CLIENT>;
+        power_role_ = power_role;
+        data_role_ = data_role;
+        stampHeader();
+    }
+
+    template<concepts::prl_client CLIENT>
+    void clearClient(CLIENT const& client)
+    {
+        if (clientIs(client)) {
+            client_ = nullptr;
+            hooks_ = nullptr;
+        }
+    }
+
+    template<concepts::prl_client CLIENT>
+    bool clientIs(CLIENT const& client) const
+    {
+        return client_ == &client;
+    }
+
+    // An agreed DR_Swap: the header follows
+    void setDataRole(data_role data_role)
+    {
+        data_role_ = data_role;
+        stampHeader();
+    }
+
+    // The PHY reports to the layer holding it: the PD connection's
+    // entry claims it, its exit releases it (observed below); the
+    // layer listens for SOP messages and hard resets
+    void claimPhy()
+    {
+        phy_.setCallbacks(phy_callbacks, this);
+        phy_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
+    }
     void releasePhy() { phy_.setCallbacks({}, nullptr); }
 
-    // The protocol layer is itself an observer of the policy engine's
-    // machine: states command it through the action elements of their
-    // annotation sets and transmit through a pd_message in their
-    // values(). The observing contract delivers the static set before
-    // the instance values, so a state carrying both resets first and
-    // its message goes out with MessageID 0
-    void notifyEntry(prl::reset_action) { reset(sop_type::sop); }
-    void notifyEntry(prl::hard_reset_action) { transmitHardReset(); }
-    void notifyEntry(pd_message const& message) { transmit(message); }
+    // The connection machine's facts: the connection brackets the
+    // layer's hold of the PHY, its exit is the one real detach - the
+    // partner is forgotten with it; the attached cable's CC wire
+    // carries the messaging. The layer is injected ahead of the
+    // engines, so the line is selected before an engine's first
+    // transmission
+    using observes = fsm::annotations<tc::pd_connection, plug_orientation>;
+
+    void notifyEntry(tc::pd_connection) { claimPhy(); }
+    void notifyExit(tc::pd_connection)
+    {
+        releasePhy();
+        resetAll();
+    }
+    void notifyEntry(plug_orientation line) { phy_.selectCcLine(line); }
 
     // Stamps the MessageID and the negotiated revision; the rest of
     // the header is the caller's. False when a message or hard reset
@@ -344,6 +413,17 @@ public:
         return accepted;
     }
 
+    // The other signals (BIST carrier) go straight to the PHY
+    bool transmit(transmit_signal signal) { return phy_.transmit(signal); }
+
+    // BIST Test Data: a PHY that can discard for the engine does
+    void setBistTestData(bool enable)
+    {
+        if constexpr (requires { phy_.setBistTestData(enable); }) {
+            phy_.setBistTestData(enable);
+        }
+    }
+
     // Soft reset scope: the MessageID lifecycle of one SOP* type; the
     // negotiated revision survives a soft reset
     void reset(sop_type sop)
@@ -354,21 +434,6 @@ public:
 
     // The negotiated revision: lowest seen since attach or hard reset
     pd_revision revision() const { return revision_; }
-
-    // Detach forgets the partner; the DRP facade seeds the retiring
-    // engine's negotiated revision into the relieving one on a power
-    // role swap (the revision holds for the connection)
-    void resetRevision() { setRevision(pd_revision::rev_3_x); }
-    void seedRevision(pd_revision rev) { setRevision(rev); }
-
-    // The MessageID lifecycle, handed over the same way: the swap is
-    // no reset trigger (6.7.1), the counters continue
-    prl::message_id_state messageIds() const { return {tx_counter_, rx_id_}; }
-    void seedMessageIds(prl::message_id_state const& ids)
-    {
-        tx_counter_ = ids.tx_counter;
-        rx_id_ = ids.rx_id;
-    }
 
 private:
     // --- the PHY's reports --------------------------------------------------
@@ -393,7 +458,7 @@ private:
             if (auto const* pending = sm_.template getIf<wait_for_phy_response>()) {
                 increment(pending->context.message.sop);
                 sm_.process(prl::event::phy_success{});
-                hooks_->tx_done(client_);
+                report(&client_hooks::tx_done);
             } else {
                 sm_.process(prl::event::phy_success{}); // hard reset confirmation
             }
@@ -402,7 +467,7 @@ private:
             if (auto const* pending = sm_.template getIf<wait_for_phy_response>()) {
                 increment(pending->context.message.sop);
                 sm_.process(prl::event::phy_discarded{});
-                hooks_->tx_discarded(client_);
+                report(&client_hooks::tx_discarded);
             }
             break;
         case transmit_outcome::failed:
@@ -425,18 +490,19 @@ private:
         if (message.sop == sop_type::sop && header.revision < revision_) {
             setRevision(header.revision); // lowest common revision
         }
-        hooks_->message(client_, message);
+        if (hooks_ != nullptr) {
+            hooks_->message(client_, message);
+        }
     }
 
     void onHardResetReceived()
     {
         sm_.process(prl::event::reset{});
         resetAll();
-        hooks_->hard_reset(client_);
+        report(&client_hooks::hard_reset);
     }
 
-    // The erased client surface; revision is nullptr for a client
-    // without the optional onRevision hook
+    // The erased client surface
     struct client_hooks {
         void (*message)(void*, pd_message const&);
         void (*tx_done)(void*);
@@ -444,20 +510,7 @@ private:
         void (*tx_error)(void*);
         void (*hard_reset)(void*);
         void (*hard_reset_sent)(void*);
-        void (*revision)(void*, pd_revision);
     };
-
-    template<typename CLIENT>
-    static constexpr auto revisionHook()
-    {
-        if constexpr (requires(CLIENT client, pd_revision rev) { client.onRevision(rev); }) {
-            return +[](void* client, pd_revision rev) {
-                static_cast<CLIENT*>(client)->onRevision(rev);
-            };
-        } else {
-            return static_cast<void (*)(void*, pd_revision)>(nullptr);
-        }
-    }
 
     template<typename CLIENT>
     static constexpr client_hooks hooks_for = {
@@ -469,8 +522,17 @@ private:
         [](void* client) { static_cast<CLIENT*>(client)->onTxError(); },
         [](void* client) { static_cast<CLIENT*>(client)->onHardReset(); },
         [](void* client) { static_cast<CLIENT*>(client)->onHardResetSent(); },
-        revisionHook<CLIENT>(),
     };
+
+    // A report reaches the client while there is one: the transmit
+    // machine's own outcomes (a timeout's transmission error, a hard
+    // reset completing) may land after the engine retired
+    void report(void (*client_hooks::*hook)(void*))
+    {
+        if (hooks_ != nullptr) {
+            (hooks_->*hook)(client_);
+        }
+    }
     // Reports the outcomes the state machine reaches on its own -
     // possibly from the serialized timer context. Each observation
     // delivers its own type, so the notify hooks cannot collide. Also
@@ -496,7 +558,7 @@ private:
 
         // leaving a hard_reset_sent-annotated state completes the hard
         // reset - via PHY confirmation, the timer, or a reset event
-        void notifyExit(prl::hard_reset_sent) { prl.hooks_->hard_reset_sent(prl.client_); }
+        void notifyExit(prl::hard_reset_sent) { prl.report(&client_hooks::hard_reset_sent); }
 
         ProtocolLayer& prl;
     };
@@ -513,7 +575,7 @@ private:
     void giveUp(sop_type sop)
     {
         increment(sop);
-        hooks_->tx_error(client_);
+        report(&client_hooks::tx_error);
     }
 
     std::uint8_t retryLimit() const
@@ -527,21 +589,32 @@ private:
             return;
         }
         revision_ = rev;
-        if (hooks_->revision != nullptr) {
-            hooks_->revision(client_, rev); // e.g. refresh the GoodCRC header
-        }
+        stampHeader(); // the GoodCRC header carries the negotiated revision
     }
 
+    // The PHY's message header info: the client's roles, the
+    // negotiated revision
+    void stampHeader()
+    {
+        phy_.setMessageHeaderInfo(
+            {.power = power_role_, .data = data_role_, .revision = revision_}
+        );
+    }
+
+    // A hard reset and the detach forget the partner: MessageIDs and
+    // the revision restart
     void resetAll()
     {
         tx_counter_ = {};
         rx_id_ = {};
-        setRevision(pd_revision::rev_3_x); // re-negotiated after a hard reset
+        setRevision(pd_revision::rev_3_x);
     }
 
     PHY& phy_;
-    void* client_;
-    client_hooks const* hooks_;
+    void* client_ = nullptr;
+    client_hooks const* hooks_ = nullptr;
+    power_role power_role_ = power_role::sink;
+    data_role data_role_ = data_role::ufp;
     fsm::QueuedTimer<TIMER> timer_;
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
     prl::phy_driver<PHY> driver_{phy_};

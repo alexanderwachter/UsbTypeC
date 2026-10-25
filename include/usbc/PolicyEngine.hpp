@@ -28,6 +28,7 @@
 #include <usbc/Pdo.hpp>
 #include <usbc/ProtocolLayer.hpp>
 #include <usbc/Spec.hpp>
+#include <usbc/TypeC.hpp>
 #include <usbc/Units.hpp>
 
 #include <mtl/StateMachine.hpp>
@@ -124,31 +125,15 @@ struct active_contract {
     milliamp current = i_default_current;
 };
 
-// Port observations: an engine state reporting one of these through
-// portReport() tells the port-level integration (the PdDrp facade)
-// what it needs from the Type-C layer
-// All but data_role_changed are compile-time facts of their states
-// and sit in the static annotation sets (comparable for the sets'
-// change suppression); data_role_changed carries the runtime role
+// The engine's facts for the port: what the PD layer directs the
+// connection layer to do lives there (tc::request_error_recovery and
+// kin, TypeC.hpp, the engines' states carry them); the data role flip
+// and the VCONN_Swap's progress are declared here. data_role_changed
+// carries the runtime role as an instance value, the rest are
+// compile-time facts of their states in the static annotation sets
+// (comparable for the sets' change suppression)
 struct data_role_changed { // an agreed DR_Swap: both sides flipped
     data_role role;
-};
-struct assert_new_role { // a PR_Swap reached the termination change
-    power_role role;
-    constexpr bool operator==(assert_new_role const&) const = default;
-};
-struct enter_swap_standby { // agreed PR_Swap: hold the connection
-    power_role role;        // layer's swap standby toward this role
-    constexpr bool operator==(enter_swap_standby const&) const = default;
-};
-struct swap_completed { // the new source's PS_RDY: the swap is done
-    constexpr bool operator==(swap_completed const&) const = default;
-};
-struct request_error_recovery { // nHardResetCount exhausted
-    constexpr bool operator==(request_error_recovery const&) const = default;
-};
-struct hard_reset_window { // hold the attach while VBUS cycles
-    constexpr bool operator==(hard_reset_window const&) const = default;
 };
 struct request_hard_reset { // e.g. a VCONN_Swap hand-off timed out
     constexpr bool operator==(request_hard_reset const&) const = default;
@@ -516,8 +501,9 @@ private:
 };
 
 // PE_DRS_*_Change_to_*: the agreed swap flips the data role; the
-// report lets the port update the TCPC header and the Type-C context.
-// The exchange ends here: the final state's word returns to Ready
+// report lets the engine's layer port stamp the header, the port flip
+// the Type-C context, and an application's mux follow the role. The
+// exchange ends here: the final state's word returns to Ready
 struct pe_drs_change_data_role {
     using feature = dr_swap_feature;
     using emits = event::swap_finished;
@@ -936,7 +922,7 @@ struct pe_error_recovery {
     static constexpr auto annotations = fsm::annotate(
         power,
         pd,
-        request_error_recovery{}
+        tc::request_error_recovery{}
     );
 };
 
@@ -960,35 +946,38 @@ struct explicit_contract_holds {
 // --- the engine base ----------------------------------------------------------
 
 // What both engine facades run alike, behind the role-specific
-// SinkPolicyEngine / SourcePolicyEngine (CRTP): the protocol layer
-// and its client port, the message dispatch with the role's own
-// messages left to the derived engine (dispatchRole), the BIST entry,
-// the Get_Sink_Cap answer, the swap and VCONN requests, and the
-// machine's timers - one per level: the engine's states, and the
-// sub-states of the swap exchanges where the policy brings a swap
-// feature in. The derived engine owns the machine (its observers are
-// the role's) and befriends this base to let it drive the machine
+// SinkPolicyEngine / SourcePolicyEngine (CRTP): the port on the
+// port's protocol layer (the engine is the layer's client while
+// live), the message dispatch with the role's own messages left to
+// the derived engine (dispatchRole), the BIST entry, the Get_Sink_Cap
+// answer, the swap and VCONN requests, and the machine's timers - one
+// per level: the engine's states, and the sub-states of the swap
+// exchanges where the policy brings a swap feature in. The derived
+// engine owns the machine (its observers are the role's) and
+// befriends this base to let it drive the machine
 template<
     typename DERIVED,
     power_role ROLE,
     fsm::concepts::transition_table TABLE,
-    concepts::pd_phy PHY,
+    concepts::protocol_layer PRL,
     fsm::concepts::timer TIMER,
     typename POLICY,
     typename... OBSERVERs>
 class PolicyEngineBase {
 public:
-    // VCONN_Swap, driven by the vconn machine through the facade:
-    // request the swap, transmit our PS_RDY once the switch is on,
-    // and escalate a failed hand-off
+    using protocol_layer = PRL;
+
+    // VCONN_Swap: request the swap (the application's decision),
+    // transmit our PS_RDY once the switch is on, and escalate a failed
+    // hand-off - the last two are the vconn machine's directions, the
+    // port executes them on the live engine
     bool requestVconnSwap() { return derived().sm_.process(event::send_vconn_swap{}); }
     bool sendVconnPsRdy() { return derived().sm_.process(event::send_vconn_ps_rdy{}); }
     bool hardReset() { return derived().sm_.process(event::hard_reset_request{}); }
 
-    // The protocol layer's per-partner state, read at a PR_Swap's
-    // engine handover
-    pd_revision negotiatedRevision() const { return prl_.revision(); }
-    prl::message_id_state messageIds() const { return prl_.messageIds(); }
+    // Live: the engine is the protocol layer's client - from its
+    // role's attach to its retirement
+    bool isLive() const { return prl_.clientIs(port_); }
 
 protected:
     // The optional features follow the injected objects: the machine
@@ -1009,21 +998,15 @@ protected:
     using timeouts = fsm::timed<queued_timer&, fsm::levels_v<TABLE>>;
 
     // swap_timer runs the timeouts inside a swap exchange
-    PolicyEngineBase(
-        PHY& phy,
-        TIMER& prl_timer,
-        TIMER& pe_timer,
-        TIMER& swap_timer,
-        OBSERVERs&... observers
-    )
-        : phy_(phy), prl_(phy, prl_timer, port_, observers...), pe_timer_(pe_timer),
-          swap_timer_(swap_timer), timed_(pe_timer_, swap_timer_)
+    PolicyEngineBase(protocol_layer& prl, TIMER& pe_timer, TIMER& swap_timer)
+        : prl_(prl), pe_timer_(pe_timer), swap_timer_(swap_timer), timed_(pe_timer_, swap_timer_)
     {
-        phy_.setMessageHeaderInfo(
-            {.power = ROLE, .data = defaultDataRole(ROLE), .revision = pd_revision::rev_3_x}
-        );
-        phy_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
     }
+
+    // Going live: the layer reports to this engine and stamps its
+    // roles into the header, the data role as the connection holds it
+    void takeLayer(data_role data_role) { prl_.setClient(port_, ROLE, data_role); }
+    void leaveLayer() { prl_.clearClient(port_); }
 
     // The partner's swap request is the table's question (the Ready
     // rows on the *_swap_received events): the injected policy's
@@ -1040,18 +1023,47 @@ protected:
 
     data_role dataRole() const { return derived().sm_.template context<pe_connection>().data; }
 
-    // The protocol layer's client, forwarding into the engine
-    struct PrlPort {
+    // The engine's port on the protocol layer: the layer's client,
+    // forwarding its reports into the engine, and the observer of the
+    // engine's machine executing the states' layer actions - for the
+    // layer's client only, so a retiring engine's Startup does not
+    // reset the connection's MessageIDs the relieving engine continues
+    // (a PR_Swap is no reset trigger, 6.7.1). The observing contract
+    // delivers the static set before the instance values, so a state
+    // carrying both resets first and its message goes out with
+    // MessageID 0
+    struct PrlPort : fsm::observing<PrlPort> {
+        explicit PrlPort(PolicyEngineBase& engine_ref) : engine(engine_ref) {}
+
         PolicyEngineBase& engine;
 
-        void onMessage(pd_message const& message) { engine.dispatch(message); }
-        // adopted revision: the PHY's GoodCRC header must follow
-        void onRevision(pd_revision revision)
+        void notifyEntry(prl::reset_action)
         {
-            engine.phy_.setMessageHeaderInfo(
-                {.power = ROLE, .data = engine.dataRole(), .revision = revision}
-            );
+            if (engine.isLive()) {
+                engine.prl_.reset(sop_type::sop);
+            }
         }
+        void notifyEntry(prl::hard_reset_action)
+        {
+            if (engine.isLive()) {
+                engine.prl_.transmitHardReset();
+            }
+        }
+        void notifyEntry(pd_message const& message)
+        {
+            if (engine.isLive()) {
+                engine.prl_.transmit(message);
+            }
+        }
+        // an agreed DR_Swap: the header follows
+        void notifyEntry(data_role_changed changed)
+        {
+            if (engine.isLive()) {
+                engine.prl_.setDataRole(changed.role);
+            }
+        }
+
+        void onMessage(pd_message const& message) { engine.dispatch(message); }
         void onTxDone() { engine.derived().sm_.process(event::message_sent{}); }
         void onTxDiscarded() {} // the preempting message drives the engine
         void onTxError() { engine.derived().sm_.process(event::protocol_error{}); }
@@ -1169,7 +1181,7 @@ protected:
         switch (bist::modeOf(bdo)) {
         case bist::mode::carrier_mode_2:
             if (derived().sm_.process(event::bist_carrier{})) {
-                phy_.transmit(transmit_signal::bist_carrier_mode_2);
+                prl_.transmit(transmit_signal::bist_carrier_mode_2);
             }
             break;
         case bist::mode::test_data:
@@ -1184,12 +1196,9 @@ protected:
     void setBistTestData(bool enable)
     {
         bist_test_data_ = enable;
-        if constexpr (requires { phy_.setBistTestData(enable); }) {
-            phy_.setBistTestData(enable); // hardware may discard for us
-        }
+        prl_.setBistTestData(enable); // hardware may discard for us
     }
 
-    PHY& phy_;
     // the capability lists: the own role's from construction, the other
     // role's provided by a DRP (empty: not a DRP, Get_*_Cap answers
     // Not_Supported)
@@ -1197,9 +1206,8 @@ protected:
     std::span<std::uint32_t const> source_capabilities_{};
     bool bist_test_data_ = false;
     PrlPort port_{*this};
-    // also an observer of the machine; the engine's injected observers
-    // ride in its transmit machine as well
-    ProtocolLayer<PHY, TIMER, OBSERVERs...> prl_;
+    // the port's one protocol layer, shared by a DRP's two engines
+    protocol_layer& prl_;
     queued_timer pe_timer_;
     queued_timer swap_timer_;
     timeouts timed_;

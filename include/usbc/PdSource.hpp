@@ -1,22 +1,25 @@
 /*
  * USB PD source port: the complete single-role port behind one class.
- * Composes the Type-C source connection layer with the source policy
- * engine: the attach starts the advertisement, the PD alert bits
- * reach the engine, and an exhausted HardResetCounter escalates to
- * Type-C Error Recovery. A hard reset's VBUS cycle is the engine's
- * own doing (Transition_to_default drives the supply through vSafe0V
- * and back) and needs no connection-layer window - source detach
- * detection is CC-based. Engine-tearing actions run straight from
- * the observing hooks: every machine is queued (fsm::QueuedMachine),
- * so the fallout is ordered delivery, not re-entrancy.
+ * Composes the Type-C source connection layer, the port's protocol
+ * layer and the source policy engine: the layer and the engine observe
+ * the connection machine (the attach starts the advertisement, the
+ * connection's exit is the detach), and the engine's one direction to
+ * the connection layer - Error Recovery after an exhausted
+ * HardResetCounter - is executed on it from the engine's machine. A
+ * hard reset's VBUS cycle is the engine's own doing (Transition_to_
+ * default drives the supply through vSafe0V and back) and needs no
+ * connection-layer window - source detach detection is CC-based.
+ * Every machine is queued (fsm::QueuedMachine), so the fallout is
+ * ordered delivery, not re-entrancy.
  *
- * The user provides the domain pieces only: the drivers (TCPC, VBUS),
- * the timers, the capabilities, the request policy, and the power
- * effects (the supply and a SourcePower-derived monitor). Extra
- * observers are handed to every machine of the port - connection,
- * engine, protocol layer - so a tracer sees all of them. The optional
- * features (PR_Swap/DR_Swap/VCONN) stay compiled out - a source-only
- * port answers the partner's swap requests with Not_Supported.
+ * The user provides the domain pieces only: the hardware blocks (CC,
+ * PD PHY, VBUS), the timers, the capabilities, the request policy,
+ * and the power effects (the supply and a SourcePower-derived
+ * monitor). Extra observers are handed to every machine of the port -
+ * connection, engine, protocol layer - so a tracer sees all of them.
+ * The optional features (PR_Swap/DR_Swap/VCONN) stay compiled out - a
+ * source-only port answers the partner's swap requests with
+ * Not_Supported.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -24,6 +27,7 @@
 
 #pragma once
 
+#include <usbc/ProtocolLayer.hpp>
 #include <usbc/SourcePolicyEngine.hpp>
 #include <usbc/TypeCSource.hpp>
 
@@ -80,22 +84,21 @@ public:
         rp_value advertisement,
         OBSERVERs&... observers
     )
-        : watch_{*this}, engine_(
-                             cc,
-                             phy,
-                             timers.prl,
-                             timers.pe,
-                             timers.swap,
-                             capabilities,
-                             advertisement,
-                             policy,
-                             supply,
-                             power,
-                             watch_,
-                             observers...
-                         ),
-          router_{*this, phy},
-          source_(cc, vbus, timers.tc, timers.cc, advertisement, router_, observers...)
+        : prl_(phy, timers.prl, observers...), engine_(
+                                                   cc,
+                                                   prl_,
+                                                   timers.pe,
+                                                   timers.swap,
+                                                   capabilities,
+                                                   advertisement,
+                                                   policy,
+                                                   supply,
+                                                   power,
+                                                   directions_,
+                                                   observers...
+                                               ),
+          directions_{*this},
+          source_(cc, vbus, timers.tc, timers.cc, advertisement, prl_, engine_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
@@ -130,49 +133,38 @@ public:
     void start() { source_.start(); }
 
 private:
-    // Injected into the engine's machine: watches the states' port
-    // requests (the swap and VCONN observations cannot occur - their
-    // states are compiled out). Error Recovery tears the engine down;
-    // the queued machines order the fallout
-    struct port_watch : fsm::observing<port_watch> {
-        explicit port_watch(PdSource& port_ref) : port(port_ref) {}
+    // The engine's direction to the connection layer, executed on it
+    // from the engine's machine. A forwarding object, because the two
+    // machines' types are made of their observers' types: the
+    // connection machine lists the engine, so the engine's machine
+    // cannot list the connection port in turn
+    struct connection_directions : fsm::observing<connection_directions> {
+        explicit connection_directions(PdSource& port_ref) : port(port_ref) {}
 
         // terminations removed for tErrorRecovery, resolution
         // restarts; the teardown resets the engine
-        void notifyEntry(pe::request_error_recovery) { port.source_.errorRecovery(); }
+        void notifyEntry(tc::request_error_recovery) { port.source_.errorRecovery(); }
 
         PdSource& port;
     };
 
-    using SourceEngine =
-        SourcePolicyEngine<CC, PHY, TIMER, POLICY, SUPPLY, POWER, port_watch, OBSERVERs...>;
+    using Layer = ProtocolLayer<PHY, TIMER, OBSERVERs...>;
+    using SourceEngine = SourcePolicyEngine<
+        CC,
+        Layer,
+        TIMER,
+        POLICY,
+        SUPPLY,
+        POWER,
+        connection_directions,
+        OBSERVERs...>;
+    // the layer ahead of the engine: it holds the PHY and the CC line
+    // before the engine's first transmission
+    using Source = TypeCSource<CC, VBUS, TIMER, Layer, SourceEngine, OBSERVERs...>;
 
-    // The port's internal wiring in the connection machine, observing
-    // the states' declared facts: the PD connection brackets the
-    // engine's life, the attach's plug orientation selects the PHY's
-    // CC line (the observing contract delivers the static set before
-    // the instance values: the line is selected after the engine's
-    // attach, before its first transmission goes out of the queued
-    // machine)
-    struct router : fsm::observing<router> {
-        router(PdSource& port_ref, PHY& phy_ref) : port(port_ref), phy(phy_ref) {}
-
-        using observes = fsm::annotations<tc::pd_connection, plug_orientation>;
-
-        void notifyEntry(tc::pd_connection) { port.engine_.attached(); }
-        void notifyExit(tc::pd_connection) { port.engine_.detached(); }
-
-        void notifyEntry(plug_orientation line) { phy.selectCcLine(line); }
-
-        PdSource& port;
-        PHY& phy;
-    };
-
-    using Source = TypeCSource<CC, VBUS, TIMER, router, OBSERVERs...>;
-
-    port_watch watch_;
+    Layer prl_;
     SourceEngine engine_;
-    router router_;
+    connection_directions directions_;
     Source source_;
 };
 
