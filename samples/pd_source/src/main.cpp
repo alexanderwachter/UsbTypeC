@@ -95,6 +95,7 @@ struct AttachLogger : fsm::observing<AttachLogger> {
 
 using Port = usbc::PdSource<
     usbc::zephyr::Tcpc,
+    usbc::zephyr::Tcpc,
     usbc::zephyr::Vbus,
     usbc::zephyr::Timer,
     usbc::RequestPolicy,
@@ -110,8 +111,10 @@ usbc::RequestPolicy policy;
 Supply supply;
 ContractMonitor contract_monitor;
 AttachLogger attach_logger;
-// The Rp matches the 5 V capability the port advertises through PD
+// The Rp matches the 5 V capability the port advertises through PD;
+// the TCPC adapter is the CC block and the PD PHY in one object
 Port port{
+    tcpc,
     tcpc,
     vbus,
     timers,

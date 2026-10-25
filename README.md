@@ -26,8 +26,10 @@ What belongs in this repository:
   - A user-facing device policy interface (capability selection, callbacks
     for contract/state changes)
 - **Integration interface** — abstractions the user implements to bind the
-  stack to their hardware and OS: TCPC / PHY access, timers, and an
-  execution context for event processing.
+  stack to their hardware and OS: the CC block, the PD PHY and the VBUS
+  block as observers of the state machines (`usbc/Cc.hpp`,
+  `usbc/PdPhy.hpp`, `usbc/Vbus.hpp`), timers, and an execution context
+  for event processing.
 - **Zephyr module glue** — build files so the library plugs into a Zephyr
   application via the module system.
 

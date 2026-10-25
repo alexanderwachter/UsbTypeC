@@ -141,8 +141,8 @@ struct Supply : usbc::SourceSupply<Supply>, QueuedReadyReport {
 };
 #else
 // A fixed 5 V rail: the power path controller's source switch puts it
-// onto VBUS (Tcpc::sourceVbus), so vSafe5V is the only operating point
-// and the connector's source-pdos offer nothing else
+// onto VBUS (the vbus block's switch position), so vSafe5V is the only
+// operating point and the connector's source-pdos offer nothing else
 struct Supply : usbc::SourceSupply<Supply>, QueuedReadyReport {
     bool init() { return true; }
 
@@ -221,6 +221,7 @@ struct SwapPolicy : fsm::observing<SwapPolicy> {
 #ifdef PD_DRP_MINIMAL
 using Port = usbc::PdDrp<
     usbc::zephyr::Tcpc,
+    usbc::zephyr::Tcpc,
     usbc::zephyr::Vbus,
     usbc::zephyr::Timer,
     usbc::PowerPolicy,
@@ -233,6 +234,7 @@ using Port = usbc::PdDrp<
     mtl::zephyr::TraceLogger>;
 #else
 using Port = usbc::PdDrp<
+    usbc::zephyr::Tcpc,
     usbc::zephyr::Tcpc,
     usbc::zephyr::Vbus,
     usbc::zephyr::Timer,
@@ -250,12 +252,12 @@ using Port = usbc::PdDrp<
 
 device const* const tcpc_device = DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, tcpc));
 device const* const vbus_device = DEVICE_DT_GET(DT_PROP(USBC_PORT0_NODE, vbus));
+// The TCPC adapter is the CC block and the PD PHY in one object
+usbc::zephyr::Tcpc tcpc{tcpc_device};
 #if HAS_PPC
 // The VBUS paths and the discharge are the power path controller's
-usbc::zephyr::Tcpc tcpc{tcpc_device, DEVICE_DT_GET(PPC_NODE)};
 usbc::zephyr::Vbus vbus{vbus_device, DEVICE_DT_GET(PPC_NODE)};
 #else
-usbc::zephyr::Tcpc tcpc{tcpc_device};
 usbc::zephyr::Vbus vbus{vbus_device};
 #endif
 usbc::pd_drp_timers<usbc::zephyr::Timer> timers;
@@ -275,6 +277,7 @@ SwapPolicy swap_policy;
 #ifdef PD_DRP_MINIMAL
 Port port{
     tcpc,
+    tcpc,
     vbus,
     timers,
     sink_capabilities,
@@ -289,6 +292,7 @@ Port port{
 };
 #else
 Port port{
+    tcpc,
     tcpc,
     vbus,
     timers,

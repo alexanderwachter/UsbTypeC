@@ -2,9 +2,9 @@
  * USB Type-C dual-role port (DRP) sample: the port toggles between
  * presenting Rd and Rp per tDRP/dcSRC.DRP and resolves to whichever
  * role the partner complements - it charges from a charger and powers
- * a sink. The attach observer learns the resolved role from the info
- * type: tc::attach_info means attached as sink, plug_orientation
- * attached as source. Everything runs on the stack's own work queue
+ * a sink. The attach observer learns the resolved role from the
+ * attached states' attached_role annotation and the plug orientation
+ * from their instance value. Everything runs on the stack's own work queue
  * (priority set by CONFIG_USB_TYPEC_STACK_THREAD_PRIORITY), which is
  * the serialization the stack requires.
  *
@@ -35,22 +35,19 @@ LOG_MODULE_REGISTER(drp_sample, LOG_LEVEL_INF);
 
 namespace {
 
-// Observer injected into the DRP's machine, consuming both attached
-// states' attach values; the info type encodes the resolved role
+// Observer injected into the DRP's machine: the attached states'
+// attached_role annotation says which role attached and its exit is
+// the detach; both roles deliver the plug orientation
 struct AttachLogger : fsm::observing<AttachLogger> {
-    void notifyEntry(usbc::tc::attach_info info)
+    void notifyEntry(usbc::tc::attached_role attached)
     {
-        LOG_INF("attached as sink: CC%d", info.orientation == usbc::plug_orientation::cc1 ? 1 : 2);
+        LOG_INF("attached as %s", attached.role == usbc::power_role::sink ? "sink" : "source");
     }
-    void notifyExit(usbc::tc::attach_info) { LOG_INF("source detached"); }
+    void notifyExit(usbc::tc::attached_role) { LOG_INF("detached"); }
     void notifyEntry(usbc::plug_orientation orientation)
     {
-        LOG_INF(
-            "attached as source: CC%d, VBUS on",
-            orientation == usbc::plug_orientation::cc1 ? 1 : 2
-        );
+        LOG_INF("plug orientation: CC%d", orientation == usbc::plug_orientation::cc1 ? 1 : 2);
     }
-    void notifyExit(usbc::plug_orientation) { LOG_INF("sink detached, VBUS off"); }
 };
 
 // The TraceLogger traces every transition (module mtl_fsm, info

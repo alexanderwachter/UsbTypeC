@@ -39,14 +39,48 @@ Vbus::Vbus(device const* dev, device const* ppc, std::chrono::milliseconds poll_
     k_work_init_delayable(&work_, &Vbus::poll);
 }
 
-bool Vbus::enable(bool on)
+// The switch position: what the new position does not want goes off
+// first, then the wanted path closes - never two paths at once
+void Vbus::notifyEntry(vbus_power power)
 {
-    int const ret = usbc_vbus_enable(dev_, on);
-    if (ret != 0 && ret != -ENOSYS) {
-        LOG_ERR("enabling VBUS detection failed (%d)", ret);
-        return false;
+    auto const path = power.path;
+    if (path != vbus_path::safe0v) {
+        discharge(false);
     }
-    return true;
+    if (path != vbus_path::safe5v) {
+        sourcePath(false);
+    }
+    if (path != vbus_path::sink) {
+        sinkPath(false);
+    }
+    switch (path) {
+    case vbus_path::sink: sinkPath(true); break;
+    case vbus_path::safe5v: sourcePath(true); break;
+    case vbus_path::safe0v: discharge(true); break;
+    case vbus_path::open: break;
+    }
+}
+
+void Vbus::notifyEntry(vbus_level level)
+{
+    monitored_ = level;
+    if (level == vbus_level::unwatched) {
+        // monitoring off: stop the sampling entirely
+        k_work_cancel_delayable(&work_);
+        return;
+    }
+    report_pending_ = true; // contract: report the current state once known
+    schedule(K_NO_WAIT);
+}
+
+bool Vbus::check(vbus_at_safe0v)
+{
+    return meets(vbus_level::safe0v);
+}
+
+bool Vbus::check(vbus_at_safe5v)
+{
+    return meets(vbus_level::safe5v);
 }
 
 void Vbus::setCallback(vbus_callback callback, void* context)
@@ -55,32 +89,49 @@ void Vbus::setCallback(vbus_callback callback, void* context)
     context_ = context;
 }
 
-bool Vbus::monitor(vbus_level level)
-{
-    if (level == vbus_level::unwatched) {
-        // monitoring off: stop the sampling entirely
-        k_work_cancel_delayable(&work_);
-        return true;
-    }
-    level_ = toZephyr(level);
-    report_pending_ = true; // contract: report the current state once known
-    schedule(K_NO_WAIT);
-    return true;
-}
-
 bool Vbus::meets(vbus_level level)
 {
     return usbc_vbus_check_level(dev_, toZephyr(level));
+}
+
+// A board without a power path controller has no switch to drive: the
+// path is its own, as with a port protector's gate
+bool Vbus::sourcePath(bool on)
+{
+    if (ppc_ == nullptr) {
+        return true;
+    }
+    int const ret = ppc_set_src_ctrl(ppc_, on);
+    if (ret != 0 && ret != -ENOSYS) {
+        LOG_ERR("switching the source path %s failed (%d)", on ? "on" : "off", ret);
+        return false;
+    }
+    LOG_DBG("source path %s", on ? "on" : "off");
+    return true;
+}
+
+bool Vbus::sinkPath(bool on)
+{
+    if (ppc_ == nullptr) {
+        return true;
+    }
+    int const ret = ppc_set_snk_ctrl(ppc_, on);
+    if (ret != 0 && ret != -ENOSYS) {
+        LOG_ERR("switching the sink path %s failed (%d)", on ? "on" : "off", ret);
+        return false;
+    }
+    return true;
 }
 
 bool Vbus::discharge(bool on)
 {
     int const ret =
         ppc_ != nullptr ? ppc_set_vbus_discharge(ppc_, on) : usbc_vbus_discharge(dev_, on);
-    if (ret != 0) {
+    if (ret != 0 && ret != -ENOSYS) {
         LOG_ERR("switching VBUS discharge %s failed (%d)", on ? "on" : "off", ret);
+        return false;
     }
-    return ret == 0;
+    return true;
 }
 
 void Vbus::poll(k_work* work)
@@ -88,11 +139,11 @@ void Vbus::poll(k_work* work)
     auto* delayable = k_work_delayable_from_work(work);
     auto* self = CONTAINER_OF(delayable, Vbus, work_);
 
-    bool const met = usbc_vbus_check_level(self->dev_, self->level_);
+    bool const met = self->meets(self->monitored_);
     if ((self->report_pending_ || met != self->met_) && self->callback_ != nullptr) {
         self->report_pending_ = false;
         self->met_ = met;
-        self->callback_(self->context_, met);
+        self->callback_(self->context_, self->monitored_, met);
     }
     self->schedule(K_MSEC(self->poll_interval_.count()));
 }

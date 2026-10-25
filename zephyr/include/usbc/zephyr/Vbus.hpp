@@ -1,16 +1,20 @@
 /*
  * Adapter from a Zephyr VBUS device driver
- * (zephyr/drivers/usb_c/usbc_vbus.h) to the stack's event-driven vbus
- * concept. Zephyr's driver is poll-based, so the adapter samples
- * check_level() from a delayable work item on the stack's work queue
- * (WorkQueue.hpp) and reports through the callback on every change -
- * plus once after monitor(), as the concept requires.
- * sink_disconnect_pd has no Zephyr level and is approximated with
- * TC_VBUS_REMOVED. A port whose discharge path sits in a power path
- * controller (usbc_ppc.h) names its device in the constructor:
- * discharge() drives the PPC then, not the VBUS driver.
+ * (zephyr/drivers/usb_c/usbc_vbus.h), and optionally a power path
+ * controller (usbc_ppc.h), to the stack's vbus concept. Zephyr's VBUS
+ * driver is poll-based, so the adapter samples check_level() from a
+ * delayable work item on the stack's work queue (WorkQueue.hpp) and
+ * reports through the callback on every change - plus once after a
+ * state arms a level, as the concept requires. sink_disconnect_pd has
+ * no Zephyr level and is approximated with TC_VBUS_REMOVED. A port
+ * whose paths sit in a power path controller names its device in the
+ * constructor: the states' switch position drives the PPC's source,
+ * sink and discharge paths then. Without one, only the VBUS driver's
+ * discharge is driven - the paths are the board's own (ucpd_stm32 has
+ * no VBUS switches).
  *
- * The instance is pinned: the work item holds its address.
+ * The instance is pinned: the work item holds its address and the
+ * machines hold it as an observer.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -20,6 +24,8 @@
 
 #include <usbc/Vbus.hpp>
 
+#include <mtl/StateMachine.hpp>
+
 #include <zephyr/drivers/usb_c/usbc_vbus.h>
 #include <zephyr/kernel.h>
 
@@ -27,7 +33,7 @@
 
 namespace usbc::zephyr {
 
-class Vbus {
+class Vbus : public fsm::observing<Vbus> {
 public:
     explicit Vbus(
         device const* dev,
@@ -41,15 +47,19 @@ public:
     Vbus(Vbus const&) = delete;
     Vbus& operator=(Vbus const&) = delete;
 
-    bool enable(bool on);
+    void notifyEntry(vbus_power power);
+    void notifyEntry(vbus_level level);
+    bool check(vbus_at_safe0v);
+    bool check(vbus_at_safe5v);
     void setCallback(vbus_callback callback, void* context);
-    bool monitor(vbus_level level);
-    bool meets(vbus_level level);
-    bool discharge(bool on);
 
 private:
     static void poll(k_work* work);
     void schedule(k_timeout_t delay);
+    bool meets(vbus_level level);
+    bool sourcePath(bool on);
+    bool sinkPath(bool on);
+    bool discharge(bool on);
 
     device const* dev_;
     device const* ppc_ = nullptr;
@@ -57,7 +67,7 @@ private:
     std::chrono::milliseconds poll_interval_;
     vbus_callback callback_ = nullptr;
     void* context_ = nullptr;
-    tc_vbus_level level_ = TC_VBUS_PRESENT;
+    vbus_level monitored_ = vbus_level::unwatched;
     bool met_ = false;
     bool report_pending_ = false;
 };

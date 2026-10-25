@@ -7,7 +7,6 @@
 #include <usbc/zephyr/Tcpc.hpp>
 #include <usbc/zephyr/WorkQueue.hpp>
 
-#include <zephyr/drivers/usb_c/usbc_ppc.h>
 #include <zephyr/logging/log.h>
 
 #include <algorithm>
@@ -19,18 +18,33 @@ namespace usbc::zephyr {
 
 namespace {
 
-constexpr alert_status mapAlert(tcpc_alert alert)
+// The driver's alerts, accumulated until the work queue delivers them
+enum class pending : atomic_val_t {
+    none = 0,
+    cc_changed = 1u << 0,
+    message_received = 1u << 1,
+    transmit_success = 1u << 2,
+    transmit_discarded = 1u << 3,
+    transmit_failed = 1u << 4,
+    hard_reset_received = 1u << 5,
+};
+
+constexpr pending toPending(tcpc_alert alert)
 {
     switch (alert) {
-    case TCPC_ALERT_CC_STATUS: return alert_status::cc_status_changed;
-    case TCPC_ALERT_MSG_STATUS: return alert_status::message_received;
-    case TCPC_ALERT_TRANSMIT_MSG_SUCCESS: return alert_status::transmit_success;
-    case TCPC_ALERT_TRANSMIT_MSG_DISCARDED: return alert_status::transmit_discarded;
-    case TCPC_ALERT_TRANSMIT_MSG_FAILED: return alert_status::transmit_failed;
-    case TCPC_ALERT_HARD_RESET_RECEIVED: return alert_status::hard_reset_received;
-    case TCPC_ALERT_FAULT_STATUS: return alert_status::fault;
-    default: return alert_status::none;
+    case TCPC_ALERT_CC_STATUS: return pending::cc_changed;
+    case TCPC_ALERT_MSG_STATUS: return pending::message_received;
+    case TCPC_ALERT_TRANSMIT_MSG_SUCCESS: return pending::transmit_success;
+    case TCPC_ALERT_TRANSMIT_MSG_DISCARDED: return pending::transmit_discarded;
+    case TCPC_ALERT_TRANSMIT_MSG_FAILED: return pending::transmit_failed;
+    case TCPC_ALERT_HARD_RESET_RECEIVED: return pending::hard_reset_received;
+    default: return pending::none;
     }
+}
+
+constexpr bool has(atomic_val_t bits, pending bit)
+{
+    return (bits & static_cast<atomic_val_t>(bit)) != 0;
 }
 
 constexpr tc_cc_pull toZephyr(cc_pull pull)
@@ -92,44 +106,47 @@ constexpr cc_state fromVoltage(tc_cc_voltage_state state, cc_pull presented)
 
 Tcpc::Tcpc(device const* dev) : dev_(dev)
 {
-    k_work_init(&alert_work_, &Tcpc::notifyWork);
-}
-
-Tcpc::Tcpc(device const* dev, device const* ppc) : dev_(dev), ppc_(ppc)
-{
-    k_work_init(&alert_work_, &Tcpc::notifyWork);
-}
-
-void Tcpc::setAlertHandler(alert_callback callback, void* context)
-{
-    callback_ = callback;
-    context_ = context;
+    k_work_init(&alert_work_, &Tcpc::deliver);
     int const ret = tcpc_set_alert_handler_cb(dev_, &Tcpc::alert, this);
     if (ret != 0) {
         LOG_ERR("registering the alert handler failed (%d)", ret);
     }
 }
 
-std::optional<alert_status> Tcpc::readAlert()
+// --- the CC block --------------------------------------------------------------
+
+void Tcpc::notifyEntry(cc_termination termination)
 {
-    return static_cast<alert_status>(atomic_clear(&pending_));
+    pull_ = termination.pull;
+    applyTermination();
 }
 
-bool Tcpc::setCc(cc_pull pull, rp_value rp)
+// The Rp presented while pulling up: a change while Rp is presented
+// (the source's SinkTxOk/SinkTxNG) takes effect at once
+bool Tcpc::setRp(rp_value rp)
 {
-    if (pull == cc_pull::rp) {
-        int const ret = tcpc_select_rp_value(dev_, toZephyr(rp));
-        if (ret != 0 && ret != -ENOSYS) {
-            LOG_ERR("selecting the Rp value failed (%d)", ret);
-            return false;
-        }
+    rp_ = rp;
+    int const ret = tcpc_select_rp_value(dev_, toZephyr(rp));
+    if (ret != 0 && ret != -ENOSYS) {
+        LOG_ERR("selecting the Rp value failed (%d)", ret);
+        return false;
     }
-    pull_ = pull;
-    int const ret = tcpc_set_cc(dev_, toZephyr(pull));
+    return pull_ != cc_pull::rp || applyTermination();
+}
+
+bool Tcpc::applyTermination()
+{
+    int const ret = tcpc_set_cc(dev_, toZephyr(pull_));
     if (ret != 0) {
         LOG_ERR("setting the CC pull failed (%d)", ret);
     }
     return ret == 0;
+}
+
+void Tcpc::setCallback(cc_callback callback, void* context)
+{
+    cc_callback_ = callback;
+    cc_context_ = context;
 }
 
 std::optional<cc_status> Tcpc::readCcStatus()
@@ -145,44 +162,6 @@ std::optional<cc_status> Tcpc::readCcStatus()
     return cc_status{fromVoltage(cc1, pull_), fromVoltage(cc2, pull_)};
 }
 
-bool Tcpc::setPlugOrientation(plug_orientation orientation)
-{
-    int const ret = tcpc_set_cc_polarity(
-        dev_,
-        orientation == plug_orientation::cc1 ? TC_POLARITY_CC1 : TC_POLARITY_CC2
-    );
-    if (ret != 0) {
-        LOG_ERR("setting the CC polarity failed (%d)", ret);
-    }
-    LOG_DBG("PD on cc%d", orientation == plug_orientation::cc1 ? 1 : 2);
-    return ret == 0;
-}
-
-// A TCPC without the switch (ENOSYS) has nothing to drive: the power
-// path is the board's own, as with a port protector's gate
-bool Tcpc::sourceVbus(bool enable)
-{
-    int const ret =
-        ppc_ != nullptr ? ppc_set_src_ctrl(ppc_, enable) : tcpc_set_src_ctrl(dev_, enable);
-    if (ret != 0 && ret != -ENOSYS) {
-        LOG_ERR("switching source VBUS %s failed (%d)", enable ? "on" : "off", ret);
-        return false;
-    }
-    LOG_DBG("source VBUS %s", enable ? "on" : "off");
-    return true;
-}
-
-bool Tcpc::sinkVbus(bool enable)
-{
-    int const ret =
-        ppc_ != nullptr ? ppc_set_snk_ctrl(ppc_, enable) : tcpc_set_snk_ctrl(dev_, enable);
-    if (ret != 0 && ret != -ENOSYS) {
-        LOG_ERR("switching sink VBUS %s failed (%d)", enable ? "on" : "off", ret);
-        return false;
-    }
-    return true;
-}
-
 bool Tcpc::setVconn(bool enable)
 {
     int const ret = tcpc_set_vconn(dev_, enable);
@@ -191,6 +170,14 @@ bool Tcpc::setVconn(bool enable)
     }
     LOG_DBG("VCONN %s", enable ? "on" : "off");
     return ret == 0;
+}
+
+// --- the PD PHY ----------------------------------------------------------------
+
+void Tcpc::setCallbacks(pd_phy_callbacks const& callbacks, void* context)
+{
+    phy_callbacks_ = callbacks;
+    phy_context_ = context;
 }
 
 bool Tcpc::setMessageHeaderInfo(message_header_info info)
@@ -223,6 +210,19 @@ bool Tcpc::setReceiveDetect(receive_detect detect)
     return ret == 0;
 }
 
+bool Tcpc::selectCcLine(plug_orientation line)
+{
+    int const ret = tcpc_set_cc_polarity(
+        dev_,
+        line == plug_orientation::cc1 ? TC_POLARITY_CC1 : TC_POLARITY_CC2
+    );
+    if (ret != 0) {
+        LOG_ERR("selecting the CC line failed (%d)", ret);
+    }
+    LOG_DBG("PD on cc%d", line == plug_orientation::cc1 ? 1 : 2);
+    return ret == 0;
+}
+
 bool Tcpc::transmit(pd_message const& message)
 {
     pd_msg msg{};
@@ -252,37 +252,77 @@ bool Tcpc::transmit(transmit_signal signal)
     return ret == 0;
 }
 
-bool Tcpc::receive(pd_message& out)
-{
-    pd_msg msg{};
-    if (tcpc_get_rx_pending_msg(dev_, &msg) < 0) {
-        return false; // nothing pending is a normal outcome
-    }
-    out.sop = fromZephyr(msg.type);
-    out.header = msg.header.raw_value;
-    out.payload_size =
-        static_cast<std::uint8_t>(std::min<std::uint32_t>(msg.len, pd_message::max_payload_size));
-    std::memcpy(out.payload.data(), msg.data, out.payload_size);
-    return true;
-}
+// --- the alerts ----------------------------------------------------------------
 
 void Tcpc::alert(device const*, void* data, tcpc_alert alert)
 {
     auto* self = static_cast<Tcpc*>(data);
-    auto const bits = mapAlert(alert);
-    if (bits == alert_status::none) {
+    auto const bit = toPending(alert);
+    if (bit == pending::none) {
         LOG_DBG("unhandled TCPC alert %d", static_cast<int>(alert));
         return;
     }
-    atomic_or(&self->pending_, static_cast<atomic_val_t>(bits));
+    atomic_or(&self->pending_, static_cast<atomic_val_t>(bit));
     k_work_submit_to_queue(&workQueue(), &self->alert_work_);
 }
 
-void Tcpc::notifyWork(k_work* work)
+// In the stack's context: the CC block's report, then the PHY's in the
+// order the protocol layer wants them - a hard reset ahead of a
+// transmit outcome, the messages last
+void Tcpc::deliver(k_work* work)
 {
     auto* self = CONTAINER_OF(work, Tcpc, alert_work_);
-    if (self->callback_ != nullptr) {
-        self->callback_(self->context_);
+    auto const bits = atomic_clear(&self->pending_);
+    if (has(bits, pending::cc_changed)) {
+        self->reportCc();
+    }
+    auto const& phy = self->phy_callbacks_;
+    if (has(bits, pending::hard_reset_received) && phy.hard_reset_received != nullptr) {
+        phy.hard_reset_received(self->phy_context_);
+    }
+    if (phy.transmitted != nullptr) {
+        if (has(bits, pending::transmit_success)) {
+            phy.transmitted(self->phy_context_, transmit_outcome::success);
+        }
+        if (has(bits, pending::transmit_discarded)) {
+            phy.transmitted(self->phy_context_, transmit_outcome::discarded);
+        }
+        if (has(bits, pending::transmit_failed)) {
+            phy.transmitted(self->phy_context_, transmit_outcome::failed);
+        }
+    }
+    if (has(bits, pending::message_received)) {
+        self->reportReceived();
+    }
+}
+
+void Tcpc::reportCc()
+{
+    if (cc_callback_ == nullptr) {
+        return;
+    }
+    if (auto const cc = readCcStatus()) {
+        cc_callback_(cc_context_, *cc);
+    }
+}
+
+// Every pending message, in order; without a holder of the PHY the
+// messages are drained unheard
+void Tcpc::reportReceived()
+{
+    pd_msg msg{};
+    while (tcpc_get_rx_pending_msg(dev_, &msg) >= 0) {
+        if (phy_callbacks_.received == nullptr) {
+            continue;
+        }
+        pd_message message{};
+        message.sop = fromZephyr(msg.type);
+        message.header = msg.header.raw_value;
+        message.payload_size = static_cast<std::uint8_t>(
+            std::min<std::uint32_t>(msg.len, pd_message::max_payload_size)
+        );
+        std::memcpy(message.payload.data(), msg.data, message.payload_size);
+        phy_callbacks_.received(phy_context_, message);
     }
 }
 

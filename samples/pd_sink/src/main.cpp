@@ -66,6 +66,7 @@ struct AttachLogger : fsm::observing<AttachLogger> {
 // CONFIG_MTL_FSM_TRACE)
 using Port = usbc::PdSink<
     usbc::zephyr::Tcpc,
+    usbc::zephyr::Tcpc,
     usbc::zephyr::Vbus,
     usbc::zephyr::Timer,
     usbc::PowerPolicy,
@@ -81,7 +82,8 @@ usbc::PowerPolicy policy{5000, 27000}; // at least 5 W, aim for 27 W
 Power power;
 AttachLogger attach_logger;
 mtl::zephyr::TraceLogger state_logger;
-Port port{tcpc, vbus, timers, sink_capabilities, policy, power, attach_logger, state_logger};
+// the TCPC adapter is the CC block and the PD PHY in one object
+Port port{tcpc, tcpc, vbus, timers, sink_capabilities, policy, power, attach_logger, state_logger};
 
 } // namespace
 
