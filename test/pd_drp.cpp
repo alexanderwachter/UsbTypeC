@@ -156,14 +156,14 @@ void putObject(usbc::pd_message& message, std::uint32_t object)
     message.payload_size += 4;
 }
 
-std::uint8_t transmittedType(mock_tcpc const& tcpc)
+std::uint8_t transmittedType(mock_phy const& phy)
 {
-    return usbc::pd_header::decode(tcpc.last_transmitted.header).message_type;
+    return usbc::pd_header::decode(phy.last_transmitted.header).message_type;
 }
 
-bool transmittedControl(mock_tcpc const& tcpc, usbc::control_message_type type)
+bool transmittedControl(mock_phy const& phy, usbc::control_message_type type)
 {
-    return transmittedType(tcpc) == static_cast<std::uint8_t>(type);
+    return transmittedType(phy) == static_cast<std::uint8_t>(type);
 }
 
 // --- runtime checks ---------------------------------------------------------
@@ -186,7 +186,8 @@ void check(bool condition, std::source_location location = std::source_location:
 int pdDrpTests()
 {
     using Port = usbc::PdDrp<
-        mock_tcpc,
+        mock_cc,
+        mock_phy,
         mock_vbus,
         manual_timer,
         usbc::PowerPolicy,
@@ -200,7 +201,8 @@ int pdDrpTests()
         swap_allow,
         sink_lock>;
 
-    mock_tcpc tcpc;
+    mock_cc cc;
+    mock_phy phy;
     mock_vbus vbus;
     usbc::pd_drp_timers<manual_timer> timers;
     usbc::PowerPolicy sink_policy{2500, 15000};
@@ -213,7 +215,8 @@ int pdDrpTests()
     sink_lock lock;
 
     Port port{
-        tcpc,
+        cc,
+        phy,
         vbus,
         timers,
         sink_capabilities,
@@ -229,30 +232,24 @@ int pdDrpTests()
         lock
     };
 
-    auto const ccAlert = [&] {
-        tcpc.alerts |= usbc::alert_status::cc_status_changed;
-        tcpc.callback(tcpc.context);
-    };
-    auto const deliver = [&](usbc::pd_message const& message) { tcpc.injectMessage(message); };
-    auto const txSuccess = [&] {
-        tcpc.alerts |= usbc::alert_status::transmit_success;
-        tcpc.callback(tcpc.context);
-    };
+    auto const ccAlert = [&] { cc.report(); };
+    auto const deliver = [&](usbc::pd_message const& message) { phy.injectMessage(message); };
+    auto const txSuccess = [&] { phy.transmitted(usbc::transmit_outcome::success); };
 
     port.start();
-    check(tcpc.pull == usbc::cc_pull::rd); // toggling, sink phase first
+    check(cc.pull == usbc::cc_pull::rd); // toggling, sink phase first
     check(!port.powerRole() && !port.dataRole());
 
     // a charger appears: the port resolves to sink, the sink engine
     // takes over, the header says sink/UFP
-    tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
+    cc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
     ccAlert();
     vbus.setVoltage(5000);
     timers.cc.expire(); // tCCDebounce
-    check(tcpc.sinking && port.powerRole() == usbc::power_role::sink);
+    check(vbus.sinking() && port.powerRole() == usbc::power_role::sink);
     check(port.dataRole() == usbc::data_role::ufp);
-    check(tcpc.header_info.power == usbc::power_role::sink);
-    check(tcpc.header_info.data == usbc::data_role::ufp);
+    check(phy.header_info.power == usbc::power_role::sink);
+    check(phy.header_info.data == usbc::data_role::ufp);
     check(timers.sink_pe.armed); // SinkWaitCapTimer runs
 
     // negotiation: the partner's capabilities, our Request, Accept,
@@ -268,11 +265,11 @@ int pdDrpTests()
     );
     putObject(caps, usbc::pdo::makeFixedSource(5000, 3000));
     deliver(caps);
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::data_message_type::request));
     check(
-        usbc::pd_header::decode(tcpc.last_transmitted.header).revision == usbc::pd_revision::rev_2_0
+        usbc::pd_header::decode(phy.last_transmitted.header).revision == usbc::pd_revision::rev_2_0
     );
-    check(tcpc.header_info.revision == usbc::pd_revision::rev_2_0);
+    check(phy.header_info.revision == usbc::pd_revision::rev_2_0);
     txSuccess();
     deliver(partnerControl(
         usbc::control_message_type::accept,
@@ -294,7 +291,7 @@ int pdDrpTests()
         usbc::data_role::dfp
     ));
     check(
-        transmittedType(tcpc) ==
+        transmittedType(phy) ==
         static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities)
     );
     txSuccess();
@@ -302,7 +299,7 @@ int pdDrpTests()
     // DR_Swap, our request: DR_Swap out; the partner's Wait retries it
     // after tDRSwapWait, the Accept then flips both sides
     check(port.swapDataRole());
-    check(transmittedControl(tcpc, usbc::control_message_type::dr_swap));
+    check(transmittedControl(phy, usbc::control_message_type::dr_swap));
     txSuccess();
     deliver(partnerControl(
         usbc::control_message_type::wait,
@@ -312,7 +309,7 @@ int pdDrpTests()
     check(port.dataRole() == usbc::data_role::ufp); // nothing flipped
     check(timers.sink_swap.armed);                  // tDRSwapWait runs
     timers.sink_swap.expire();
-    check(transmittedControl(tcpc, usbc::control_message_type::dr_swap)); // retried
+    check(transmittedControl(phy, usbc::control_message_type::dr_swap)); // retried
     txSuccess();
     deliver(partnerControl(
         usbc::control_message_type::accept,
@@ -320,8 +317,8 @@ int pdDrpTests()
         usbc::data_role::dfp
     ));
     check(port.dataRole() == usbc::data_role::dfp);
-    check(tcpc.header_info.data == usbc::data_role::dfp);
-    check(tcpc.sinking); // power roles untouched
+    check(phy.header_info.data == usbc::data_role::dfp);
+    check(vbus.sinking()); // power roles untouched
 
     // VCONN_Swap, the partner's request: taking is allowed by the
     // injected policy - Accept, switch on, our PS_RDY announces it
@@ -331,17 +328,17 @@ int pdDrpTests()
         usbc::power_role::source,
         usbc::data_role::dfp
     ));
-    check(transmittedControl(tcpc, usbc::control_message_type::accept));
+    check(transmittedControl(phy, usbc::control_message_type::accept));
     txSuccess();
     check(vconn_policy.on); // the switch is on before the announcement
-    check(transmittedControl(tcpc, usbc::control_message_type::ps_rdy));
+    check(transmittedControl(phy, usbc::control_message_type::ps_rdy));
     txSuccess();
     check(port.isVconnSource());
 
     // ... and back on our request: relinquish, await the partner's
     // PS_RDY under tVCONNSourceTimeout, switch off on its arrival
     check(port.swapVconnRole());
-    check(transmittedControl(tcpc, usbc::control_message_type::vconn_swap));
+    check(transmittedControl(phy, usbc::control_message_type::vconn_swap));
     txSuccess();
     deliver(partnerControl(
         usbc::control_message_type::accept,
@@ -367,7 +364,7 @@ int pdDrpTests()
     );
     putObject(bist_carrier, 5u << 28); // Carrier Mode 2 BDO
     deliver(bist_carrier);
-    check(tcpc.last_signal == usbc::transmit_signal::bist_carrier_mode_2);
+    check(phy.last_signal == usbc::transmit_signal::bist_carrier_mode_2);
     check(timers.sink_pe.armed); // BISTContModeTimer
     timers.sink_pe.expire();     // back to Ready
 
@@ -381,26 +378,25 @@ int pdDrpTests()
     );
     putObject(bist_test, 8u << 28); // Test Data BDO
     deliver(bist_test);
-    auto const tx_before_bist = tcpc.transmit_count;
+    auto const tx_before_bist = phy.transmit_count;
     deliver(partnerControl(
         usbc::control_message_type::get_sink_cap,
         usbc::power_role::source,
         usbc::data_role::dfp
     ));
-    check(tcpc.transmit_count == tx_before_bist); // silenced
+    check(phy.transmit_count == tx_before_bist); // silenced
 
     // the partner hard-resets: the connection layer holds the attach
     // through the legitimate VBUS cycle instead of detaching, and the
     // swapped data role survives (a hard reset does not change it)
-    tcpc.alerts |= usbc::alert_status::hard_reset_received;
-    tcpc.callback(tcpc.context);
-    check(!tcpc.sinking && !port.powerRole()); // window open, not detached
-    check(tcpc.pull == usbc::cc_pull::rd);
+    phy.hardResetReceived();
+    check(!vbus.sinking() && !port.powerRole()); // window open, not detached
+    check(cc.pull == usbc::cc_pull::rd);
     vbus.setVoltage(0);    // the source removes VBUS - not a detach
     vbus.setVoltage(5000); // ... and restores it
-    check(tcpc.sinking && port.powerRole() == usbc::power_role::sink);
+    check(vbus.sinking() && port.powerRole() == usbc::power_role::sink);
     check(port.dataRole() == usbc::data_role::dfp); // preserved
-    check(tcpc.header_info.data == usbc::data_role::dfp);
+    check(phy.header_info.data == usbc::data_role::dfp);
     check(timers.sink_pe.armed); // NoResponseTimer awaits the capabilities
 
     // the source re-advertises: the contract re-establishes (and the
@@ -414,9 +410,9 @@ int pdDrpTests()
     );
     putObject(caps_again, usbc::pdo::makeFixedSource(5000, 3000));
     deliver(caps_again);
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::data_message_type::request));
     check(
-        usbc::pd_header::decode(tcpc.last_transmitted.header).revision == usbc::pd_revision::rev_2_0
+        usbc::pd_header::decode(phy.last_transmitted.header).revision == usbc::pd_revision::rev_2_0
     );
     txSuccess();
     deliver(partnerControl(
@@ -436,10 +432,10 @@ int pdDrpTests()
         usbc::power_role::source,
         usbc::data_role::dfp
     ));
-    check(transmittedControl(tcpc, usbc::control_message_type::accept));
+    check(transmittedControl(phy, usbc::control_message_type::accept));
     txSuccess();
     check(port.dataRole() == usbc::data_role::ufp);
-    check(tcpc.header_info.data == usbc::data_role::ufp);
+    check(phy.header_info.data == usbc::data_role::ufp);
 
     // the role lock vetoes swaps to source ahead of the swap policy:
     // the partner's PR_Swap is rejected, our own request refused
@@ -449,17 +445,17 @@ int pdDrpTests()
         usbc::power_role::source,
         usbc::data_role::dfp
     ));
-    check(transmittedControl(tcpc, usbc::control_message_type::reject));
+    check(transmittedControl(phy, usbc::control_message_type::reject));
     txSuccess();
     check(!port.swapPowerRole());
-    check(tcpc.sinking && port.powerRole() == usbc::power_role::sink);
+    check(vbus.sinking() && port.powerRole() == usbc::power_role::sink);
     lock.sourcing = true;
 
     // PR_Swap, our request (sink -> source): the agreement enters the
     // swap standby - draw stops, detach detection is suspended
     check(port.swapPowerRole());
-    check(transmittedControl(tcpc, usbc::control_message_type::pr_swap));
-    auto const pr_swap_id = usbc::pd_header::decode(tcpc.last_transmitted.header).message_id;
+    check(transmittedControl(phy, usbc::control_message_type::pr_swap));
+    auto const pr_swap_id = usbc::pd_header::decode(phy.last_transmitted.header).message_id;
     txSuccess();
     deliver(partnerControl(
         usbc::control_message_type::accept,
@@ -467,7 +463,7 @@ int pdDrpTests()
         usbc::data_role::dfp
     ));
     check(sink_power.last_limit == usbc::spec::i_snk_stdby); // standby draw
-    check(!tcpc.sinking && !port.powerRole());               // standby holds
+    check(!vbus.sinking() && !port.powerRole());             // standby holds
     vbus.setVoltage(0); // the old source collapses VBUS - not a detach
 
     // the old source's PS_RDY: Assert_Rp, VBUS on, our PS_RDY, then
@@ -477,28 +473,28 @@ int pdDrpTests()
         usbc::power_role::source,
         usbc::data_role::dfp
     ));
-    check(tcpc.sourcing && port.powerRole() == usbc::power_role::source);
-    check(tcpc.header_info.power == usbc::power_role::source);
+    check(vbus.sourcing() && port.powerRole() == usbc::power_role::source);
+    check(phy.header_info.power == usbc::power_role::source);
     check(port.dataRole() == usbc::data_role::ufp); // preserved across the swap
     check(supply.voltage == 5000 && supply.outputs > 0);
     supply.settle();
-    check(transmittedControl(tcpc, usbc::control_message_type::ps_rdy));
+    check(transmittedControl(phy, usbc::control_message_type::ps_rdy));
     // the MessageID lifecycle survived the engine handover: a PR_Swap
     // is no reset trigger (6.7.1), the counter continues
     check(
-        usbc::pd_header::decode(tcpc.last_transmitted.header).message_id ==
+        usbc::pd_header::decode(phy.last_transmitted.header).message_id ==
         ((pr_swap_id + 1u) & 0x7u)
     );
     txSuccess();
     check(timers.source_pe.armed); // SwapSourceStartTimer
     timers.source_pe.expire();
     check(
-        transmittedType(tcpc) ==
+        transmittedType(phy) ==
         static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities)
     );
     // the negotiated revision survived the engine handover
     check(
-        usbc::pd_header::decode(tcpc.last_transmitted.header).revision == usbc::pd_revision::rev_2_0
+        usbc::pd_header::decode(phy.last_transmitted.header).revision == usbc::pd_revision::rev_2_0
     );
     txSuccess();
 
@@ -512,11 +508,11 @@ int pdDrpTests()
     );
     putObject(request, usbc::pdo::makeFixedRequest(1, 1000, 1500, false));
     deliver(request);
-    check(transmittedControl(tcpc, usbc::control_message_type::accept));
+    check(transmittedControl(phy, usbc::control_message_type::accept));
     txSuccess();
     timers.source_pe.expire(); // tSrcTransition
     supply.settle();
-    check(transmittedControl(tcpc, usbc::control_message_type::ps_rdy));
+    check(transmittedControl(phy, usbc::control_message_type::ps_rdy));
     txSuccess();
 
     // ... and Get_Sink_Cap while sourcing with its sink-role
@@ -527,7 +523,7 @@ int pdDrpTests()
         usbc::data_role::ufp
     ));
     check(
-        transmittedType(tcpc) ==
+        transmittedType(phy) ==
         static_cast<std::uint8_t>(usbc::data_message_type::sink_capabilities)
     );
     txSuccess();
@@ -539,20 +535,19 @@ int pdDrpTests()
         usbc::power_role::sink,
         usbc::data_role::ufp
     ));
-    check(transmittedControl(tcpc, usbc::control_message_type::accept));
-    auto const accept_id = usbc::pd_header::decode(tcpc.last_transmitted.header).message_id;
+    check(transmittedControl(phy, usbc::control_message_type::accept));
+    auto const accept_id = usbc::pd_header::decode(phy.last_transmitted.header).message_id;
     txSuccess();
     check(timers.source_swap.armed); // tSrcTransition, inside the exchange
     timers.source_swap.expire();
     check(supply.voltage == 0); // the supply is commanded off
     supply.settle();
-    check(tcpc.pull == usbc::cc_pull::rd && !tcpc.sourcing); // Rd asserted
-    check(transmittedControl(tcpc, usbc::control_message_type::ps_rdy));
+    check(cc.pull == usbc::cc_pull::rd && !vbus.sourcing()); // Rd asserted
+    check(transmittedControl(phy, usbc::control_message_type::ps_rdy));
     // ... and in this direction too: the sink engine's first message
     // continues where the source engine's counter stood
     check(
-        usbc::pd_header::decode(tcpc.last_transmitted.header).message_id ==
-        ((accept_id + 1u) & 0x7u)
+        usbc::pd_header::decode(phy.last_transmitted.header).message_id == ((accept_id + 1u) & 0x7u)
     );
     txSuccess();
 
@@ -564,13 +559,13 @@ int pdDrpTests()
         usbc::power_role::source,
         usbc::data_role::dfp
     ));
-    check(tcpc.sinking && port.powerRole() == usbc::power_role::sink);
-    check(tcpc.header_info.power == usbc::power_role::sink);
+    check(vbus.sinking() && port.powerRole() == usbc::power_role::sink);
+    check(phy.header_info.power == usbc::power_role::sink);
     check(port.dataRole() == usbc::data_role::ufp);
     check(timers.sink_pe.armed); // SinkWaitCapTimer runs again
 
     // detach as sink: Rp gone, both roles end
-    tcpc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
+    cc.line_state = {usbc::cc_state::snk_open, usbc::cc_state::snk_open};
     ccAlert();
     vbus.setVoltage(0);
     check(!port.powerRole());

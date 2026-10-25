@@ -1,8 +1,8 @@
 /*
  * The source's VBUS power supply as an integration interface. Programs
- * the voltage/current the port sources; the TCPC merely switches this
- * supply onto VBUS (sourceVbus()). Only ports that source power need
- * to provide it.
+ * the voltage/current the port sources; the vbus block merely switches
+ * this supply onto VBUS (its vbus_path::safe5v position). Only ports
+ * that source power need to provide it.
  *
  * Derive the driver from SourceSupply (CRTP) and implement
  * (concepts::source_supply_client):

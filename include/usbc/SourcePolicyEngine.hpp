@@ -52,12 +52,13 @@
 
 #pragma once
 
+#include <usbc/Cc.hpp>
 #include <usbc/Message.hpp>
+#include <usbc/PdPhy.hpp>
 #include <usbc/Pdo.hpp>
 #include <usbc/PolicyEngine.hpp>
 #include <usbc/ProtocolLayer.hpp>
 #include <usbc/SourceSupply.hpp>
-#include <usbc/Tcpc.hpp>
 #include <usbc/Units.hpp>
 
 #include <mtl/StateMachine.hpp>
@@ -985,16 +986,17 @@ private:
 };
 
 template<
-    concepts::pd_transport TCPC,
+    concepts::cc CC,
+    concepts::pd_phy PHY,
     fsm::concepts::timer TIMER,
     concepts::source_policy POLICY,
     concepts::source_supply SUPPLY,
     typename... OBSERVERs>
 class SourcePolicyEngine : public pe::PolicyEngineBase<
-                               SourcePolicyEngine<TCPC, TIMER, POLICY, SUPPLY, OBSERVERs...>,
+                               SourcePolicyEngine<CC, PHY, TIMER, POLICY, SUPPLY, OBSERVERs...>,
                                power_role::source,
                                pe::pe_source_table,
-                               TCPC,
+                               PHY,
                                TIMER,
                                POLICY,
                                OBSERVERs...> {
@@ -1002,7 +1004,7 @@ class SourcePolicyEngine : public pe::PolicyEngineBase<
         SourcePolicyEngine,
         power_role::source,
         pe::pe_source_table,
-        TCPC,
+        PHY,
         TIMER,
         POLICY,
         OBSERVERs...>;
@@ -1011,22 +1013,26 @@ class SourcePolicyEngine : public pe::PolicyEngineBase<
 public:
     // The observers are injected into the engine's machine after the
     // protocol layer and the supply driver, and into the protocol
-    // layer's machine; a SourcePower-derived one
-    // supplies the contract notifications. pe_timer runs the engine's
-    // states, swap_timer the sub-states of a swap exchange (never
-    // armed without a swap feature)
+    // layer's machine; a SourcePower-derived one supplies the contract
+    // notifications. The CC driver presents the PD3 collision-avoidance
+    // Rp (SinkTxOk/SinkTxNG) under an explicit contract and the port's
+    // advertisement otherwise. pe_timer runs the engine's states,
+    // swap_timer the sub-states of a swap exchange (never armed without
+    // a swap feature)
     SourcePolicyEngine(
-        TCPC& tcpc,
+        CC& cc,
+        PHY& phy,
         TIMER& prl_timer,
         TIMER& pe_timer,
         TIMER& swap_timer,
         std::span<std::uint32_t const> capabilities,
+        rp_value advertisement,
         POLICY& policy,
         SUPPLY& supply,
         OBSERVERs&... observers
     )
-        : base(tcpc, prl_timer, pe_timer, swap_timer, observers...), policy_(policy),
-          supply_(supply),
+        : base(phy, prl_timer, pe_timer, swap_timer, observers...), cc_(cc),
+          advertisement_(advertisement), policy_(policy), supply_(supply),
           sm_(this->timed_, this->prl_, action_driver_, supply_, policy_, observers...)
     {
         this->source_capabilities_ = capabilities;
@@ -1041,13 +1047,19 @@ public:
         );
     }
 
-    // The Type-C source layer reports the attached sink: advertise
-    void attached() { sm_.process(pe::event::attached{}); }
+    // The Type-C source layer reports the attached sink: the engine
+    // goes live, its protocol layer takes the PHY, and it advertises
+    void attached()
+    {
+        this->prl_.claimPhy();
+        sm_.process(pe::event::attached{});
+    }
 
     // ... and the detach: everything resets, back to Startup; the
     // next partner negotiates its own revision
     void detached()
     {
+        this->prl_.releasePhy();
         this->prl_.resetRevision();
         this->setBistTestData(false); // the test mode ends with the partner
         sm_.process(pe::event::detached{});
@@ -1093,6 +1105,7 @@ public:
     {
         this->prl_.seedRevision(revision);
         this->prl_.seedMessageIds(ids);
+        this->prl_.claimPhy();
         sm_.process(pe::event::attached_swap{role});
     }
 
@@ -1106,10 +1119,12 @@ public:
 private:
     // Executes the states' engine-directed annotations, delivered
     // from their sets by overload: the Source_Capabilities
-    // transmission and the PD3 collision-avoidance Rp (only
-    // meaningful under an explicit contract with a PD3 partner -
-    // elsewhere the configured advertisement stands); the supply's
-    // operating points reach the injected SourceSupply directly
+    // transmission and the PD3 collision-avoidance Rp - only
+    // meaningful under an explicit contract with a PD3 partner, and
+    // the port's advertisement stands again once the contract is gone
+    // (spec 5.2.2: the Rp specifies the Type-C current during the
+    // default or implicit contract); the supply's operating points
+    // reach the injected SourceSupply directly
     struct ActionDriver : fsm::observing<ActionDriver> {
         explicit ActionDriver(SourcePolicyEngine& engine_ref) : engine(engine_ref) {}
 
@@ -1120,10 +1135,13 @@ private:
                 !engine.sm_.template context<pe::src_negotiation>().explicit_contract) {
                 return;
             }
-            engine.tcpc_.setCc(
-                cc_pull::rp,
-                tx == pe::sink_tx::ok ? rp_value::p_3a0 : rp_value::p_1a5
-            );
+            engine.cc_.setRp(tx == pe::sink_tx::ok ? rp_value::p_3a0 : rp_value::p_1a5);
+        }
+        void notifyEntry(pe::power_level level)
+        {
+            if (level != pe::power_level::explicit_contract) {
+                engine.cc_.setRp(engine.advertisement_);
+            }
         }
 
         SourcePolicyEngine& engine;
@@ -1185,6 +1203,8 @@ private:
         }
     }
 
+    CC& cc_;
+    rp_value advertisement_;
     POLICY& policy_;
     SUPPLY& supply_;
     ActionDriver action_driver_{*this};
@@ -1195,7 +1215,7 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         typename base::timeouts,
-        ProtocolLayer<TCPC, TIMER, OBSERVERs...>,
+        ProtocolLayer<PHY, TIMER, OBSERVERs...>,
         ActionDriver,
         SUPPLY,
         POLICY,

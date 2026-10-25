@@ -6,64 +6,69 @@
 
 #pragma once
 
+#include <usbc/Cc.hpp>
+#include <usbc/PdPhy.hpp>
 #include <usbc/Spec.hpp>
-#include <usbc/Tcpc.hpp>
 #include <usbc/Vbus.hpp>
+
+#include <mtl/StateMachine.hpp>
 
 #include <cstdint>
 #include <optional>
 
-// TCPC driver test double, shared by the interface and protocol layer tests
-struct mock_tcpc {
-    usbc::alert_callback callback = nullptr;
-    void* context = nullptr;
-    usbc::alert_status alerts = usbc::alert_status::none;
+// CC block test double: presents the pull the connection states
+// annotate and reports the line a test sets
+struct mock_cc : fsm::observing<mock_cc> {
     usbc::cc_pull pull = usbc::cc_pull::open;
     usbc::rp_value rp = usbc::rp_value::usb_default;
     usbc::cc_status line_state{usbc::cc_state::src_open, usbc::cc_state::src_open};
-    usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
-    bool sourcing = false;
-    bool sinking = false;
-    usbc::receive_detect detect = usbc::receive_detect::none;
-    usbc::message_header_info header_info{};
-    usbc::pd_message last_transmitted{};
-    int transmit_count = 0;
-    bool accept_transmit = true;
-    std::optional<usbc::transmit_signal> last_signal{};
-    std::optional<usbc::pd_message> pending_rx{};
+    usbc::cc_callback callback = nullptr;
+    void* context = nullptr;
 
-    void setAlertHandler(usbc::alert_callback cb, void* ctx)
+    void notifyEntry(usbc::cc_termination termination) { pull = termination.pull; }
+    bool setRp(usbc::rp_value value)
+    {
+        rp = value;
+        return true;
+    }
+    void setCallback(usbc::cc_callback cb, void* ctx)
     {
         callback = cb;
         context = ctx;
     }
-    std::optional<usbc::alert_status> readAlert()
-    {
-        auto const pending = alerts;
-        alerts = usbc::alert_status::none;
-        return pending;
-    }
-    bool setCc(usbc::cc_pull p, usbc::rp_value current)
-    {
-        pull = p;
-        rp = current;
-        return true;
-    }
     std::optional<usbc::cc_status> readCcStatus() { return line_state; }
-    bool setPlugOrientation(usbc::plug_orientation o)
+
+    // test helpers: the driver reports the line as it is / as it became
+    void report()
     {
-        orientation = o;
-        return true;
+        if (callback != nullptr) {
+            callback(context, line_state);
+        }
     }
-    bool sourceVbus(bool enable)
+    void report(usbc::cc_status status)
     {
-        sourcing = enable;
-        return true;
+        line_state = status;
+        report();
     }
-    bool sinkVbus(bool enable)
+};
+
+// PD PHY test double: records what the protocol layer configures and
+// transmits, reports to whoever holds it
+struct mock_phy {
+    usbc::pd_phy_callbacks callbacks{};
+    void* context = nullptr;
+    usbc::message_header_info header_info{};
+    usbc::receive_detect detect = usbc::receive_detect::none;
+    std::optional<usbc::plug_orientation> line{};
+    usbc::pd_message last_transmitted{};
+    int transmit_count = 0;
+    bool accept_transmit = true;
+    std::optional<usbc::transmit_signal> last_signal{};
+
+    void setCallbacks(usbc::pd_phy_callbacks const& cbs, void* ctx)
     {
-        sinking = enable;
-        return true;
+        callbacks = cbs;
+        context = ctx;
     }
     bool setMessageHeaderInfo(usbc::message_header_info info)
     {
@@ -73,6 +78,11 @@ struct mock_tcpc {
     bool setReceiveDetect(usbc::receive_detect d)
     {
         detect = d;
+        return true;
+    }
+    bool selectCcLine(usbc::plug_orientation l)
+    {
+        line = l;
         return true;
     }
     bool transmit(usbc::pd_message const& message)
@@ -86,63 +96,61 @@ struct mock_tcpc {
         last_signal = signal;
         return true;
     }
-    bool receive(usbc::pd_message& out)
-    {
-        if (!pending_rx) {
-            return false;
-        }
-        out = *pending_rx;
-        pending_rx.reset();
-        return true;
-    }
 
-    // test helper: a message arrives and the driver raises its alert
+    // test helpers: the PHY's reports; nobody holding it hears nothing
+    bool claimed() const { return callbacks.received != nullptr; }
     void injectMessage(usbc::pd_message const& message)
     {
-        pending_rx = message;
-        alerts |= usbc::alert_status::message_received;
-        if (callback != nullptr) {
-            callback(context);
+        if (callbacks.received != nullptr) {
+            callbacks.received(context, message);
+        }
+    }
+    void transmitted(usbc::transmit_outcome outcome)
+    {
+        if (callbacks.transmitted != nullptr) {
+            callbacks.transmitted(context, outcome);
+        }
+    }
+    void hardResetReceived()
+    {
+        if (callbacks.hard_reset_received != nullptr) {
+            callbacks.hard_reset_received(context);
         }
     }
 };
 
-// VBUS driver test double simulating a comparator
-struct mock_vbus {
-    bool enabled = false;
+// VBUS block test double simulating a comparator behind the switch
+// position the connection states annotate
+struct mock_vbus : fsm::observing<mock_vbus> {
+    usbc::vbus_path path = usbc::vbus_path::open;
     usbc::vbus_callback callback = nullptr;
     void* context = nullptr;
     std::optional<usbc::vbus_level> monitored{};
     std::int32_t voltage_mv = 0;
     bool reported_met = false;
 
-    bool enable(bool e)
-    {
-        enabled = e;
-        return true;
-    }
-    void setCallback(usbc::vbus_callback cb, void* ctx)
-    {
-        callback = cb;
-        context = ctx;
-    }
-    bool monitor(usbc::vbus_level level)
+    void notifyEntry(usbc::vbus_power power) { path = power.path; }
+    void notifyEntry(usbc::vbus_level level)
     {
         monitored = level;
         if (level != usbc::vbus_level::unwatched) {
             report(); // contract: current condition state as soon as known
         }
-        return true;
     }
-    // Discharging takes time and completes asynchronously: the test
-    // drives the voltage explicitly (a synchronous report here would
-    // re-enter process() from within an observer hook)
-    bool discharge(bool enable)
+    bool check(usbc::vbus_at_safe0v) const { return meets(usbc::vbus_level::safe0v); }
+    bool check(usbc::vbus_at_safe5v) const { return meets(usbc::vbus_level::safe5v); }
+    void setCallback(usbc::vbus_callback cb, void* ctx)
     {
-        discharging = enable;
-        return true;
+        callback = cb;
+        context = ctx;
     }
-    bool discharging = false;
+
+    // the switch position, by name
+    bool sinking() const { return path == usbc::vbus_path::sink; }
+    bool sourcing() const { return path == usbc::vbus_path::safe5v; }
+    // Discharging takes time and completes asynchronously: the test
+    // drives the voltage explicitly
+    bool discharging() const { return path == usbc::vbus_path::safe0v; }
 
     // the comparator, asked for one level
     bool meets(usbc::vbus_level level) const
@@ -165,7 +173,7 @@ struct mock_vbus {
     {
         reported_met = met();
         if (callback != nullptr) {
-            callback(context, reported_met);
+            callback(context, *monitored, reported_met);
         }
     }
     void setVoltage(std::int32_t mv)

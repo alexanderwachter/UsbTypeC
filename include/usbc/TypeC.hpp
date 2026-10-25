@@ -1,10 +1,12 @@
 /*
  * Common ground of the USB Type-C connection layers: the spec's
- * debounce times, the CcWatcher observer debouncing the CC pins by
- * each state's rule and reporting the status that held as
- * event::cc_detected, and the VbusWatcher observer arming the vbus
- * driver with each state's watched level and answering the tables'
- * questions about VBUS now. The sink and source layers live in
+ * debounce times, the CcWatcher observer debouncing the CC driver's
+ * reports by each state's rule and reporting the status that held as
+ * event::cc_detected, the check that every state declares what the
+ * hardware blocks observe, and the frontend wiring the drivers'
+ * callbacks into the machine. The hardware itself - the CC block
+ * (Cc.hpp) and the VBUS block (Vbus.hpp) - observes the states'
+ * annotations directly. The sink and source layers live in
  * TypeCSink.hpp and TypeCSource.hpp.
  *
  * SPDX-License-Identifier: Apache-2.0
@@ -13,8 +15,9 @@
 
 #pragma once
 
+#include <usbc/Cc.hpp>
+#include <usbc/Message.hpp>
 #include <usbc/Spec.hpp>
-#include <usbc/Tcpc.hpp>
 #include <usbc/Vbus.hpp>
 
 #include <mtl/StateMachine.hpp>
@@ -127,21 +130,6 @@ struct hard_reset {};     // PD-directed: open the hard-reset window
 
 } // namespace event
 
-// The resolved CC polarity of an attach, applied to the TCPC by the
-// hw drivers - a strong type so it cannot collide with the raw
-// plug_orientation the source-role attach reports to clients
-struct polarity {
-    plug_orientation orientation;
-    constexpr bool operator==(polarity const&) const = default;
-};
-
-// The presented CC termination; the hw driver applies it (a source
-// role adds its configured Rp advertisement)
-struct cc_termination {
-    cc_pull pull;
-    constexpr bool operator==(cc_termination const&) const = default;
-};
-
 // The attached pair's power role, carried by the Attached states only:
 // the facades' powerRole() reads it off the machine (a swap standby or
 // a hard-reset window carries none - not attached in either role)
@@ -180,24 +168,6 @@ struct attached_partner {
     attach_origin origin;
     data_role data;
     cc_status cc;
-};
-
-// The switch positions of the VBUS power circuitry, mutually
-// exclusive by construction and named for the specification's VBUS
-// conditions where one is driven
-enum class vbus_path : std::uint8_t {
-    open,   // both paths open, the line floats
-    sink,   // the sink path draws from VBUS
-    safe5v, // the source path applies vSafe5V
-    safe0v, // paths open, actively discharging to vSafe0V
-};
-
-// The VBUS power annotation - the element that switches power. Every
-// connection state carries one, so a role change collapses the old
-// role's path, suppressed while unchanged
-struct vbus_power {
-    vbus_path path = vbus_path::open;
-    constexpr bool operator==(vbus_power const&) const = default;
 };
 
 // The one machine-owned context of the connection layer: one
@@ -264,49 +234,17 @@ template<fsm::concepts::transition_table TABLE>
 inline constexpr bool watch_events_consistent_v =
     fsm::all_states_handle_v<TABLE, required_vbus_events>;
 
-// Questions about VBUS right now, asked by the debounce outcomes and
-// answered from the driver: the spec requires vSafe0V when a source
-// applies power and VBUS present when a sink attaches, at the moment
-// of the decision - there is nothing to debounce or remember
-struct vbus_at_safe0v {};
-struct vbus_at_safe5v {};
-
-// Arms the vbus driver with each state's watched level; the class maps
-// the callback's meaning through the level it armed last, and answers
-// the tables' questions about VBUS now
-template<concepts::vbus VBUS>
-struct VbusWatcher : fsm::observing<VbusWatcher<VBUS>> {
-    explicit VbusWatcher(VBUS& vbus_ref) : vbus(vbus_ref) {}
-
-    // the states carry their watch level in their annotation sets
-    void notifyEntry(vbus_level level)
-    {
-        monitored = level;
-        vbus.monitor(level);
-    }
-
-    bool check(vbus_at_safe0v) { return vbus.meets(vbus_level::safe0v); }
-    bool check(vbus_at_safe5v) { return vbus.meets(vbus_level::safe5v); }
-
-    // Every state declares its level - vbus_level::unwatched is the
-    // deliberate "monitoring off", never an omission
-    template<fsm::concepts::transition_table TABLE>
-    static constexpr void validate()
-    {
-        static_assert(
-            fsm::all_states_carry_v<TABLE, vbus_level>,
-            "VbusWatcher: every state must annotate its vbus_level "
-            "(vbus_level::unwatched switches monitoring off)"
-        );
-        static_assert(
-            watch_events_consistent_v<TABLE>,
-            "VbusWatcher: a watching state must handle its level's met report"
-        );
-    }
-
-    VBUS& vbus;
-    vbus_level monitored = vbus_level::unwatched;
-};
+// What the hardware blocks observe, declared by every connection state:
+// the CC termination and the VBUS switch position (a state the
+// dispatch would silently skip would leave the previous state's
+// terminations or power paths applied) and the watched VBUS level
+// (vbus_level::unwatched is the deliberate "monitoring off", never an
+// omission), with a transition on the level's met report. The ports
+// assert it on their tables
+template<fsm::concepts::transition_table TABLE>
+inline constexpr bool hardware_annotations_complete_v =
+    fsm::all_states_carry_v<TABLE, cc_termination> && fsm::all_states_carry_v<TABLE, vbus_power> &&
+    fsm::all_states_carry_v<TABLE, vbus_level> && watch_events_consistent_v<TABLE>;
 
 // --- CC debounce -------------------------------------------------------------
 
@@ -336,17 +274,17 @@ static_assert(spec::t_cc_debounce.contains(t_cc_debounce));
 
 // Debounces the CC pins by the connection state's rule, on one timer.
 // Injected into the connection machine, it observes the state's rule
-// and the pull it presents; the TCPC's reports come in through
+// and the pull it presents; the CC driver's reports come in through
 // report(), the status that held goes out through the callback (the
 // port frontend turns it into event::cc_detected). A rule change
 // evaluates the last report under the new rule - the spec counts a
 // debounce from the state's entry - except after a pull change, when
-// the last report means nothing until the TCPC has measured the line
+// the last report means nothing until the driver has measured the line
 // afresh; a state without a rule stops the watcher. A report equal to
 // the last one is no change and leaves a running debounce alone; a
 // report that differs restarts it, so at the timeout the last report is
 // the status that held. The timer's callback arrives in the stack's
-// serialized context (mtl timer contract), like the TCPC's reports
+// serialized context (mtl timer contract), like the driver's reports
 template<fsm::concepts::timer TIMER>
 struct CcWatcher : fsm::observing<CcWatcher<TIMER>> {
     explicit CcWatcher(TIMER& timer_ref) : timer_(timer_ref) {}
@@ -368,7 +306,7 @@ struct CcWatcher : fsm::observing<CcWatcher<TIMER>> {
 
     bool check(cc_state_pending) const { return pending_; }
 
-    // the TCPC's report
+    // the CC driver's report
     void report(cc_status cc)
     {
         if (reported_ && cc == status_) {
@@ -424,7 +362,7 @@ private:
         }
     }
 
-    // the TCPC reports in the presented role's encoding: a sink sees
+    // the driver reports in the presented role's encoding: a sink sees
     // snk_* states, a source src_* states
     bool terminationPresent() const { return sourcePresent(status_) || sinkPresent(status_); }
 
@@ -438,45 +376,50 @@ private:
 };
 
 // The driver-facing frontend every connection layer shares (CRTP):
-// start() wiring, the TCPC alert pump with residual forwarding to the
-// observers providing onPdAlert, the CC reports handed to the
-// CcWatcher and its detections turned into events, the vbus report
-// mapped through the armed level's family. The derived port provides
-// tcpc_, vbus_ (the watcher), cc_ (the watcher), observers_, and sm_,
-// and befriends this base
-template<typename DERIVED, concepts::tcpc TCPC, concepts::vbus VBUS>
+// start() wiring, the CC driver's reports handed to the CcWatcher and
+// its detections turned into events, the vbus driver's report mapped
+// through the family of the level it reports on. The derived port
+// provides cc_driver_, vbus_driver_, cc_ (the watcher), observers_,
+// and sm_, and befriends this base
+template<typename DERIVED, concepts::cc CC, concepts::vbus VBUS>
 class port_frontend {
 protected:
-    // Leaves Disabled through the started event; when it fires, the
-    // callbacks register, the monitor re-arms for its initial report,
-    // and the line as it is reaches the watcher (a partner plugged in
-    // before has no alert to announce it). A second start() does
-    // nothing (the queued process() reports acceptance, not whether the
-    // transition fired - the latch keeps this idempotent)
-    void startPort()
+    // Leaves Disabled through the started event with the callbacks in
+    // place, so the drivers' first reports - the VBUS condition the
+    // Unattached state arms - arrive; the Rp advertisement is set
+    // before the terminations are applied, and the line as it is
+    // reaches the watcher (a partner plugged in before changes nothing
+    // the driver would report). A second start() does nothing (the
+    // queued process() reports acceptance, not whether the transition
+    // fired - the latch keeps this idempotent)
+    void startPort(rp_value advertisement)
     {
         if (started_) {
             return;
         }
         started_ = true;
         auto& self = derived();
-        self.sm_.process(event::started{});
         self.cc_.setCallback(
             [](void* frontend, cc_status cc) {
                 static_cast<port_frontend*>(frontend)->ccDetected(cc);
             },
             this
         );
-        self.vbus_.vbus.setCallback(
-            [](void* frontend, bool met) { static_cast<port_frontend*>(frontend)->vbusEvent(met); },
+        self.cc_driver_.setCallback(
+            [](void* frontend, cc_status cc) {
+                static_cast<port_frontend*>(frontend)->ccChanged(cc);
+            },
             this
         );
-        self.tcpc_.setAlertHandler(
-            [](void* frontend) { static_cast<port_frontend*>(frontend)->alert(); },
+        self.vbus_driver_.setCallback(
+            [](void* frontend, vbus_level level, bool met) {
+                static_cast<port_frontend*>(frontend)->vbusEvent(level, met);
+            },
             this
         );
-        self.vbus_.vbus.monitor(self.vbus_.monitored); // deliver the initial condition
-        if (auto const cc = self.tcpc_.readCcStatus()) {
+        self.cc_driver_.setRp(advertisement);
+        self.sm_.process(event::started{});
+        if (auto const cc = self.cc_driver_.readCcStatus()) {
             self.cc_.report(*cc);
         }
     }
@@ -484,40 +427,19 @@ protected:
 private:
     DERIVED& derived() { return static_cast<DERIVED&>(*this); }
 
-    // Drains the TCPC's pending alerts; the bits this layer does not
-    // consume go to the observers providing onPdAlert(alert_status)
-    void alert()
+    // The driver's report: the watcher debounces it, and the PD layer
+    // reads the raw status for the source's Rp as SinkTxOk/SinkTxNG
+    // (PD3 collision avoidance)
+    void ccChanged(cc_status cc)
     {
         auto& self = derived();
-        if (auto const alerts = self.tcpc_.readAlert()) {
-            if (any(*alerts & alert_status::cc_status_changed)) {
-                if (auto const cc = self.tcpc_.readCcStatus()) {
-                    self.cc_.report(*cc);
-                    std::apply(
-                        [&](auto&... observer) { (forwardCcStatus(observer, *cc), ...); },
-                        self.observers_
-                    );
-                }
-            }
-            auto const residual = *alerts & ~alert_status::cc_status_changed;
-            if (any(residual)) {
-                std::apply(
-                    [&](auto&... observer) { (forwardPdAlert(observer, residual), ...); },
-                    self.observers_
-                );
-            }
-        }
+        self.cc_.report(cc);
+        std::apply(
+            [&](auto&... observer) { (forwardCcStatus(observer, cc), ...); },
+            self.observers_
+        );
     }
 
-    static void forwardPdAlert(auto& observer, alert_status alerts)
-    {
-        if constexpr (requires { observer.onPdAlert(alerts); }) {
-            observer.onPdAlert(alerts);
-        }
-    }
-
-    // The raw CC status, undebounced - the PD layer reads the source's
-    // Rp as SinkTxOk/SinkTxNG (PD3 collision avoidance)
     static void forwardCcStatus(auto& observer, cc_status cc)
     {
         if constexpr (requires { observer.onCcStatus(cc); }) {
@@ -531,22 +453,22 @@ private:
     // transition completes
     void ccDetected(cc_status cc) { derived().sm_.process(event::cc_detected{cc}); }
 
-    // The vbus driver reports the condition the watcher armed; the
+    // The vbus driver reports on the condition the state armed; the
     // event follows the level's family - events a table does not
     // handle are dropped by the machine. Reports may arrive
-    // synchronously from within a state entry's monitor re-arm: sm_
-    // is an fsm::QueuedMachine, which delivers them in order after
-    // the running transition completes
-    void vbusEvent(bool met)
+    // synchronously from within a state entry's arming: sm_ is an
+    // fsm::QueuedMachine, which delivers them in order after the
+    // running transition completes
+    void vbusEvent(vbus_level level, bool met)
     {
         auto& self = derived();
-        if (familyOf(self.vbus_.monitored) == vbus_family::discharge) {
+        if (familyOf(level) == vbus_family::discharge) {
             if (met) {
                 self.sm_.process(event::vbus_reached_safe0v{});
             } else {
                 self.sm_.process(event::vbus_left_safe0v{});
             }
-        } else if (met == metMeansPresent(self.vbus_.monitored)) {
+        } else if (met == metMeansPresent(level)) {
             self.sm_.process(event::vbus_present{});
         } else {
             self.sm_.process(event::vbus_removed{});

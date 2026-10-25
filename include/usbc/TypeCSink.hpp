@@ -1,7 +1,7 @@
 /*
  * USB Type-C sink connection layer: Unattached.SNK, AttachWait.SNK and
  * Attached.SNK per the USB Type-C Cable and Connector Specification,
- * driving a tcpc and a vbus driver. No PD involved - the layer detects
+ * driving a CC and a VBUS driver. No PD involved - the layer detects
  * attach/detach, resolves plug orientation and the Rp current
  * advertisement, and switches the sink power path.
  *
@@ -20,17 +20,18 @@
  * status in the attachment for the attach to resolve plug and
  * advertisement from.
  * Attached.SNK watches vSinkDisconnect instead of vSafe5V; the watched
- * level is a state annotation and the VbusWatcher observer re-arms the
- * vbus driver on changes.
+ * level is a state annotation the vbus driver observes and re-arms on.
  *
- * Integration: hand over initialized drivers and two caller-owned timer
- * policy instances, the connection states' and the CC debounce's.
- * Construction rests in the spec's Disabled state (open terminations,
- * nothing monitored); start() is the go-live moment - it fires the
- * started event, whose transition applies the Unattached.SNK
- * terminations, then registers the tcpc alert handler and the vbus
- * callback and hands the watcher the line as it is. The drivers must
- * invoke their callbacks from the stack's serialized context (the
+ * Integration: hand over initialized drivers - the CC block (Cc.hpp)
+ * and the VBUS block (Vbus.hpp), both observers of this machine
+ * applying the states' terminations, power paths and watched levels
+ * themselves - and two caller-owned timer policy instances, the
+ * connection states' and the CC debounce's. Construction rests in the
+ * spec's Disabled state (open terminations, nothing monitored); start()
+ * is the go-live moment - it registers the drivers' callbacks, fires
+ * the started event, whose transition applies the Unattached.SNK
+ * terminations, and hands the watcher the line as it is. The drivers
+ * must invoke their callbacks from the stack's serialized context (the
  * Zephyr adapters deliver on a workqueue), and the timers are
  * serialized with them by the integrator (mtl timer contract). Attach
  * results reach injected observers watching the attached state's
@@ -48,7 +49,7 @@
 
 #pragma once
 
-#include <usbc/Tcpc.hpp>
+#include <usbc/Cc.hpp>
 #include <usbc/TypeC.hpp>
 #include <usbc/Vbus.hpp>
 
@@ -204,16 +205,16 @@ struct attached_snk {
         pd_connection{}
     );
 
-    // the attach result, the CC polarity and the partner, observed as
-    // instance values: the hw driver applies the polarity, the clients
-    // and loggers consume the attach info, the PD layer above acts on
-    // the partner (what brought the port here, data role, the
-    // source's Rp)
+    // the attach result, the plug orientation and the partner, observed
+    // as instance values: the clients and loggers consume the attach
+    // info, the PD layer above selects the PHY's CC line from the
+    // orientation and acts on the partner (what brought the port here,
+    // data role, the source's Rp)
     auto values() const
     {
         return fsm::annotate(
             attach_info{.orientation = attached.orientation, .advertisement = advertisement_},
-            polarity{.orientation = attached.orientation},
+            attached.orientation,
             attached_partner{.origin = origin_, .data = attached.data, .cc = attached.detected}
         );
     }
@@ -347,63 +348,31 @@ using sink_transitions = fsm::transition_table<
 struct tc_sink_table : sink_transitions {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
-// Applies each state's hw annotation (suppressed while unchanged) and
-// the attached state's plug orientation
-template<concepts::tcpc TCPC>
-struct hw_driver : fsm::observing<hw_driver<TCPC>> {
-    explicit hw_driver(TCPC& tcpc_ref) : tcpc(tcpc_ref) {}
-
-    // A state the dispatch would silently skip is a table bug: the
-    // previous state's terminations or power paths would stay applied.
-    // Checked per element: every state must carry both
-    template<fsm::concepts::transition_table TABLE>
-    static constexpr void validate()
-    {
-        static_assert(
-            fsm::all_states_carry_v<TABLE, cc_termination>,
-            "hw_driver: every state must annotate its CC termination"
-        );
-        static_assert(
-            fsm::all_states_carry_v<TABLE, vbus_power>,
-            "hw_driver: every state must annotate its VBUS power paths"
-        );
-    }
-
-    void notifyEntry(cc_termination termination)
-    {
-        tcpc.setCc(termination.pull, rp_value::usb_default);
-    }
-    void notifyEntry(vbus_power power) { tcpc.sinkVbus(power.path == vbus_path::sink); }
-    void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }
-
-    TCPC& tcpc;
-};
-
 } // namespace tc
 
-template<
-    concepts::tcpc TCPC,
-    concepts::vbus VBUS,
-    fsm::concepts::timer TIMER,
-    typename... OBSERVERs>
-class TypeCSink : public tc::port_frontend<TypeCSink<TCPC, VBUS, TIMER, OBSERVERs...>, TCPC, VBUS> {
+template<concepts::cc CC, concepts::vbus VBUS, fsm::concepts::timer TIMER, typename... OBSERVERs>
+class TypeCSink : public tc::port_frontend<TypeCSink<CC, VBUS, TIMER, OBSERVERs...>, CC, VBUS> {
+    static_assert(
+        tc::hardware_annotations_complete_v<tc::tc_sink_table>,
+        "every state must annotate its CC termination, VBUS power path and watched VBUS level"
+    );
+
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). timer runs the connection states' timeouts,
-    // cc_timer the CC debounce. The observers are injected into the
-    // machine after the built-in ones (timer, hw driver, vbus watcher,
-    // cc watcher); attach results are observed on the attached state's
-    // attachedInfo(), and an observer providing onPdAlert(alert_status)
-    // receives the alert bits this layer does not consume - the hook
-    // for the PD layers above
-    TypeCSink(TCPC& tcpc, VBUS& vbus, TIMER& timer, TIMER& cc_timer, OBSERVERs&... observers)
-        : tcpc_(tcpc), hw_(tcpc), vbus_(vbus), cc_(cc_timer), timer_(timer), timed_(timer_),
-          observers_(observers...), sm_(timed_, hw_, vbus_, cc_, observers...)
+    // cc_timer the CC debounce. The drivers observe the machine, the
+    // observers are injected after the built-in ones (timer, the two
+    // drivers, cc watcher); attach results are observed on the attached
+    // state's attach_info
+    TypeCSink(CC& cc, VBUS& vbus, TIMER& timer, TIMER& cc_timer, OBSERVERs&... observers)
+        : cc_driver_(cc), vbus_driver_(vbus), cc_(cc_timer), timer_(timer), timed_(timer_),
+          observers_(observers...), sm_(timed_, cc, vbus, cc_, observers...)
     {
     }
 
-    // The go-live moment, provided by the shared frontend
-    void start() { this->startPort(); }
+    // The go-live moment, provided by the shared frontend; a sink
+    // presents no Rp
+    void start() { this->startPort(rp_value::usb_default); }
 
     // PD-directed Type-C Error Recovery: both terminations removed for
     // tErrorRecovery, then resolution restarts. Call from the stack's
@@ -415,11 +384,10 @@ public:
     bool hardResetWindow() { return sm_.process(tc::event::hard_reset{}); }
 
 private:
-    friend tc::port_frontend<TypeCSink, TCPC, VBUS>;
+    friend tc::port_frontend<TypeCSink, CC, VBUS>;
 
-    TCPC& tcpc_;
-    tc::hw_driver<TCPC> hw_;
-    tc::VbusWatcher<VBUS> vbus_;
+    CC& cc_driver_;
+    VBUS& vbus_driver_;
     tc::CcWatcher<TIMER> cc_;
     fsm::QueuedTimer<TIMER> timer_;
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
@@ -430,8 +398,8 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         fsm::timed<fsm::QueuedTimer<TIMER>&>,
-        tc::hw_driver<TCPC>,
-        tc::VbusWatcher<VBUS>,
+        CC,
+        VBUS,
         tc::CcWatcher<TIMER>,
         OBSERVERs...>
         sm_;

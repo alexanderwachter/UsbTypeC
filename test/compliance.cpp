@@ -40,7 +40,7 @@ constexpr bool prlTableChecked()
     return true;
 }
 static_assert(prlTableChecked<retransmission::protocol_layer>());
-static_assert(prlTableChecked<retransmission::transport>());
+static_assert(prlTableChecked<retransmission::phy>());
 
 // --- Type-C connection layers ------------------------------------------------
 

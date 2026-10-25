@@ -65,13 +65,13 @@ struct mock_client {
 };
 static_assert(usbc::concepts::prl_client<mock_client>);
 
-// --- a transport retransmitting itself ---------------------------------------
-struct retransmitting_tcpc : mock_tcpc {
+// --- a PHY retransmitting itself ---------------------------------------------
+struct retransmitting_phy : mock_phy {
     static constexpr bool retransmits = true;
 };
-static_assert(usbc::concepts::retransmitting_transport<retransmitting_tcpc>);
-static_assert(!usbc::concepts::retransmitting_transport<mock_tcpc>);
-static_assert(usbc::retransmission_of<mock_tcpc> == usbc::retransmission::protocol_layer);
+static_assert(usbc::concepts::retransmitting_phy<retransmitting_phy>);
+static_assert(!usbc::concepts::retransmitting_phy<mock_phy>);
+static_assert(usbc::retransmission_of<mock_phy> == usbc::retransmission::protocol_layer);
 
 // --- compile-time checks ----------------------------------------------------
 namespace compile_time {
@@ -128,9 +128,9 @@ usbc::pd_message makeRequest(usbc::sop_type sop = usbc::sop_type::sop)
     return message;
 }
 
-std::uint8_t transmittedId(mock_tcpc const& tcpc)
+std::uint8_t transmittedId(mock_phy const& phy)
 {
-    return usbc::pd_header::decode(tcpc.last_transmitted.header).message_id;
+    return usbc::pd_header::decode(phy.last_transmitted.header).message_id;
 }
 
 usbc::pd_message makeIncoming(std::uint8_t id)
@@ -144,87 +144,88 @@ usbc::pd_message makeIncoming(std::uint8_t id)
 
 int protocolLayerTests()
 {
-    mock_tcpc tcpc;
+    mock_phy phy;
     mock_client client;
     manual_timer timer;
-    usbc::ProtocolLayer<mock_tcpc, manual_timer> prl{tcpc, timer, client};
+    usbc::ProtocolLayer<mock_phy, manual_timer> prl{phy, timer, client};
+
+    // the layer hears the PHY only while it holds it
+    check(!phy.claimed());
+    prl.claimPhy();
+    check(phy.claimed());
 
     // MessageID stamping; one PHY attempt per request, CRCReceiveTimer runs
     check(prl.transmit(makeRequest()));
-    check(tcpc.transmit_count == 1 && transmittedId(tcpc) == 0);
+    check(phy.transmit_count == 1 && transmittedId(phy) == 0);
     check(timer.armed);
     check(!prl.transmit(makeRequest())); // busy until the PHY reports
-    check(tcpc.transmit_count == 1);
+    check(phy.transmit_count == 1);
 
-    prl.onAlert(usbc::alert_status::transmit_success);
+    phy.transmitted(usbc::transmit_outcome::success);
     check(client.tx_done == 1 && !timer.armed);
 
     // CRCReceiveTimer expiry retries with the same MessageID, then
     // transmission error after nRetryCount retries
-    check(prl.transmit(makeRequest()) && transmittedId(tcpc) == 1);
+    check(prl.transmit(makeRequest()) && transmittedId(phy) == 1);
     timer.expire(); // first retry
-    check(tcpc.transmit_count == 3 && transmittedId(tcpc) == 1 && timer.armed);
+    check(phy.transmit_count == 3 && transmittedId(phy) == 1 && timer.armed);
     timer.expire(); // second retry
-    check(tcpc.transmit_count == 4 && transmittedId(tcpc) == 1);
+    check(phy.transmit_count == 4 && transmittedId(phy) == 1);
     timer.expire(); // retries exhausted
-    check(tcpc.transmit_count == 4 && !timer.armed);
+    check(phy.transmit_count == 4 && !timer.armed);
     check(client.tx_error == 1);
 
     // the error incremented the MessageIDCounter exactly once, and the
     // policy engine can transmit straight out of transmission_error
-    check(prl.transmit(makeRequest()) && transmittedId(tcpc) == 2);
+    check(prl.transmit(makeRequest()) && transmittedId(phy) == 2);
 
-    // a driver-reported failure retries immediately, before tReceive
-    prl.onAlert(usbc::alert_status::transmit_failed);
-    check(tcpc.transmit_count == 6 && transmittedId(tcpc) == 2 && timer.armed);
-    prl.onAlert(usbc::alert_status::transmit_success);
+    // a PHY-reported failure retries immediately, before tReceive
+    phy.transmitted(usbc::transmit_outcome::failed);
+    check(phy.transmit_count == 6 && transmittedId(phy) == 2 && timer.armed);
+    phy.transmitted(usbc::transmit_outcome::success);
     check(client.tx_done == 2 && client.tx_error == 1);
 
-    check(prl.transmit(makeRequest()) && transmittedId(tcpc) == 3);
-    prl.onAlert(usbc::alert_status::transmit_discarded);
+    check(prl.transmit(makeRequest()) && transmittedId(phy) == 3);
+    phy.transmitted(usbc::transmit_outcome::discarded);
     check(client.tx_discarded == 1);
 
     // per-SOP* counters are independent
     check(prl.transmit(makeRequest(usbc::sop_type::sop_prime)));
-    check(transmittedId(tcpc) == 0);
-    prl.onAlert(usbc::alert_status::transmit_success);
+    check(transmittedId(phy) == 0);
+    phy.transmitted(usbc::transmit_outcome::success);
 
-    // a spurious PHY alert with nothing in flight reports nothing
-    prl.onAlert(usbc::alert_status::transmit_success);
+    // a spurious PHY report with nothing in flight reports nothing
+    phy.transmitted(usbc::transmit_outcome::success);
     check(client.tx_done == 3);
 
     // receive: forward, drop the retransmission, accept the next id
-    tcpc.injectMessage(makeIncoming(4));
-    prl.onAlert(*tcpc.readAlert());
+    phy.injectMessage(makeIncoming(4));
     check(client.messages.size() == 1);
-    tcpc.injectMessage(makeIncoming(4)); // GoodCRC got lost, source retransmits
-    prl.onAlert(*tcpc.readAlert());
+    phy.injectMessage(makeIncoming(4)); // GoodCRC got lost, source retransmits
     check(client.messages.size() == 1);
-    tcpc.injectMessage(makeIncoming(5));
-    prl.onAlert(*tcpc.readAlert());
+    phy.injectMessage(makeIncoming(5));
     check(client.messages.size() == 2);
 
     // soft reset scope: one SOP* type starts over, others keep their ids
     prl.reset(usbc::sop_type::sop);
-    check(prl.transmit(makeRequest()) && transmittedId(tcpc) == 0);
-    prl.onAlert(usbc::alert_status::transmit_success);
-    tcpc.injectMessage(makeIncoming(5)); // same id as before the reset: not a duplicate now
-    prl.onAlert(*tcpc.readAlert());
+    check(prl.transmit(makeRequest()) && transmittedId(phy) == 0);
+    phy.transmitted(usbc::transmit_outcome::success);
+    phy.injectMessage(makeIncoming(5)); // same id as before the reset: not a duplicate now
     check(client.messages.size() == 3);
-    check(prl.transmit(makeRequest(usbc::sop_type::sop_prime)) && transmittedId(tcpc) == 1);
-    prl.onAlert(usbc::alert_status::transmit_success);
+    check(prl.transmit(makeRequest(usbc::sop_type::sop_prime)) && transmittedId(phy) == 1);
+    phy.transmitted(usbc::transmit_outcome::success);
 
     // hard reset: aborts a pending tx, HardResetCompleteTimer bounds the
     // wait, PHY confirmation completes it
     check(prl.transmit(makeRequest()));
     check(prl.transmitHardReset());
-    check(tcpc.last_signal == usbc::transmit_signal::hard_reset);
+    check(phy.last_signal == usbc::transmit_signal::hard_reset);
     check(timer.armed);
     check(!prl.transmit(makeRequest())); // busy until the hard reset is out
-    prl.onAlert(usbc::alert_status::transmit_success);
+    phy.transmitted(usbc::transmit_outcome::success);
     check(client.hard_resets_sent == 1 && !timer.armed);
-    check(prl.transmit(makeRequest()) && transmittedId(tcpc) == 0); // counters reset
-    prl.onAlert(usbc::alert_status::transmit_success);
+    check(prl.transmit(makeRequest()) && transmittedId(phy) == 0); // counters reset
+    phy.transmitted(usbc::transmit_outcome::success);
 
     // ... and the timer completes it when the PHY never confirms
     check(prl.transmitHardReset());
@@ -232,19 +233,18 @@ int protocolLayerTests()
     check(client.hard_resets_sent == 2);
 
     // received hard reset: counters reset, client informed
-    tcpc.alerts |= usbc::alert_status::hard_reset_received;
-    prl.onAlert(*tcpc.readAlert());
+    phy.hardResetReceived();
     check(client.hard_resets == 1);
-    check(prl.transmit(makeRequest()) && transmittedId(tcpc) == 0);
-    prl.onAlert(usbc::alert_status::transmit_success);
+    check(prl.transmit(makeRequest()) && transmittedId(phy) == 0);
+    phy.transmitted(usbc::transmit_outcome::success);
 
-    // a refused driver hand-off is recovered by the CRCReceiveTimer
-    tcpc.accept_transmit = false;
-    check(prl.transmit(makeRequest())); // accepted by the PRL, refused by the driver
-    tcpc.accept_transmit = true;
-    timer.expire(); // retry succeeds at the driver
+    // a refused PHY hand-off is recovered by the CRCReceiveTimer
+    phy.accept_transmit = false;
+    check(prl.transmit(makeRequest())); // accepted by the PRL, refused by the PHY
+    phy.accept_transmit = true;
+    timer.expire(); // retry succeeds at the PHY
     check(timer.armed);
-    prl.onAlert(usbc::alert_status::transmit_success);
+    phy.transmitted(usbc::transmit_outcome::success);
 
     // nRetryCount follows the negotiated revision (the table's
     // retries_left question, answered by the layer): a partner at
@@ -258,52 +258,57 @@ int protocolLayerTests()
             .message_id = 6
         }
             .encode();
-    tcpc.injectMessage(rev2);
-    prl.onAlert(*tcpc.readAlert());
+    phy.injectMessage(rev2);
     check(prl.revision() == usbc::pd_revision::rev_2_0);
     check(prl.transmit(makeRequest()));
-    auto const attempts_before_retries = tcpc.transmit_count;
+    auto const attempts_before_retries = phy.transmit_count;
     timer.expire();
     timer.expire();
     timer.expire(); // the third retry PD2 grants
-    check(tcpc.transmit_count == attempts_before_retries + 3 && timer.armed);
+    check(phy.transmit_count == attempts_before_retries + 3 && timer.armed);
     timer.expire(); // retries exhausted
     check(!timer.armed && client.tx_error == 2);
 
-    // A transport retransmitting itself (a TCPC in the TCPCI sense):
-    // one hand-off per request, its outcome is final, and the wait for
-    // it is bounded
+    // A PHY retransmitting itself (a TCPC in the TCPCI sense): one
+    // hand-off per request, its outcome is final, and the wait for it
+    // is bounded
     {
-        retransmitting_tcpc transport;
+        retransmitting_phy transport;
         mock_client transport_client;
         manual_timer outcome_timer;
-        usbc::ProtocolLayer<retransmitting_tcpc, manual_timer> retransmitting_prl{
+        usbc::ProtocolLayer<retransmitting_phy, manual_timer> retransmitting_prl{
             transport,
             outcome_timer,
             transport_client
         };
-        static_assert(
-            decltype(retransmitting_prl)::who_retransmits == usbc::retransmission::transport
-        );
+        static_assert(decltype(retransmitting_prl)::who_retransmits == usbc::retransmission::phy);
+        retransmitting_prl.claimPhy();
 
         check(retransmitting_prl.transmit(makeRequest()) && transmittedId(transport) == 0);
         check(outcome_timer.armed && outcome_timer.duration == usbc::prl::t_transmit_outcome);
-        retransmitting_prl.onAlert(usbc::alert_status::transmit_success);
+        transport.transmitted(usbc::transmit_outcome::success);
         check(transport_client.tx_done == 1 && !outcome_timer.armed);
 
-        // the transport's failure is the transmission error, no retry here
+        // the PHY's failure is the transmission error, no retry here
         check(retransmitting_prl.transmit(makeRequest()) && transmittedId(transport) == 1);
-        retransmitting_prl.onAlert(usbc::alert_status::transmit_failed);
+        transport.transmitted(usbc::transmit_outcome::failed);
         check(transport.transmit_count == 2 && !outcome_timer.armed);
         check(transport_client.tx_error == 1);
 
-        // a transport that never reports: transmission error on the bound
+        // a PHY that never reports: transmission error on the bound
         check(retransmitting_prl.transmit(makeRequest()) && transmittedId(transport) == 2);
         outcome_timer.expire();
         check(transport.transmit_count == 3 && !outcome_timer.armed);
         check(transport_client.tx_error == 2);
         check(retransmitting_prl.transmit(makeRequest()) && transmittedId(transport) == 3);
-        retransmitting_prl.onAlert(usbc::alert_status::transmit_success);
+        transport.transmitted(usbc::transmit_outcome::success);
+        check(transport_client.tx_done == 2);
+
+        // released, the layer hears nothing more
+        retransmitting_prl.releasePhy();
+        check(!transport.claimed());
+        check(retransmitting_prl.transmit(makeRequest()));
+        transport.transmitted(usbc::transmit_outcome::success);
         check(transport_client.tx_done == 2);
     }
 

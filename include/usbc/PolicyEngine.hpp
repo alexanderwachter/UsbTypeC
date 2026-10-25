@@ -24,10 +24,10 @@
 #pragma once
 
 #include <usbc/Message.hpp>
+#include <usbc/PdPhy.hpp>
 #include <usbc/Pdo.hpp>
 #include <usbc/ProtocolLayer.hpp>
 #include <usbc/Spec.hpp>
-#include <usbc/Tcpc.hpp>
 #include <usbc/Units.hpp>
 
 #include <mtl/StateMachine.hpp>
@@ -972,15 +972,12 @@ template<
     typename DERIVED,
     power_role ROLE,
     fsm::concepts::transition_table TABLE,
-    concepts::pd_transport TCPC,
+    concepts::pd_phy PHY,
     fsm::concepts::timer TIMER,
     typename POLICY,
     typename... OBSERVERs>
 class PolicyEngineBase {
 public:
-    // Feed the TCPC's PD alerts (message/transmit/hard reset bits)
-    void onAlert(alert_status alerts) { prl_.onAlert(alerts); }
-
     // VCONN_Swap, driven by the vconn machine through the facade:
     // request the swap, transmit our PS_RDY once the switch is on,
     // and escalate a failed hand-off
@@ -1013,19 +1010,19 @@ protected:
 
     // swap_timer runs the timeouts inside a swap exchange
     PolicyEngineBase(
-        TCPC& tcpc,
+        PHY& phy,
         TIMER& prl_timer,
         TIMER& pe_timer,
         TIMER& swap_timer,
         OBSERVERs&... observers
     )
-        : tcpc_(tcpc), prl_(tcpc, prl_timer, port_, observers...), pe_timer_(pe_timer),
+        : phy_(phy), prl_(phy, prl_timer, port_, observers...), pe_timer_(pe_timer),
           swap_timer_(swap_timer), timed_(pe_timer_, swap_timer_)
     {
-        tcpc_.setMessageHeaderInfo(
+        phy_.setMessageHeaderInfo(
             {.power = ROLE, .data = defaultDataRole(ROLE), .revision = pd_revision::rev_3_x}
         );
-        tcpc_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
+        phy_.setReceiveDetect(receive_detect::sop | receive_detect::hard_reset);
     }
 
     // The partner's swap request is the table's question (the Ready
@@ -1048,10 +1045,10 @@ protected:
         PolicyEngineBase& engine;
 
         void onMessage(pd_message const& message) { engine.dispatch(message); }
-        // adopted revision: the TCPC's GoodCRC header must follow
+        // adopted revision: the PHY's GoodCRC header must follow
         void onRevision(pd_revision revision)
         {
-            engine.tcpc_.setMessageHeaderInfo(
+            engine.phy_.setMessageHeaderInfo(
                 {.power = ROLE, .data = engine.dataRole(), .revision = revision}
             );
         }
@@ -1162,7 +1159,7 @@ protected:
     // BIST entry, honored only under an explicit vSafe5V contract
     // (spec): Carrier Mode 2 transmits the test carrier for
     // tBISTContMode; Test Data silences the engine until a hard reset
-    // or detach while the TCPC keeps answering GoodCRC
+    // or detach while the PHY keeps answering GoodCRC
     void enterBist(std::uint32_t bdo)
     {
         auto const contract_voltage = derived().contractVoltage();
@@ -1172,7 +1169,7 @@ protected:
         switch (bist::modeOf(bdo)) {
         case bist::mode::carrier_mode_2:
             if (derived().sm_.process(event::bist_carrier{})) {
-                tcpc_.transmit(transmit_signal::bist_carrier_mode_2);
+                phy_.transmit(transmit_signal::bist_carrier_mode_2);
             }
             break;
         case bist::mode::test_data:
@@ -1187,12 +1184,12 @@ protected:
     void setBistTestData(bool enable)
     {
         bist_test_data_ = enable;
-        if constexpr (requires { tcpc_.setBistTestData(enable); }) {
-            tcpc_.setBistTestData(enable); // hardware may discard for us
+        if constexpr (requires { phy_.setBistTestData(enable); }) {
+            phy_.setBistTestData(enable); // hardware may discard for us
         }
     }
 
-    TCPC& tcpc_;
+    PHY& phy_;
     // the capability lists: the own role's from construction, the other
     // role's provided by a DRP (empty: not a DRP, Get_*_Cap answers
     // Not_Supported)
@@ -1202,7 +1199,7 @@ protected:
     PrlPort port_{*this};
     // also an observer of the machine; the engine's injected observers
     // ride in its transmit machine as well
-    ProtocolLayer<TCPC, TIMER, OBSERVERs...> prl_;
+    ProtocolLayer<PHY, TIMER, OBSERVERs...> prl_;
     queued_timer pe_timer_;
     queued_timer swap_timer_;
     timeouts timed_;

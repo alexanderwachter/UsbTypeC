@@ -123,9 +123,9 @@ void putObject(usbc::pd_message& message, std::uint32_t object)
     message.payload_size += 4;
 }
 
-std::uint8_t transmittedType(mock_tcpc const& tcpc)
+std::uint8_t transmittedType(mock_phy const& phy)
 {
-    return usbc::pd_header::decode(tcpc.last_transmitted.header).message_type;
+    return usbc::pd_header::decode(phy.last_transmitted.header).message_type;
 }
 
 // --- runtime checks ---------------------------------------------------------
@@ -143,26 +143,21 @@ void check(bool condition, std::source_location location = std::source_location:
 
 int pdSinkFacadeTests()
 {
-    using Port =
-        usbc::PdSink<mock_tcpc, mock_vbus, manual_timer, usbc::PowerPolicy, mock_sink_power>;
+    using Port = usbc::
+        PdSink<mock_cc, mock_phy, mock_vbus, manual_timer, usbc::PowerPolicy, mock_sink_power>;
 
-    mock_tcpc tcpc;
+    mock_cc cc;
+    mock_phy phy;
     mock_vbus vbus;
     usbc::pd_sink_timers<manual_timer> timers;
     usbc::PowerPolicy policy{2500, 15000};
     mock_sink_power power;
 
-    Port port{tcpc, vbus, timers, sink_capabilities, policy, power};
+    Port port{cc, phy, vbus, timers, sink_capabilities, policy, power};
 
-    auto const ccAlert = [&] {
-        tcpc.alerts |= usbc::alert_status::cc_status_changed;
-        tcpc.callback(tcpc.context);
-    };
-    auto const deliver = [&](usbc::pd_message const& message) { tcpc.injectMessage(message); };
-    auto const txSuccess = [&] {
-        tcpc.alerts |= usbc::alert_status::transmit_success;
-        tcpc.callback(tcpc.context);
-    };
+    auto const ccAlert = [&] { cc.report(); };
+    auto const deliver = [&](usbc::pd_message const& message) { phy.injectMessage(message); };
+    auto const txSuccess = [&] { phy.transmitted(usbc::transmit_outcome::success); };
     auto const negotiate = [&] { // the source's caps through to PS_RDY
         auto caps = partnerMessage(
             static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities),
@@ -172,7 +167,7 @@ int pdSinkFacadeTests()
         );
         putObject(caps, usbc::pdo::makeFixedSource(5000, 3000));
         deliver(caps);
-        check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
+        check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::data_message_type::request));
         txSuccess();
         deliver(partnerControl(
             usbc::control_message_type::accept,
@@ -187,14 +182,14 @@ int pdSinkFacadeTests()
     };
 
     port.start();
-    check(tcpc.pull == usbc::cc_pull::rd);
+    check(cc.pull == usbc::cc_pull::rd);
 
     // a source appears: attach, negotiate, explicit contract
-    tcpc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
+    cc.line_state = {usbc::cc_state::snk_power_3a0, usbc::cc_state::snk_open};
     ccAlert();
     vbus.setVoltage(5000);
     timers.cc.expire(); // tCCDebounce
-    check(tcpc.sinking);
+    check(vbus.sinking());
     check(timers.pe.armed); // SinkWaitCapTimer runs
     negotiate();
     check(power.contracts == 1);
@@ -207,8 +202,7 @@ int pdSinkFacadeTests()
         usbc::data_role::dfp
     ));
     check(
-        transmittedType(tcpc) ==
-        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+        transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
     );
     txSuccess();
     check(power.contracts == 1);
@@ -216,14 +210,13 @@ int pdSinkFacadeTests()
     // the source hard-resets: the window holds the attach while VBUS
     // legitimately cycles - no detach, the connection resumes and
     // renegotiates instead of resolving from scratch
-    tcpc.alerts |= usbc::alert_status::hard_reset_received;
-    tcpc.callback(tcpc.context);
-    check(power.losses == 1);              // back to vSafe5V defaults
-    check(tcpc.pull == usbc::cc_pull::rd); // Rd stays presented
-    vbus.setVoltage(0);                    // the source cycles VBUS ...
-    check(tcpc.pull == usbc::cc_pull::rd); // ... still not a detach
-    vbus.setVoltage(5000);                 // ... and it returns
-    check(timers.pe.armed);                // the engine awaits the caps
+    phy.hardResetReceived();
+    check(power.losses == 1);            // back to vSafe5V defaults
+    check(cc.pull == usbc::cc_pull::rd); // Rd stays presented
+    vbus.setVoltage(0);                  // the source cycles VBUS ...
+    check(cc.pull == usbc::cc_pull::rd); // ... still not a detach
+    vbus.setVoltage(5000);               // ... and it returns
+    check(timers.pe.armed);              // the engine awaits the caps
     negotiate();
     check(power.contracts == 2);
 
@@ -231,25 +224,24 @@ int pdSinkFacadeTests()
     // reset: the counter runs out and the port escalates to Type-C
     // Error Recovery instead of resetting forever. A received hard
     // reset first puts the engine back to awaiting capabilities
-    tcpc.alerts |= usbc::alert_status::hard_reset_received;
-    tcpc.callback(tcpc.context);
+    phy.hardResetReceived();
     vbus.setVoltage(0);
     vbus.setVoltage(5000);
     check(timers.pe.armed); // SinkWaitCapTimer runs, the source is mute
     for (int reset = 0; reset <= usbc::spec::n_hard_reset_count; ++reset) {
         timers.pe.expire(); // SinkWaitCap / NoResponse: hard reset
-        check(tcpc.last_signal == usbc::transmit_signal::hard_reset);
-        tcpc.last_signal.reset();
+        check(phy.last_signal == usbc::transmit_signal::hard_reset);
+        phy.last_signal.reset();
         txSuccess();           // the PHY confirms: the window opens
         vbus.setVoltage(0);    // the source cycles VBUS
         vbus.setVoltage(5000); // the attach resumes, caps awaited
         check(timers.pe.armed);
     }
-    timers.pe.expire();                      // the counter is spent
-    check(!tcpc.last_signal.has_value());    // no further hard reset
-    check(tcpc.pull == usbc::cc_pull::open); // Error Recovery: open terminations
-    timers.tc.expire();                      // tErrorRecovery over
-    check(tcpc.pull == usbc::cc_pull::rd);   // resolution restarts
+    timers.pe.expire();                    // the counter is spent
+    check(!phy.last_signal.has_value());   // no further hard reset
+    check(cc.pull == usbc::cc_pull::open); // Error Recovery: open terminations
+    timers.tc.expire();                    // tErrorRecovery over
+    check(cc.pull == usbc::cc_pull::rd);   // resolution restarts
 
     return failures;
 }
@@ -257,42 +249,38 @@ int pdSinkFacadeTests()
 int pdSourceFacadeTests()
 {
     using Port = usbc::PdSource<
-        mock_tcpc,
+        mock_cc,
+        mock_phy,
         mock_vbus,
         manual_timer,
         usbc::RequestPolicy,
         mock_supply,
         mock_source_power>;
 
-    mock_tcpc tcpc;
+    mock_cc cc;
+    mock_phy phy;
     mock_vbus vbus;
     usbc::pd_source_timers<manual_timer> timers;
     usbc::RequestPolicy policy;
     mock_supply supply;
     mock_source_power power;
 
-    Port port{tcpc, vbus, timers, source_caps, policy, supply, power, usbc::rp_value::p_1a5};
+    Port port{cc, phy, vbus, timers, source_caps, policy, supply, power, usbc::rp_value::p_1a5};
 
-    auto const ccAlert = [&] {
-        tcpc.alerts |= usbc::alert_status::cc_status_changed;
-        tcpc.callback(tcpc.context);
-    };
-    auto const deliver = [&](usbc::pd_message const& message) { tcpc.injectMessage(message); };
-    auto const txSuccess = [&] {
-        tcpc.alerts |= usbc::alert_status::transmit_success;
-        tcpc.callback(tcpc.context);
-    };
+    auto const ccAlert = [&] { cc.report(); };
+    auto const deliver = [&](usbc::pd_message const& message) { phy.injectMessage(message); };
+    auto const txSuccess = [&] { phy.transmitted(usbc::transmit_outcome::success); };
 
     port.start();
-    check(tcpc.pull == usbc::cc_pull::rp && tcpc.rp == usbc::rp_value::p_1a5);
+    check(cc.pull == usbc::cc_pull::rp && cc.rp == usbc::rp_value::p_1a5);
 
     // a sink appears: attach, advertise, grant its Request
-    tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
+    cc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
     ccAlert();
     timers.cc.expire(); // tCCDebounce (VBUS at vSafe0V)
-    check(tcpc.sourcing);
+    check(vbus.sourcing());
     check(
-        transmittedType(tcpc) ==
+        transmittedType(phy) ==
         static_cast<std::uint8_t>(usbc::data_message_type::source_capabilities)
     );
     txSuccess();
@@ -305,11 +293,11 @@ int pdSourceFacadeTests()
     );
     putObject(request, usbc::pdo::makeFixedRequest(1, 1000, 1000, false));
     deliver(request);
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::accept));
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::accept));
     txSuccess();
     timers.pe.expire(); // tSrcTransition: the supply is driven now
     supply.settle();    // the output is in tolerance: PS_RDY goes out
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::ps_rdy));
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::ps_rdy));
     txSuccess();
     check(power.contracts == 1);
 
@@ -321,8 +309,7 @@ int pdSourceFacadeTests()
         usbc::data_role::ufp
     ));
     check(
-        transmittedType(tcpc) ==
-        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+        transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
     );
     txSuccess();
 
@@ -330,13 +317,15 @@ int pdSourceFacadeTests()
     // counter is spent, then Type-C Error Recovery - a fresh fixture,
     // since the loop starts from the awaiting-Request state
     {
-        mock_tcpc silent_tcpc;
+        mock_cc silent_cc;
+        mock_phy silent_phy;
         mock_vbus silent_vbus;
         usbc::pd_source_timers<manual_timer> silent_timers;
         mock_supply silent_supply;
         mock_source_power silent_power;
         Port silent{
-            silent_tcpc,
+            silent_cc,
+            silent_phy,
             silent_vbus,
             silent_timers,
             source_caps,
@@ -345,33 +334,28 @@ int pdSourceFacadeTests()
             silent_power,
             usbc::rp_value::p_1a5
         };
-        auto const confirm = [&] {
-            silent_tcpc.alerts |= usbc::alert_status::transmit_success;
-            silent_tcpc.callback(silent_tcpc.context);
-        };
+        auto const confirm = [&] { silent_phy.transmitted(usbc::transmit_outcome::success); };
 
         silent.start();
-        silent_tcpc.line_state = {usbc::cc_state::src_rd, usbc::cc_state::src_open};
-        silent_tcpc.alerts |= usbc::alert_status::cc_status_changed;
-        silent_tcpc.callback(silent_tcpc.context);
+        silent_cc.report({usbc::cc_state::src_rd, usbc::cc_state::src_open});
         silent_timers.cc.expire(); // attach: the capabilities go out
         confirm();                 // GoodCRC: a PD sink is present
 
         for (int reset = 0; reset <= usbc::spec::n_hard_reset_count; ++reset) {
             silent_timers.pe.expire(); // SenderResponse, no Request
-            check(silent_tcpc.last_signal == usbc::transmit_signal::hard_reset);
-            silent_tcpc.last_signal.reset();
+            check(silent_phy.last_signal == usbc::transmit_signal::hard_reset);
+            silent_phy.last_signal.reset();
             confirm();                 // the PHY confirms the hard reset
             silent_supply.settle();    // VBUS removed
             silent_timers.pe.expire(); // tSrcRecover
             silent_supply.settle();    // defaults back: the caps go out
             confirm();                 // GoodCRC again
         }
-        silent_timers.pe.expire();                      // the counter is spent
-        check(!silent_tcpc.last_signal.has_value());    // no further hard reset
-        check(silent_tcpc.pull == usbc::cc_pull::open); // Error Recovery
-        silent_timers.tc.expire();                      // tErrorRecovery over
-        check(silent_tcpc.pull == usbc::cc_pull::rp);   // resolution restarts
+        silent_timers.pe.expire();                    // the counter is spent
+        check(!silent_phy.last_signal.has_value());   // no further hard reset
+        check(silent_cc.pull == usbc::cc_pull::open); // Error Recovery
+        silent_timers.tc.expire();                    // tErrorRecovery over
+        check(silent_cc.pull == usbc::cc_pull::rp);   // resolution restarts
     }
 
     return failures;

@@ -47,7 +47,8 @@ struct pd_source_timers {
 };
 
 template<
-    concepts::tcpc TCPC,
+    concepts::cc CC,
+    concepts::pd_phy PHY,
     concepts::vbus VBUS,
     fsm::concepts::timer TIMER,
     concepts::source_policy POLICY,
@@ -68,7 +69,8 @@ class PdSource {
 
 public:
     PdSource(
-        TCPC& tcpc,
+        CC& cc,
+        PHY& phy,
         VBUS& vbus,
         pd_source_timers<TIMER>& timers,
         std::span<std::uint32_t const> capabilities,
@@ -79,25 +81,28 @@ public:
         OBSERVERs&... observers
     )
         : watch_{*this}, engine_(
-                             tcpc,
+                             cc,
+                             phy,
                              timers.prl,
                              timers.pe,
                              timers.swap,
                              capabilities,
+                             advertisement,
                              policy,
                              supply,
                              power,
                              watch_,
                              observers...
                          ),
-          router_{*this},
-          source_(tcpc, vbus, timers.tc, timers.cc, advertisement, router_, observers...)
+          router_{*this, phy},
+          source_(cc, vbus, timers.tc, timers.cc, advertisement, router_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
     // advertisement
     PdSource(
-        TCPC& tcpc,
+        CC& cc,
+        PHY& phy,
         VBUS& vbus,
         pd_source_timers<TIMER>& timers,
         std::span<std::uint32_t const> capabilities,
@@ -107,7 +112,8 @@ public:
         OBSERVERs&... observers
     )
         : PdSource(
-              tcpc,
+              cc,
+              phy,
               vbus,
               timers,
               capabilities,
@@ -139,26 +145,30 @@ private:
     };
 
     using SourceEngine =
-        SourcePolicyEngine<TCPC, TIMER, POLICY, SUPPLY, POWER, port_watch, OBSERVERs...>;
+        SourcePolicyEngine<CC, PHY, TIMER, POLICY, SUPPLY, POWER, port_watch, OBSERVERs...>;
 
     // The port's internal wiring in the connection machine, observing
     // the states' declared facts: the PD connection brackets the
-    // engine's life, the PD alerts are forwarded from the driver
-    // frontend
+    // engine's life, the attach's plug orientation selects the PHY's
+    // CC line (the observing contract delivers the static set before
+    // the instance values: the line is selected after the engine's
+    // attach, before its first transmission goes out of the queued
+    // machine)
     struct router : fsm::observing<router> {
-        explicit router(PdSource& port_ref) : port(port_ref) {}
+        router(PdSource& port_ref, PHY& phy_ref) : port(port_ref), phy(phy_ref) {}
 
-        using observes = fsm::annotations<tc::pd_connection>;
+        using observes = fsm::annotations<tc::pd_connection, plug_orientation>;
 
         void notifyEntry(tc::pd_connection) { port.engine_.attached(); }
         void notifyExit(tc::pd_connection) { port.engine_.detached(); }
 
-        void onPdAlert(alert_status alerts) { port.engine_.onAlert(alerts); }
+        void notifyEntry(plug_orientation line) { phy.selectCcLine(line); }
 
         PdSource& port;
+        PHY& phy;
     };
 
-    using Source = TypeCSource<TCPC, VBUS, TIMER, router, OBSERVERs...>;
+    using Source = TypeCSource<CC, VBUS, TIMER, router, OBSERVERs...>;
 
     port_watch watch_;
     SourceEngine engine_;

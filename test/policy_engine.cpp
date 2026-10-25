@@ -261,9 +261,9 @@ usbc::pd_message makeSourceCaps(std::span<std::uint32_t const> objects)
     return message;
 }
 
-std::uint32_t transmittedObject(mock_tcpc const& tcpc, std::uint8_t index = 0)
+std::uint32_t transmittedObject(mock_phy const& phy, std::uint8_t index = 0)
 {
-    auto const& payload = tcpc.last_transmitted.payload;
+    auto const& payload = phy.last_transmitted.payload;
     auto const offset = static_cast<std::size_t>(index) * 4;
     return static_cast<std::uint32_t>(payload[offset + 0]) |
            (static_cast<std::uint32_t>(payload[offset + 1]) << 8u) |
@@ -271,9 +271,9 @@ std::uint32_t transmittedObject(mock_tcpc const& tcpc, std::uint8_t index = 0)
            (static_cast<std::uint32_t>(payload[offset + 3]) << 24u);
 }
 
-std::uint8_t transmittedType(mock_tcpc const& tcpc)
+std::uint8_t transmittedType(mock_phy const& phy)
 {
-    return usbc::pd_header::decode(tcpc.last_transmitted.header).message_type;
+    return usbc::pd_header::decode(phy.last_transmitted.header).message_type;
 }
 
 // Observes the engine's port requests (the facade's role in a DRP)
@@ -326,28 +326,26 @@ int policyEngineTests()
         usbc::sink_capability{9000, 3000}
     };
 
-    mock_tcpc tcpc;
+    mock_phy phy;
     manual_timer prl_timer;
     manual_timer pe_timer;
     manual_timer swap_timer; // the timeouts inside a swap exchange
     swap_capable_policy policy{5000, 27000};
     mock_power power;
-    usbc::SinkPolicyEngine<mock_tcpc, manual_timer, swap_capable_policy, mock_power>
-        pe{tcpc, prl_timer, pe_timer, swap_timer, sink_caps, policy, power};
+    usbc::SinkPolicyEngine<mock_phy, manual_timer, swap_capable_policy, mock_power>
+        pe{phy, prl_timer, pe_timer, swap_timer, sink_caps, policy, power};
 
-    auto deliver = [&](usbc::pd_message const& message) {
-        tcpc.injectMessage(message);
-        pe.onAlert(*tcpc.readAlert());
-    };
-    auto txSuccess = [&] { pe.onAlert(usbc::alert_status::transmit_success); };
+    auto deliver = [&](usbc::pd_message const& message) { phy.injectMessage(message); };
+    auto txSuccess = [&] { phy.transmitted(usbc::transmit_outcome::success); };
 
     // construction configured the roles and rests in Discovery; the
-    // Type-C layer's attach starts the SinkWaitCapTimer
-    check(tcpc.header_info.power == usbc::power_role::sink);
-    check(any(tcpc.detect & usbc::receive_detect::sop));
-    check(!pe_timer.armed);
+    // Type-C layer's attach starts the SinkWaitCapTimer and the
+    // protocol layer takes the PHY
+    check(phy.header_info.power == usbc::power_role::sink);
+    check(any(phy.detect & usbc::receive_detect::sop));
+    check(!pe_timer.armed && !phy.claimed());
     pe.vbusPresent();
-    check(pe_timer.armed);
+    check(pe_timer.armed && phy.claimed());
 
     // source capabilities: the policy picks 9 V / 3 A (position 2)
     constexpr std::array offered{
@@ -356,8 +354,8 @@ int policyEngineTests()
         usbc::pdo::makeFixedSink(20000, 2250)
     };
     deliver(makeSourceCaps(offered));
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
-    check(transmittedObject(tcpc) == usbc::pdo::makeFixedRequest(2, 3000, 3000, false));
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::data_message_type::request));
+    check(transmittedObject(phy) == usbc::pdo::makeFixedRequest(2, 3000, 3000, false));
     check(pe_timer.armed);
     txSuccess(); // GoodCRC for the request
 
@@ -375,11 +373,11 @@ int policyEngineTests()
     // Get_Sink_Cap answered with the injected capabilities span
     deliver(makeControl(usbc::control_message_type::get_sink_cap));
     check(
-        transmittedType(tcpc) ==
+        transmittedType(phy) ==
         static_cast<std::uint8_t>(usbc::data_message_type::sink_capabilities)
     );
-    check(usbc::pd_header::decode(tcpc.last_transmitted.header).num_data_objects == 2);
-    check(transmittedObject(tcpc, 1) == usbc::pdo::makeFixedSink(9000, 3000));
+    check(usbc::pd_header::decode(phy.last_transmitted.header).num_data_objects == 2);
+    check(transmittedObject(phy, 1) == usbc::pdo::makeFixedSink(9000, 3000));
     txSuccess();
 
     // BIST is honored only under a vSafe5V contract - ignored at 9 V
@@ -390,17 +388,17 @@ int policyEngineTests()
     bist_at_9v.payload[3] = 5u << 4; // Carrier Mode 2 BDO, bits 31..28
     bist_at_9v.payload_size = 4;
     deliver(bist_at_9v);
-    check(!tcpc.last_signal.has_value()); // no carrier commanded
+    check(!phy.last_signal.has_value()); // no carrier commanded
     check(!pe_timer.armed);
 
     // PD3 collision avoidance: a swap request under SinkTxNG parks
     // and fires when the source's Rp flips to SinkTxOk
     pe.sinkTxChanged(false); // SinkTxNG seen
-    auto const tx_before_park = tcpc.transmit_count;
-    check(pe.requestDataSwap());                  // accepted, parked
-    check(tcpc.transmit_count == tx_before_park); // nothing sent yet
-    pe.sinkTxChanged(true);                       // SinkTxOk
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::dr_swap));
+    auto const tx_before_park = phy.transmit_count;
+    check(pe.requestDataSwap());                 // accepted, parked
+    check(phy.transmit_count == tx_before_park); // nothing sent yet
+    pe.sinkTxChanged(true);                      // SinkTxOk
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::dr_swap));
     txSuccess();
     deliver(makeControl(usbc::control_message_type::reject)); // back to Ready
 
@@ -409,7 +407,7 @@ int policyEngineTests()
     // proposal never reaches the load
     constexpr std::array offered_low{usbc::pdo::makeFixedSink(5000, 3000)};
     deliver(makeSourceCaps(offered_low));
-    check(transmittedObject(tcpc) == usbc::pdo::makeFixedRequest(1, 3000, 3000, false));
+    check(transmittedObject(phy) == usbc::pdo::makeFixedRequest(1, 3000, 3000, false));
     txSuccess();
     deliver(makeControl(usbc::control_message_type::reject));
     check(power.limit_voltage == 9000 && power.limit_current == 3000);
@@ -417,8 +415,8 @@ int policyEngineTests()
 
     // Soft_Reset: protocol layer resets, Accept goes out with MessageID 0
     deliver(makeControl(usbc::control_message_type::soft_reset));
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::accept));
-    check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id == 0);
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::accept));
+    check(usbc::pd_header::decode(phy.last_transmitted.header).message_id == 0);
     txSuccess();
     check(pe_timer.armed);
     check(power.lost == 0); // a soft reset does not end the contract
@@ -427,7 +425,7 @@ int policyEngineTests()
     deliver(makeSourceCaps(offered));
     txSuccess();
     pe_timer.expire(); // no Accept in time
-    check(tcpc.last_signal == usbc::transmit_signal::hard_reset);
+    check(phy.last_signal == usbc::transmit_signal::hard_reset);
     txSuccess(); // PHY confirms the hard reset
     check(power.lost == 1);
     check(power.limit_voltage == 5000 && power.limit_current == usbc::pe::i_default_current);
@@ -437,7 +435,7 @@ int policyEngineTests()
 
     // SinkWaitCap timeout also escalates to hard reset
     pe_timer.expire();
-    check(tcpc.last_signal == usbc::transmit_signal::hard_reset);
+    check(phy.last_signal == usbc::transmit_signal::hard_reset);
     txSuccess();
     pe.vbusPresent();
 
@@ -447,8 +445,7 @@ int policyEngineTests()
     deliver(makeControl(usbc::control_message_type::accept));
     deliver(makeControl(usbc::control_message_type::ps_rdy));
     check(power.contracts >= 2);
-    tcpc.alerts |= usbc::alert_status::hard_reset_received;
-    pe.onAlert(*tcpc.readAlert());
+    phy.hardResetReceived();
     check(power.lost == 2);
     check(!pe_timer.armed); // Discovery again
     pe.vbusPresent();
@@ -463,8 +460,7 @@ int policyEngineTests()
     // an unsupported control message is answered with Not_Supported
     deliver(makeControl(usbc::control_message_type::get_source_cap));
     check(
-        transmittedType(tcpc) ==
-        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+        transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
     );
     txSuccess();
 
@@ -473,10 +469,10 @@ int policyEngineTests()
     auto const lost_before_refusals = power.lost;
     policy.allow = false;
     deliver(makeControl(usbc::control_message_type::pr_swap));
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::reject));
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::reject));
     txSuccess();
     deliver(makeControl(usbc::control_message_type::dr_swap));
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::reject));
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::reject));
     txSuccess();
     check(power.voltage == 9000 && power.lost == lost_before_refusals);
     policy.allow = true;
@@ -484,31 +480,29 @@ int policyEngineTests()
     // an unchunked extended message is answered immediately
     deliver(makeExtended(false));
     check(
-        transmittedType(tcpc) ==
-        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+        transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
     );
     txSuccess();
 
     // a chunked extended message: the sender runs into its chunking
     // timeout first (ChunkingNotSupportedTimer), then Not_Supported
-    auto const attempts_before_chunk = tcpc.transmit_count;
+    auto const attempts_before_chunk = phy.transmit_count;
     deliver(makeExtended(true));
-    check(tcpc.transmit_count == attempts_before_chunk); // no immediate answer
+    check(phy.transmit_count == attempts_before_chunk); // no immediate answer
     check(pe_timer.armed);
     pe_timer.expire();
     check(
-        transmittedType(tcpc) ==
-        static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
+        transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::not_supported)
     );
-    check(tcpc.transmit_count == attempts_before_chunk + 1);
+    check(phy.transmit_count == attempts_before_chunk + 1);
     txSuccess();
 
     // while negotiating, unsupported messages are ignored, not answered
     deliver(makeControl(usbc::control_message_type::soft_reset)); // -> wait for caps
     txSuccess();
-    auto const attempts_before_ignore = tcpc.transmit_count;
+    auto const attempts_before_ignore = phy.transmit_count;
     deliver(makeControl(usbc::control_message_type::get_source_cap));
-    check(tcpc.transmit_count == attempts_before_ignore);
+    check(phy.transmit_count == attempts_before_ignore);
 
     // a protocol error tries a soft reset first (PE_SNK_Send_Soft_Reset):
     // the request's transmission fails through all PRL retries
@@ -517,9 +511,9 @@ int policyEngineTests()
     prl_timer.expire(); // retry 2
     prl_timer.expire(); // retries exhausted -> protocol error
     check(
-        transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::control_message_type::soft_reset)
+        transmittedType(phy) == static_cast<std::uint8_t>(usbc::control_message_type::soft_reset)
     );
-    check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id == 0); // PRL reset
+    check(usbc::pd_header::decode(phy.last_transmitted.header).message_id == 0); // PRL reset
     check(pe_timer.armed);
     txSuccess();
     deliver(makeControl(usbc::control_message_type::accept));
@@ -534,24 +528,24 @@ int policyEngineTests()
     check(power.limit_voltage == 5000 && power.limit_current == usbc::pe::i_default_current);
     pe.vbusPresent();
     deliver(makeSourceCaps(offered));
-    check(transmittedType(tcpc) == static_cast<std::uint8_t>(usbc::data_message_type::request));
-    check(usbc::pd_header::decode(tcpc.last_transmitted.header).message_id == 0);
+    check(transmittedType(phy) == static_cast<std::uint8_t>(usbc::data_message_type::request));
+    check(usbc::pd_header::decode(phy.last_transmitted.header).message_id == 0);
     txSuccess();
 
     // HardResetCounter: a source that never answers gets hard-reset
     // nHardResetCount+1 times, then the engine requests Type-C Error
     // Recovery instead of resetting forever
     {
-        mock_tcpc silent_tcpc;
+        mock_phy silent_phy;
         manual_timer silent_prl_timer;
         manual_timer silent_pe_timer;
         manual_timer silent_swap_timer;
         mock_power silent_power;
         recovery_watch watch;
         usbc::
-            SinkPolicyEngine<mock_tcpc, manual_timer, usbc::PowerPolicy, mock_power, recovery_watch>
+            SinkPolicyEngine<mock_phy, manual_timer, usbc::PowerPolicy, mock_power, recovery_watch>
                 silent{
-                    silent_tcpc,
+                    silent_phy,
                     silent_prl_timer,
                     silent_pe_timer,
                     silent_swap_timer,
@@ -560,20 +554,20 @@ int policyEngineTests()
                     silent_power,
                     watch
                 };
-        auto confirm = [&] { silent.onAlert(usbc::alert_status::transmit_success); };
+        auto confirm = [&] { silent_phy.transmitted(usbc::transmit_outcome::success); };
 
         silent.vbusPresent();
         for (int reset = 0; reset <= usbc::spec::n_hard_reset_count; ++reset) {
             silent_pe_timer.expire(); // SinkWaitCap, then NoResponseTimer
-            check(silent_tcpc.last_signal == usbc::transmit_signal::hard_reset);
-            silent_tcpc.last_signal.reset();
+            check(silent_phy.last_signal == usbc::transmit_signal::hard_reset);
+            silent_phy.last_signal.reset();
             confirm(); // the PHY confirms the hard reset
             silent.vbusPresent();
             check(watch.requests == 0);
         }
-        silent_pe_timer.expire();                    // the counter is spent
-        check(!silent_tcpc.last_signal.has_value()); // no further hard reset
-        check(watch.requests == 1);                  // Error Recovery requested
+        silent_pe_timer.expire();                   // the counter is spent
+        check(!silent_phy.last_signal.has_value()); // no further hard reset
+        check(watch.requests == 1);                 // Error Recovery requested
     }
 
     return failures;

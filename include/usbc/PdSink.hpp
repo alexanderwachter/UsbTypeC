@@ -48,7 +48,8 @@ struct pd_sink_timers {
 };
 
 template<
-    concepts::tcpc TCPC,
+    concepts::cc CC,
+    concepts::pd_phy PHY,
     concepts::vbus VBUS,
     fsm::concepts::timer TIMER,
     concepts::sink_policy POLICY,
@@ -68,7 +69,8 @@ class PdSink {
 
 public:
     PdSink(
-        TCPC& tcpc,
+        CC& cc,
+        PHY& phy,
         VBUS& vbus,
         pd_sink_timers<TIMER>& timers,
         std::span<sink_capability const> capabilities,
@@ -77,7 +79,7 @@ public:
         OBSERVERs&... observers
     )
         : watch_{*this}, engine_(
-                             tcpc,
+                             phy,
                              timers.prl,
                              timers.pe,
                              timers.swap,
@@ -87,7 +89,7 @@ public:
                              watch_,
                              observers...
                          ),
-          router_{*this}, sink_(tcpc, vbus, timers.tc, timers.cc, router_, observers...)
+          router_{*this, phy}, sink_(cc, vbus, timers.tc, timers.cc, router_, observers...)
     {
     }
 
@@ -112,22 +114,27 @@ private:
         PdSink& port;
     };
 
-    using SinkEngine = SinkPolicyEngine<TCPC, TIMER, POLICY, POWER, port_watch, OBSERVERs...>;
+    using SinkEngine = SinkPolicyEngine<PHY, TIMER, POLICY, POWER, port_watch, OBSERVERs...>;
 
     // The port's internal wiring in the connection machine, observing
     // the states' declared facts: the PD connection's exit is the one
     // real detach (its tag spans the hard-reset window, so the
-    // legitimate VBUS cycle is none), every entry of Attached.SNK -
-    // fresh, or VBUS back after the window - reaches the engine as the
-    // partner value, and the CC status (PD3 collision avoidance) and
-    // the PD alerts are forwarded from the driver frontend
+    // legitimate VBUS cycle is none), the attach's plug orientation
+    // selects the PHY's CC line, every entry of Attached.SNK - fresh,
+    // or VBUS back after the window - reaches the engine as the partner
+    // value, and the CC status (PD3 collision avoidance) is forwarded
+    // from the driver frontend
     struct router : fsm::observing<router> {
-        explicit router(PdSink& port_ref) : port(port_ref) {}
+        router(PdSink& port_ref, PHY& phy_ref) : port(port_ref), phy(phy_ref) {}
 
-        using observes = fsm::annotations<tc::pd_connection, tc::attached_partner>;
+        using observes =
+            fsm::annotations<tc::pd_connection, plug_orientation, tc::attached_partner>;
 
         // the one real detach: the window timing out included
         void notifyExit(tc::pd_connection) { port.engine_.vbusRemoved(); }
+
+        // the CC wire of the attached cable carries the messaging
+        void notifyEntry(plug_orientation line) { phy.selectCcLine(line); }
 
         // Attached.SNK entered: seed the collision-avoidance view of
         // the source's Rp, then the engine learns VBUS is present
@@ -141,12 +148,11 @@ private:
         // through its Ready-state annotations, so no attach gate here
         void onCcStatus(cc_status cc) { port.engine_.sinkTxChanged(tc::sinkTxOk(cc)); }
 
-        void onPdAlert(alert_status alerts) { port.engine_.onAlert(alerts); }
-
         PdSink& port;
+        PHY& phy;
     };
 
-    using Sink = TypeCSink<TCPC, VBUS, TIMER, router, OBSERVERs...>;
+    using Sink = TypeCSink<CC, VBUS, TIMER, router, OBSERVERs...>;
 
     port_watch watch_;
     SinkEngine engine_;

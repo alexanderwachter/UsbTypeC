@@ -23,15 +23,16 @@
  * exits it right away when VBUS already sits there, and Unattached.SRC
  * then detects a sink that arrived meanwhile.
  *
- * Integration mirrors TypeCSink: initialized drivers plus two
+ * Integration mirrors TypeCSink: initialized drivers - the CC block
+ * and the VBUS block, observers of this machine - plus two
  * caller-owned timer policy instances, the connection states' and the
  * CC debounce's. Construction rests in the spec's Disabled state (open
  * terminations, nothing monitored); start() is the go-live moment - it
- * fires the started event, whose transition presents Rp, then registers
- * the callbacks and hands the watcher the line as it is. Attach results
- * reach injected observers watching the attached state's
- * attachedInfo(); their notifications may originate from the timer
- * context on debounce paths.
+ * registers the callbacks, sets the Rp advertisement, fires the
+ * started event, whose transition presents Rp, and hands the watcher
+ * the line as it is. Attach results reach injected observers watching
+ * the attached state's plug_orientation; their notifications may
+ * originate from the timer context on debounce paths.
  *
  * DRP and Try.SRC/Try.SNK build on this layer's states in
  * TypeCDrp.hpp. Not covered yet: debug and audio accessories, and
@@ -43,7 +44,7 @@
 
 #pragma once
 
-#include <usbc/Tcpc.hpp>
+#include <usbc/Cc.hpp>
 #include <usbc/TypeC.hpp>
 #include <usbc/Vbus.hpp>
 
@@ -179,16 +180,15 @@ struct attached_src {
         cc_debounce{.termination = debounce_time::at_once, .open = debounce_time::t_src_disconnect}
     );
 
-    // the attach report, the CC polarity and the partner, observed as
-    // instance values: clients consume the orientation (a source
-    // reports no more), the hw driver applies the polarity, the PD
-    // layer above acts on the partner (what brought the port here,
-    // data role, the cable's Ra)
+    // the plug orientation and the partner, observed as instance
+    // values: clients consume the orientation (a source reports no
+    // more), the PD layer above selects the PHY's CC line from it and
+    // acts on the partner (what brought the port here, data role, the
+    // cable's Ra)
     auto values() const
     {
         return fsm::annotate(
             attached.orientation,
-            polarity{.orientation = attached.orientation},
             attached_partner{.origin = origin_, .data = attached.data, .cc = attached.detected}
         );
     }
@@ -290,87 +290,46 @@ using source_recovery_timer_range =
 
 // timeout bounds and reachability checked in test/compliance.cpp
 
-// Applies each state's src_hw annotation (suppressed while unchanged)
-// with the port's configured Rp advertisement, and the attached
-// state's plug orientation. Discharge belongs to the vbus driver
-template<concepts::tcpc TCPC, concepts::vbus VBUS>
-struct src_hw_driver : fsm::observing<src_hw_driver<TCPC, VBUS>> {
-    src_hw_driver(TCPC& tcpc_ref, VBUS& vbus_ref, rp_value advertisement)
-        : tcpc(tcpc_ref), vbus(vbus_ref), rp(advertisement)
-    {
-    }
-
-    // A state the dispatch would silently skip is a table bug: the
-    // previous state's terminations or power paths would stay applied.
-    // Checked per element: every state must carry both
-    template<fsm::concepts::transition_table TABLE>
-    static constexpr void validate()
-    {
-        static_assert(
-            fsm::all_states_carry_v<TABLE, cc_termination>,
-            "src_hw_driver: every state must annotate its CC termination"
-        );
-        static_assert(
-            fsm::all_states_carry_v<TABLE, vbus_power>,
-            "src_hw_driver: every state must annotate its VBUS power path"
-        );
-    }
-
-    void notifyEntry(cc_termination termination) { tcpc.setCc(termination.pull, rp); }
-    void notifyEntry(vbus_power power)
-    {
-        tcpc.sourceVbus(power.path == vbus_path::safe5v);
-        vbus.discharge(power.path == vbus_path::safe0v);
-    }
-    void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }
-
-    TCPC& tcpc;
-    VBUS& vbus;
-    rp_value rp;
-};
-
 } // namespace tc
 
-template<
-    concepts::tcpc TCPC,
-    concepts::vbus VBUS,
-    fsm::concepts::timer TIMER,
-    typename... OBSERVERs>
-class TypeCSource
-    : public tc::port_frontend<TypeCSource<TCPC, VBUS, TIMER, OBSERVERs...>, TCPC, VBUS> {
+template<concepts::cc CC, concepts::vbus VBUS, fsm::concepts::timer TIMER, typename... OBSERVERs>
+class TypeCSource : public tc::port_frontend<TypeCSource<CC, VBUS, TIMER, OBSERVERs...>, CC, VBUS> {
+    static_assert(
+        tc::hardware_annotations_complete_v<tc::tc_source_table>,
+        "every state must annotate its CC termination, VBUS power path and watched VBUS level"
+    );
+
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). timer runs the connection states' timeouts,
     // cc_timer the CC debounce. The advertisement is the Rp the port
-    // presents (and must honor). The observers are injected into the
-    // machine after the built-in ones (timer, hw driver, vbus watcher -
-    // which also answers the tables' questions about VBUS now - and
-    // cc watcher); attach results are observed on the attached state's
-    // attachedInfo() (a source reports the orientation only), and an
-    // observer providing onPdAlert(alert_status) receives the alert
-    // bits this layer does not consume - the hook for the PD layers
-    // above
+    // presents (and must honor). The drivers observe the machine - the
+    // vbus driver also answers the tables' questions about VBUS now -
+    // and the observers are injected after the built-in ones (timer,
+    // the two drivers, cc watcher); attach results are observed on the
+    // attached state's plug_orientation (a source reports no more)
     TypeCSource(
-        TCPC& tcpc,
+        CC& cc,
         VBUS& vbus,
         TIMER& timer,
         TIMER& cc_timer,
         rp_value advertisement,
         OBSERVERs&... observers
     )
-        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), cc_(cc_timer), timer_(timer),
-          timed_(timer_), observers_(observers...), sm_(timed_, hw_, vbus_, cc_, observers...)
+        : cc_driver_(cc), vbus_driver_(vbus), cc_(cc_timer), timer_(timer), timed_(timer_),
+          advertisement_(advertisement), observers_(observers...),
+          sm_(timed_, cc, vbus, cc_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
     // advertisement
-    TypeCSource(TCPC& tcpc, VBUS& vbus, TIMER& timer, TIMER& cc_timer, OBSERVERs&... observers)
-        : TypeCSource(tcpc, vbus, timer, cc_timer, rp_value::usb_default, observers...)
+    TypeCSource(CC& cc, VBUS& vbus, TIMER& timer, TIMER& cc_timer, OBSERVERs&... observers)
+        : TypeCSource(cc, vbus, timer, cc_timer, rp_value::usb_default, observers...)
     {
     }
 
     // The go-live moment, provided by the shared frontend
-    void start() { this->startPort(); }
+    void start() { this->startPort(advertisement_); }
 
     // PD-directed Type-C Error Recovery: both terminations removed for
     // tErrorRecovery, then resolution restarts. Call from the stack's
@@ -378,14 +337,14 @@ public:
     bool errorRecovery() { return sm_.process(tc::event::error_recovery{}); }
 
 private:
-    friend tc::port_frontend<TypeCSource, TCPC, VBUS>;
+    friend tc::port_frontend<TypeCSource, CC, VBUS>;
 
-    TCPC& tcpc_;
-    tc::src_hw_driver<TCPC, VBUS> hw_;
-    tc::VbusWatcher<VBUS> vbus_;
+    CC& cc_driver_;
+    VBUS& vbus_driver_;
     tc::CcWatcher<TIMER> cc_;
     fsm::QueuedTimer<TIMER> timer_;
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
+    rp_value advertisement_;
     std::tuple<OBSERVERs&...> observers_;
     fsm::QueuedMachine<
         tc::tc_source_table,
@@ -393,8 +352,8 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         fsm::timed<fsm::QueuedTimer<TIMER>&>,
-        tc::src_hw_driver<TCPC, VBUS>,
-        tc::VbusWatcher<VBUS>,
+        CC,
+        VBUS,
         tc::CcWatcher<TIMER>,
         OBSERVERs...>
         sm_;

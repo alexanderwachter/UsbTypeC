@@ -6,7 +6,7 @@
 
 #include <print>
 
-int tcpcTests();
+int interfaceTests();
 int protocolLayerTests();
 int typeCTests();
 int typeCSourceTests();
@@ -23,11 +23,11 @@ int policyEngineSourceTests();
 
 int main(int argc, const char* argv[])
 {
-    int const failures = tcpcTests() + protocolLayerTests() + typeCTests() + typeCSourceTests() +
-                         typeCDrpTests() + typeCDrpTrySrcTests() + typeCDrpTrySnkTests() +
-                         typeCDrpSwapTests() + typeCDrpRoleLockTests() + pdDrpTests() +
-                         pdSinkFacadeTests() + pdSourceFacadeTests() + policyEngineTests() +
-                         policyEngineSourceTests();
+    int const failures = interfaceTests() + protocolLayerTests() + typeCTests() +
+                         typeCSourceTests() + typeCDrpTests() + typeCDrpTrySrcTests() +
+                         typeCDrpTrySnkTests() + typeCDrpSwapTests() + typeCDrpRoleLockTests() +
+                         pdDrpTests() + pdSinkFacadeTests() + pdSourceFacadeTests() +
+                         policyEngineTests() + policyEngineSourceTests();
     if (failures != 0) {
         std::print("{} check(s) FAILED\n", failures);
         return 1;

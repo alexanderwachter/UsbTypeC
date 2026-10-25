@@ -1,37 +1,42 @@
 /*
  * USB PD protocol layer (PRL), following the spec's PRL_Tx/PRL_Rx/PRL_HR
- * as closely as the driver split allows. The driver owns the bit level -
- * CRC checking, GoodCRC autoresponse, per-attempt outcome detection -
- * and everything above lives here: MessageID stamping, the RetryCounter
- * with the retransmission loop, the protocol timers, duplicate
- * rejection on receive, and the MessageID lifecycle across soft and
- * hard resets. Chunked extended messages are not handled yet.
+ * as closely as the PHY split allows. The PHY (PdPhy.hpp) owns the bit
+ * level - CRC checking, GoodCRC autoresponse, per-attempt outcome
+ * detection - and everything above lives here: MessageID stamping, the
+ * RetryCounter with the retransmission loop, the protocol timers,
+ * duplicate rejection on receive, and the MessageID lifecycle across
+ * soft and hard resets. Chunked extended messages are not handled yet.
  *
  * Transmit is a state machine with the pending message and RetryCounter
- * in machine-owned context, in the form the transport asks for
- * (usbc::retransmission, Tcpc.hpp). By default wait_for_phy_response
+ * in machine-owned context, in the form the PHY asks for
+ * (usbc::retransmission, PdPhy.hpp). By default wait_for_phy_response
  * runs CRCReceiveTimer (tReceive): a failed attempt - reported by the
- * driver or by the timer - retransmits with the same MessageID while
+ * PHY or by the timer - retransmits with the same MessageID while
  * RetryCounter allows (guarded self-transition), then lands in
- * transmission_error. A transport retransmitting itself (a TCPC in the
- * TCPCI sense) gets the table without the retransmission rows: the
- * state waits for the transport's one outcome under t_transmit_outcome,
- * and its failure is the transmission error. transmission_error
- * reports onTxError, increments the MessageIDCounter, and rests until
- * the policy engine transmits again or resets. Success and discard
- * outcomes arrive as alerts and report onTxDone/onTxDiscarded; the
- * MessageIDCounter increments on these completions only - never per
- * attempt. transmit() while a message is in flight is refused - the
- * policy engine serializes its requests.
+ * transmission_error. A PHY retransmitting itself (a TCPC in the TCPCI
+ * sense) gets the table without the retransmission rows: the state
+ * waits for the PHY's one outcome under t_transmit_outcome, and its
+ * failure is the transmission error. transmission_error reports
+ * onTxError, increments the MessageIDCounter, and rests until the
+ * policy engine transmits again or resets. Success and discard
+ * outcomes arrive through the PHY's callbacks and report
+ * onTxDone/onTxDiscarded; the MessageIDCounter increments on these
+ * completions only - never per attempt. transmit() while a message is
+ * in flight is refused - the policy engine serializes its requests.
  *
- * Hard reset: transmitHardReset() hands the signal to the driver and
+ * Hard reset: transmitHardReset() hands the signal to the PHY and
  * waits in wait_for_hard_reset_complete, bounded by
  * HardResetCompleteTimer (tHardResetComplete); PHY confirmation or the
  * timer completes it and reports onHardResetSent.
  *
- * Execution contract: the transmit functions, reset, and onAlert run
- * in the stack's
- * context. The TIMER policy fires fsm::timeout from its own execution
+ * The layer hears the PHY only while it holds it: claimPhy() registers
+ * its callbacks, releasePhy() clears them - a dual-role port runs one
+ * layer per role on the same PHY, and the live engine's layer holds
+ * it.
+ *
+ * Execution contract: the transmit functions, reset, claim and release
+ * run in the stack's context, and the PHY delivers its callbacks
+ * there. The TIMER policy fires fsm::timeout from its own execution
  * context (mtl timer contract), and the integrator serializes it with
  * the stack's calls; client callbacks on timeout paths (onTxError,
  * onHardResetSent) originate from that serialized timer context.
@@ -40,12 +45,12 @@
  * MessageID: the layer starts at rev 3.x, adopts the lowest revision
  * seen in received SOP messages, stamps it into every transmitted
  * header, and switches nRetryCount (2 for rev 3.x, 3 for rev 2.0) per
- * message - a retransmitting transport reads it from the header. A
- * client providing onRevision(pd_revision) learns of
- * adoptions - the policy engines update the TCPC's GoodCRC header
- * there. The negotiated revision survives a soft reset (reset()),
- * restarts at rev 3.x on a hard reset, and the policy engine clears
- * it on detach (resetRevision()).
+ * message - a retransmitting PHY reads it from the header. A client
+ * providing onRevision(pd_revision) learns of adoptions - the policy
+ * engines update the PHY's GoodCRC header there. The negotiated
+ * revision survives a soft reset (reset()), restarts at rev 3.x on a
+ * hard reset, and the policy engine clears it on detach
+ * (resetRevision()).
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -54,8 +59,8 @@
 #pragma once
 
 #include <usbc/Message.hpp>
+#include <usbc/PdPhy.hpp>
 #include <usbc/Spec.hpp>
-#include <usbc/Tcpc.hpp>
 
 #include <mtl/StateMachine.hpp>
 
@@ -100,7 +105,7 @@ struct message_id_state {
 };
 
 inline constexpr auto t_receive = std::chrono::milliseconds{1};             // tReceive
-inline constexpr auto t_transmit_outcome = std::chrono::milliseconds{100};  // a transport's outcome
+inline constexpr auto t_transmit_outcome = std::chrono::milliseconds{100};  // a PHY's outcome
 inline constexpr auto t_hard_reset_complete = std::chrono::milliseconds{5}; // tHardResetComplete
 
 // Shared by the transmitting states: the message in flight survives
@@ -159,9 +164,8 @@ struct wait_for_message_request {
 
 // PRL_Tx_Wait_for_PHY_Response. With the protocol layer retransmitting
 // the timeout is CRCReceiveTimer and re-entry the retransmission; with
-// the transport retransmitting it bounds a transport that reports no
-// outcome at all - its own CRCReceiveTimer and retries finish well
-// within it
+// the PHY retransmitting it bounds a PHY that reports no outcome at
+// all - its own CRCReceiveTimer and retries finish well within it
 template<retransmission WHO_RETRANSMITS>
 struct wait_for_phy_response {
     wait_for_phy_response(event::tx_request const& event, tx_context& ctx) : context(ctx)
@@ -172,7 +176,7 @@ struct wait_for_phy_response {
     // Re-entry is the retransmission: same message, same MessageID
     explicit wait_for_phy_response(tx_context& ctx) : context(ctx) { ++context.retry_counter; }
 
-    // the message in flight, observed by the phy driver
+    // the message in flight, observed by the phy_driver
     pd_message const& values() const { return context.message; }
 
     using contexts = fsm::contexts<tx_context>;
@@ -236,7 +240,7 @@ using retransmission_transitions = std::conditional_t<
     WHO_RETRANSMITS == retransmission::protocol_layer,
     fsm::transition_table<
         fsm::transition<fsm::from<state::wait_for_phy_response<WHO_RETRANSMITS>>, fsm::on<fsm::timeout>, fsm::guard<retries_left>, fsm::to<state::wait_for_phy_response<WHO_RETRANSMITS>>>,
-        // the driver may report a failed attempt before tReceive expires
+        // the PHY may report a failed attempt before tReceive expires
         fsm::transition<fsm::from<state::wait_for_phy_response<WHO_RETRANSMITS>>, fsm::on<event::phy_failed>, fsm::guard<retries_left>, fsm::to<state::wait_for_phy_response<WHO_RETRANSMITS>>>>,
     fsm::transition_table<>>;
 
@@ -246,7 +250,7 @@ using tx_transitions = fsm::transition_table<
     fsm::transition<fsm::from<state::wait_for_message_request>, fsm::on<event::tx_request>, fsm::to<state::wait_for_phy_response<WHO_RETRANSMITS>>>,
     fsm::transition<fsm::from<state::transmission_error>, fsm::on<event::tx_request>, fsm::to<state::wait_for_phy_response<WHO_RETRANSMITS>>>,
     retransmission_transitions<WHO_RETRANSMITS>,
-    // retries exhausted, the transport's failure, or no outcome at all
+    // retries exhausted, the PHY's failure, or no outcome at all
     fsm::transition<fsm::from<state::wait_for_phy_response<WHO_RETRANSMITS>>, fsm::on<fsm::timeout>, fsm::to<state::transmission_error>>,
     fsm::transition<fsm::from<state::wait_for_phy_response<WHO_RETRANSMITS>>, fsm::on<event::phy_failed>, fsm::to<state::transmission_error>>,
     fsm::transition<fsm::from<state::wait_for_phy_response<WHO_RETRANSMITS>>, fsm::on<event::phy_success>, fsm::to<state::wait_for_message_request>>,
@@ -262,19 +266,19 @@ template<retransmission WHO_RETRANSMITS>
 struct tx_table : tx_transitions<WHO_RETRANSMITS> {};
 // timeout bounds and reachability checked in test/compliance.cpp
 
-// Hands a state's pd_message instance value to the TCPC on entry; a
+// Hands a state's pd_message instance value to the PHY on entry; a
 // pd_message in a state's values() is the marker that makes it a
 // transmitting one. A refused hand-off is not reported: the state's
 // timeout turns it into a retry or a transmission error
-template<concepts::pd_transport TCPC>
-struct phy_driver : fsm::observing<phy_driver<TCPC>> {
-    explicit phy_driver(TCPC& tcpc_ref) : tcpc(tcpc_ref) {}
+template<concepts::pd_phy PHY>
+struct phy_driver : fsm::observing<phy_driver<PHY>> {
+    explicit phy_driver(PHY& phy_ref) : phy(phy_ref) {}
 
     using observes = fsm::annotations<pd_message>;
 
-    void notifyEntry(pd_message const& message) { tcpc.transmit(message); }
+    void notifyEntry(pd_message const& message) { phy.transmit(message); }
 
-    TCPC& tcpc;
+    PHY& phy;
 };
 
 } // namespace prl
@@ -284,22 +288,27 @@ struct phy_driver : fsm::observing<phy_driver<TCPC>> {
 // role-independent, and templating it on the client duplicated the
 // whole PRL - tx machine, receive drain, counters - once per policy
 // engine (measured ~2 kB flash in a DRP image)
-template<concepts::pd_transport TCPC, fsm::concepts::timer TIMER, typename... OBSERVERs>
-class ProtocolLayer : public fsm::observing<ProtocolLayer<TCPC, TIMER, OBSERVERs...>> {
+template<concepts::pd_phy PHY, fsm::concepts::timer TIMER, typename... OBSERVERs>
+class ProtocolLayer : public fsm::observing<ProtocolLayer<PHY, TIMER, OBSERVERs...>> {
 public:
-    // The transmit machine in the transport's form: with or without
-    // the retransmission loop
-    static constexpr retransmission who_retransmits = retransmission_of<TCPC>;
+    // The transmit machine in the PHY's form: with or without the
+    // retransmission loop
+    static constexpr retransmission who_retransmits = retransmission_of<PHY>;
     using wait_for_phy_response = prl::state::wait_for_phy_response<who_retransmits>;
 
     // The observers ride along in the transmit machine after the
     // layer's own
     template<concepts::prl_client CLIENT>
-    ProtocolLayer(TCPC& tcpc, TIMER& timer, CLIENT& client, OBSERVERs&... observers)
-        : tcpc_(tcpc), client_(&client), hooks_(&hooks_for<CLIENT>), timer_(timer), timed_(timer_),
+    ProtocolLayer(PHY& phy, TIMER& timer, CLIENT& client, OBSERVERs&... observers)
+        : phy_(phy), client_(&client), hooks_(&hooks_for<CLIENT>), timer_(timer), timed_(timer_),
           sm_(timed_, driver_, reporter_, observers...)
     {
     }
+
+    // The PHY reports to the layer holding it: the live engine's layer
+    // claims it, the retiring one releases it
+    void claimPhy() { phy_.setCallbacks(phy_callbacks, this); }
+    void releasePhy() { phy_.setCallbacks({}, nullptr); }
 
     // The protocol layer is itself an observer of the policy engine's
     // machine: states command it through the action elements of their
@@ -329,7 +338,7 @@ public:
 
     bool transmitHardReset()
     {
-        bool const accepted = tcpc_.transmit(transmit_signal::hard_reset);
+        bool const accepted = phy_.transmit(transmit_signal::hard_reset);
         sm_.process(prl::event::hard_reset_request{});
         resetAll();
         return accepted;
@@ -361,14 +370,26 @@ public:
         rx_id_ = ids.rx_id;
     }
 
-    void onAlert(alert_status alerts)
+private:
+    // --- the PHY's reports --------------------------------------------------
+
+    static constexpr pd_phy_callbacks phy_callbacks{
+        .transmitted =
+            [](void* layer, transmit_outcome outcome) {
+                static_cast<ProtocolLayer*>(layer)->onTransmitted(outcome);
+            },
+        .received =
+            [](void* layer, pd_message const& message) {
+                static_cast<ProtocolLayer*>(layer)->onReceived(message);
+            },
+        .hard_reset_received =
+            [](void* layer) { static_cast<ProtocolLayer*>(layer)->onHardResetReceived(); },
+    };
+
+    void onTransmitted(transmit_outcome outcome)
     {
-        if (any(alerts & alert_status::hard_reset_received)) {
-            sm_.process(prl::event::reset{});
-            resetAll();
-            hooks_->hard_reset(client_);
-        }
-        if (any(alerts & alert_status::transmit_success)) {
+        switch (outcome) {
+        case transmit_outcome::success:
             if (auto const* pending = sm_.template getIf<wait_for_phy_response>()) {
                 increment(pending->context.message.sop);
                 sm_.process(prl::event::phy_success{});
@@ -376,23 +397,44 @@ public:
             } else {
                 sm_.process(prl::event::phy_success{}); // hard reset confirmation
             }
-        }
-        if (any(alerts & alert_status::transmit_discarded)) {
+            break;
+        case transmit_outcome::discarded:
             if (auto const* pending = sm_.template getIf<wait_for_phy_response>()) {
                 increment(pending->context.message.sop);
                 sm_.process(prl::event::phy_discarded{});
                 hooks_->tx_discarded(client_);
             }
-        }
-        if (any(alerts & alert_status::transmit_failed)) {
+            break;
+        case transmit_outcome::failed:
             sm_.process(prl::event::phy_failed{}); // retry or transmission_error
-        }
-        if (any(alerts & alert_status::message_received)) {
-            drainReceived();
+            break;
         }
     }
 
-private:
+    // PRL_Rx: a retransmission of a message already delivered is
+    // dropped by its MessageID, a lower revision in a SOP message is
+    // adopted
+    void onReceived(pd_message const& message)
+    {
+        auto const header = pd_header::decode(message.header);
+        auto& stored = rx_id_[index(message.sop)];
+        if (stored == header.message_id) {
+            return;
+        }
+        stored = header.message_id;
+        if (message.sop == sop_type::sop && header.revision < revision_) {
+            setRevision(header.revision); // lowest common revision
+        }
+        hooks_->message(client_, message);
+    }
+
+    void onHardResetReceived()
+    {
+        sm_.process(prl::event::reset{});
+        resetAll();
+        hooks_->hard_reset(client_);
+    }
+
     // The erased client surface; revision is nullptr for a client
     // without the optional onRevision hook
     struct client_hooks {
@@ -474,23 +516,6 @@ private:
         hooks_->tx_error(client_);
     }
 
-    void drainReceived()
-    {
-        pd_message message;
-        while (tcpc_.receive(message)) {
-            auto const header = pd_header::decode(message.header);
-            auto& stored = rx_id_[index(message.sop)];
-            if (stored == header.message_id) {
-                continue; // retransmission of a message already delivered
-            }
-            stored = header.message_id;
-            if (message.sop == sop_type::sop && header.revision < revision_) {
-                setRevision(header.revision); // lowest common revision
-            }
-            hooks_->message(client_, message);
-        }
-    }
-
     std::uint8_t retryLimit() const
     {
         return revision_ == pd_revision::rev_3_x ? spec::n_retry_count : spec::n_retry_count_rev2;
@@ -514,12 +539,12 @@ private:
         setRevision(pd_revision::rev_3_x); // re-negotiated after a hard reset
     }
 
-    TCPC& tcpc_;
+    PHY& phy_;
     void* client_;
     client_hooks const* hooks_;
     fsm::QueuedTimer<TIMER> timer_;
     fsm::timed<fsm::QueuedTimer<TIMER>&> timed_;
-    prl::phy_driver<TCPC> driver_{tcpc_};
+    prl::phy_driver<PHY> driver_{phy_};
     client_reporter reporter_{*this};
     bool tx_ready_ = false; // set by the initial state's entry below
     // Queued: the client's reaction to a report (a tx_error's soft
@@ -531,7 +556,7 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         fsm::timed<fsm::QueuedTimer<TIMER>&>,
-        prl::phy_driver<TCPC>,
+        prl::phy_driver<PHY>,
         client_reporter,
         OBSERVERs...>
         sm_;

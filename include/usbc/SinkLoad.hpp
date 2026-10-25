@@ -11,7 +11,7 @@
  * completion event - the standard bounds the reduction by time
  * (tSnkStdby), not by handshake.
  *
- * Failure contract as in Tcpc.hpp: setLimit() reports whether the
+ * Failure contract as in Cc.hpp: setLimit() reports whether the
  * driver accepted the operation.
  *
  * SPDX-License-Identifier: Apache-2.0

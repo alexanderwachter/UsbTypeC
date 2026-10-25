@@ -81,7 +81,8 @@ struct pd_drp_timers {
 };
 
 template<
-    concepts::tcpc TCPC,
+    concepts::cc CC,
+    concepts::pd_phy PHY,
     concepts::vbus VBUS,
     fsm::concepts::timer TIMER,
     concepts::sink_policy SINK_POLICY,
@@ -95,7 +96,8 @@ template<
 class PdDrp {
 public:
     PdDrp(
-        TCPC& tcpc,
+        CC& cc,
+        PHY& phy,
         VBUS& vbus,
         pd_drp_timers<TIMER>& timers,
         std::span<sink_capability const> sink_capabilities,
@@ -109,7 +111,7 @@ public:
         OBSERVERs&... observers
     )
         : watch_{*this}, sink_engine_(
-                             tcpc,
+                             phy,
                              timers.sink_prl,
                              timers.sink_pe,
                              timers.sink_swap,
@@ -120,11 +122,13 @@ public:
                              observers...
                          ),
           source_engine_(
-              tcpc,
+              cc,
+              phy,
               timers.source_prl,
               timers.source_pe,
               timers.source_swap,
               source_capabilities,
+              advertisement,
               source_policy,
               supply,
               source_power,
@@ -132,8 +136,8 @@ public:
               observers...
           ),
           vconn_(timers.vconn, watch_, observers...),
-          router_(tcpc, sink_engine_, source_engine_, *this),
-          drp_(tcpc, vbus, timers.tc, timers.cc, advertisement, router_, observers...)
+          router_(phy, sink_engine_, source_engine_, *this),
+          drp_(cc, vbus, timers.tc, timers.cc, advertisement, router_, observers...)
     {
         // a DRP answers Get_Source_Cap/Get_Sink_Cap in either role
         sink_engine_.provideSourceCapabilities(source_capabilities);
@@ -142,7 +146,8 @@ public:
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
     // advertisement
     PdDrp(
-        TCPC& tcpc,
+        CC& cc,
+        PHY& phy,
         VBUS& vbus,
         pd_drp_timers<TIMER>& timers,
         std::span<sink_capability const> sink_capabilities,
@@ -155,7 +160,8 @@ public:
         OBSERVERs&... observers
     )
         : PdDrp(
-              tcpc,
+              cc,
+              phy,
               vbus,
               timers,
               sink_capabilities,
@@ -310,9 +316,10 @@ private:
     };
 
     using SinkEngine =
-        SinkPolicyEngine<TCPC, TIMER, SINK_POLICY, SINK_POWER, swap_watch, OBSERVERs...>;
+        SinkPolicyEngine<PHY, TIMER, SINK_POLICY, SINK_POWER, swap_watch, OBSERVERs...>;
     using SourceEngine = SourcePolicyEngine<
-        TCPC,
+        CC,
+        PHY,
         TIMER,
         SOURCE_POLICY,
         SUPPLY,
@@ -324,20 +331,15 @@ private:
     // declared facts: the PD connection brackets the engines' life (its
     // tag spans the hard-reset window and the swap standbys, so neither
     // is a detach), the attached role names the engine the resolved
-    // role needs, the swap standby hands the engines over, and every
-    // entry of an Attached state - fresh, resumed, or completing a swap
-    // - reaches the live engine as the partner value (data role for
-    // the message header, the CC status for collision avoidance and
-    // the cable's Ra). The PD alerts and CC reports are forwarded from
-    // the driver frontend
+    // role needs, the swap standby hands the engines over, the attach's
+    // plug orientation selects the PHY's CC line, and every entry of an
+    // Attached state - fresh, resumed, or completing a swap - reaches
+    // the live engine as the partner value (data role for the message
+    // header, the CC status for collision avoidance and the cable's
+    // Ra). The CC reports are forwarded from the driver frontend
     struct router : fsm::observing<router> {
-        router(
-            TCPC& tcpc_ref,
-            SinkEngine& sink_engine,
-            SourceEngine& source_engine,
-            PdDrp& port_ref
-        )
-            : tcpc(tcpc_ref), snk(sink_engine), src(source_engine), port(port_ref)
+        router(PHY& phy_ref, SinkEngine& sink_engine, SourceEngine& source_engine, PdDrp& port_ref)
+            : phy(phy_ref), snk(sink_engine), src(source_engine), port(port_ref)
         {
         }
 
@@ -345,9 +347,10 @@ private:
             tc::pd_connection,
             tc::attached_role,
             tc::drp::swap_standby,
+            plug_orientation,
             tc::attached_partner>;
 
-        TCPC& tcpc;
+        PHY& phy;
         SinkEngine& snk;
         SourceEngine& src;
         PdDrp& port;
@@ -392,6 +395,11 @@ private:
                 snk.startSwapWaitSourceOn(data, revision, ids);
             }
         }
+
+        // the CC wire of the attached cable carries the messaging;
+        // delivered ahead of the partner value (set order), so the line
+        // is selected before the engine's first transmission
+        void notifyEntry(plug_orientation line) { phy.selectCcLine(line); }
 
         // An Attached state entered, the live engine acts: a fresh
         // attach or the resume after a hard-reset window starts its
@@ -445,15 +453,6 @@ private:
             return cc.cc1 == cc_state::src_ra || cc.cc2 == cc_state::src_ra;
         }
 
-        void onPdAlert(alert_status alerts)
-        {
-            switch (active) {
-            case active_role::sink: snk.onAlert(alerts); break;
-            case active_role::source: src.onAlert(alerts); break;
-            case active_role::none: break; // nobody negotiating
-            }
-        }
-
         // No allowSwap here: the enabling observers are the sole
         // arbitration voice, asked through the connection layer
         void onDataRole(data_role role)
@@ -464,7 +463,7 @@ private:
 
         void header(power_role power)
         {
-            tcpc.setMessageHeaderInfo({power, data, pd_revision::rev_3_x});
+            phy.setMessageHeaderInfo({power, data, pd_revision::rev_3_x});
         }
     };
 
@@ -492,7 +491,7 @@ private:
         vconn_.swapFailureHandled();
     }
 
-    using Drp = TypeCDrp<TCPC, VBUS, TIMER, TIMING, PREFERENCE, router, OBSERVERs...>;
+    using Drp = TypeCDrp<CC, VBUS, TIMER, TIMING, PREFERENCE, router, OBSERVERs...>;
 
     swap_watch watch_;
     SinkEngine sink_engine_;

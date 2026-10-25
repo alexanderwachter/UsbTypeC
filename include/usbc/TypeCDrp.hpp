@@ -51,18 +51,18 @@
  * Open deviations from Release 2.5 are listed in the conformance
  * roadmap (CLAUDE.md).
  *
- * Integration matches TypeCSink/TypeCSource: initialized drivers plus
- * two caller-owned timer policy instances; construction rests in the
+ * Integration matches TypeCSink/TypeCSource: initialized drivers -
+ * the CC and VBUS blocks, observers of this machine - plus two
+ * caller-owned timer policy instances; construction rests in the
  * spec's Disabled state and start() goes live in Unattached.SNK. The
  * vbus driver is armed by the states waiting for a report (vSafe5V by
  * the sink-side waits, vSafe0V by the source-side waits,
  * vSinkDisconnect while Attached.SNK), the callback's meaning is
- * mapped through the armed level, and a detection asks the driver
- * whether VBUS is there now. Injected observers watching the attached
- * states' instance values learn which role attached through the info
- * type: tc::attach_info (orientation and advertisement) for
- * Attached.SNK, plug_orientation for Attached.SRC; the hw drivers
- * apply the tc::polarity element.
+ * mapped through the level it reports on, and a detection asks the
+ * driver whether VBUS is there now. Injected observers watching the
+ * attached states' instance values learn which role attached through
+ * the info type: tc::attach_info (orientation and advertisement) for
+ * Attached.SNK only; both roles deliver the plug_orientation.
  *
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Alexander Wachter
@@ -70,8 +70,8 @@
 
 #pragma once
 
+#include <usbc/Cc.hpp>
 #include <usbc/PortControl.hpp>
-#include <usbc/Tcpc.hpp>
 #include <usbc/TypeC.hpp>
 #include <usbc/TypeCSink.hpp>
 #include <usbc/TypeCSource.hpp>
@@ -414,9 +414,9 @@ inline constexpr auto t_ps_source_on = std::chrono::milliseconds{435};  // tPSSo
 // failed, and connection resolution restarts from Unattached.SNK
 
 // Annotation marking that window and the role the swap heads for:
-// completeSwap()/abortSwap() only mean something inside it (tracked by
-// the hw driver), and the PD layer hands its engines over on it. The
-// PD connection holds throughout - the standbys carry its tag
+// completeSwap()/abortSwap() only mean something inside it (the facade
+// asks the machine), and the PD layer hands its engines over on it.
+// The PD connection holds throughout - the standbys carry its tag
 struct swap_standby {
     power_role to;
     constexpr bool operator==(swap_standby const&) const = default;
@@ -658,60 +658,10 @@ using table_for_t = table_for<TIMING, PREFERENCE>;
 
 } // namespace drp
 
-// Applies both roles' hw annotations. Entering a state of one role
-// shuts the other role's paths off first: the annotations carry only
-// their own role's switches, and a role change must never leave the
-// old role sourcing or sinking
-template<concepts::tcpc TCPC, concepts::vbus VBUS>
-struct drp_hw_driver : fsm::observing<drp_hw_driver<TCPC, VBUS>> {
-    drp_hw_driver(TCPC& tcpc_ref, VBUS& vbus_ref, rp_value advertisement)
-        : tcpc(tcpc_ref), vbus(vbus_ref), rp(advertisement)
-    {
-    }
-
-    // A state the dispatch would silently skip is a table bug: the
-    // previous state's terminations or power paths would stay applied.
-    // Checked per element: every state must carry both
-    template<fsm::concepts::transition_table TABLE>
-    static constexpr void validate()
-    {
-        static_assert(
-            fsm::all_states_carry_v<TABLE, cc_termination>,
-            "drp_hw_driver: every state must annotate its CC termination"
-        );
-        static_assert(
-            fsm::all_states_carry_v<TABLE, vbus_power>,
-            "drp_hw_driver: every state must annotate its VBUS power path"
-        );
-    }
-
-    void notifyEntry(cc_termination termination) { tcpc.setCc(termination.pull, rp); }
-
-    // One position for both roles: entering the other role's states
-    // collapses this one's path by value
-    void notifyEntry(vbus_power power)
-    {
-        tcpc.sinkVbus(power.path == vbus_path::sink);
-        tcpc.sourceVbus(power.path == vbus_path::safe5v);
-        vbus.discharge(power.path == vbus_path::safe0v);
-    }
-
-    void notifyEntry(polarity resolved) { tcpc.setPlugOrientation(resolved.orientation); }
-
-    // the PR_Swap window, tracked for completeSwap()/abortSwap()
-    void notifyEntry(drp::swap_standby) { in_swap_standby = true; }
-    void notifyExit(drp::swap_standby) { in_swap_standby = false; }
-
-    TCPC& tcpc;
-    VBUS& vbus;
-    rp_value rp;
-    bool in_swap_standby = false;
-};
-
 } // namespace tc
 
 template<
-    concepts::tcpc TCPC,
+    concepts::cc CC,
     concepts::vbus VBUS,
     fsm::concepts::timer TIMER,
     drp_timing const& TIMING = default_drp_timing,
@@ -719,37 +669,42 @@ template<
     typename... OBSERVERs>
 class TypeCDrp
     : public tc::
-          port_frontend<TypeCDrp<TCPC, VBUS, TIMER, TIMING, PREFERENCE, OBSERVERs...>, TCPC, VBUS> {
+          port_frontend<TypeCDrp<CC, VBUS, TIMER, TIMING, PREFERENCE, OBSERVERs...>, CC, VBUS> {
+    static_assert(
+        tc::hardware_annotations_complete_v<tc::drp::table_for_t<TIMING, PREFERENCE>>,
+        "every state must annotate its CC termination, VBUS power path and watched VBUS level"
+    );
+
 public:
     // Construction rests in Disabled with open terminations; the port
     // goes live on start(). timer runs the connection states' timeouts
     // (the toggle, the Try walls, the standbys), cc_timer the CC
     // debounce. The advertisement is the Rp presented whenever the
-    // port advertises the source role. The observers are injected into
-    // the machine after the built-in ones (timer, hw driver, vbus
-    // watcher, cc watcher); attach results are observed on the attached
-    // states' attachedInfo() with the role encoded in the info type, an
-    // observer providing onPdAlert(alert_status) receives the alert
-    // bits this layer does not consume, one providing
-    // allowSwap(power_role) is a swap policy, and one answering
-    // check(tc::drp::sourcing_allowed) is the role lock (sink-only
-    // while it says no)
+    // port advertises the source role. The drivers observe the machine
+    // (one VBUS switch position for both roles: entering the other
+    // role's states collapses this one's path by value), the observers
+    // are injected after the built-in ones (timer, the two drivers, cc
+    // watcher); attach results are observed on the attached states'
+    // instance values with the role encoded in the info type, and an
+    // observer answering check(usbc::sourcing_allowed) is the role lock
+    // (sink-only while it says no)
     TypeCDrp(
-        TCPC& tcpc,
+        CC& cc,
         VBUS& vbus,
         TIMER& timer,
         TIMER& cc_timer,
         rp_value advertisement,
         OBSERVERs&... observers
     )
-        : tcpc_(tcpc), hw_(tcpc, vbus, advertisement), vbus_(vbus), cc_(cc_timer), timer_(timer),
-          timed_(timer_), observers_(observers...), sm_(timed_, hw_, vbus_, cc_, observers...)
+        : cc_driver_(cc), vbus_driver_(vbus), cc_(cc_timer), timer_(timer), timed_(timer_),
+          advertisement_(advertisement), observers_(observers...),
+          sm_(timed_, cc, vbus, cc_, observers...)
     {
     }
     // Default-Rp convenience: a trailing pack cannot follow a defaulted
     // advertisement
-    TypeCDrp(TCPC& tcpc, VBUS& vbus, TIMER& timer, TIMER& cc_timer, OBSERVERs&... observers)
-        : TypeCDrp(tcpc, vbus, timer, cc_timer, rp_value::usb_default, observers...)
+    TypeCDrp(CC& cc, VBUS& vbus, TIMER& timer, TIMER& cc_timer, OBSERVERs&... observers)
+        : TypeCDrp(cc, vbus, timer, cc_timer, rp_value::usb_default, observers...)
     {
     }
 
@@ -779,13 +734,13 @@ public:
         return sm_.process(tc::event::swap_to_sink{});
     }
 
-    // Both only mean something in a swap standby - the hw driver's
-    // swap_standby annotation tracking replaces the old process()
-    // return (the queued machine reports acceptance, not whether a
-    // transition fired)
-    bool completeSwap() { return hw_.in_swap_standby && sm_.process(tc::event::swap_complete{}); }
+    // Both only mean something in a swap standby - the standbys'
+    // swap_standby annotation answers that, where the old process()
+    // return cannot (the queued machine reports acceptance, not whether
+    // a transition fired)
+    bool completeSwap() { return inSwapStandby() && sm_.process(tc::event::swap_complete{}); }
 
-    bool abortSwap() { return hw_.in_swap_standby && sm_.process(tc::event::swap_abort{}); }
+    bool abortSwap() { return inSwapStandby() && sm_.process(tc::event::swap_abort{}); }
 
     // Data role swap directed by the layer above (an agreed USB PD
     // DR_Swap): no termination changes, only the context's data role
@@ -851,7 +806,7 @@ public:
     }
 
     // The go-live moment, provided by the shared frontend
-    void start() { this->startPort(); }
+    void start() { this->startPort(advertisement_); }
 
     // PD-directed Type-C Error Recovery: both terminations removed for
     // tErrorRecovery, then resolution restarts from the preference's
@@ -863,7 +818,12 @@ public:
     bool hardResetWindow() { return sm_.process(tc::event::hard_reset{}); }
 
 private:
-    friend tc::port_frontend<TypeCDrp, TCPC, VBUS>;
+    friend tc::port_frontend<TypeCDrp, CC, VBUS>;
+
+    bool inSwapStandby() const
+    {
+        return sm_.template annotation<tc::drp::swap_standby>().has_value();
+    }
 
     static void forwardDataRole(auto& observer, data_role role)
     {
@@ -887,12 +847,12 @@ private:
     using table = tc::drp::table_for_t<TIMING, PREFERENCE>;
     using queued_timer = fsm::QueuedTimer<TIMER>;
 
-    TCPC& tcpc_;
-    tc::drp_hw_driver<TCPC, VBUS> hw_;
-    tc::VbusWatcher<VBUS> vbus_;
+    CC& cc_driver_;
+    VBUS& vbus_driver_;
     tc::CcWatcher<TIMER> cc_;
     queued_timer timer_;
     fsm::timed<queued_timer&> timed_;
+    rp_value advertisement_;
     std::tuple<OBSERVERs&...> observers_;
     fsm::QueuedMachine<
         table,
@@ -900,8 +860,8 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         fsm::timed<queued_timer&>,
-        tc::drp_hw_driver<TCPC, VBUS>,
-        tc::VbusWatcher<VBUS>,
+        CC,
+        VBUS,
         tc::CcWatcher<TIMER>,
         OBSERVERs...>
         sm_;

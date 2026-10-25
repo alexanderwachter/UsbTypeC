@@ -63,12 +63,12 @@
 #pragma once
 
 #include <usbc/Message.hpp>
+#include <usbc/PdPhy.hpp>
 #include <usbc/Pdo.hpp>
 #include <usbc/PolicyEngine.hpp>
 #include <usbc/PortControl.hpp>
 #include <usbc/ProtocolLayer.hpp>
 #include <usbc/SinkLoad.hpp>
-#include <usbc/Tcpc.hpp>
 #include <usbc/Units.hpp>
 
 #include <mtl/StateMachine.hpp>
@@ -928,15 +928,15 @@ private:
 };
 
 template<
-    concepts::pd_transport TCPC,
+    concepts::pd_phy PHY,
     fsm::concepts::timer TIMER,
     concepts::sink_policy POLICY,
     typename... OBSERVERs>
 class SinkPolicyEngine : public pe::PolicyEngineBase<
-                             SinkPolicyEngine<TCPC, TIMER, POLICY, OBSERVERs...>,
+                             SinkPolicyEngine<PHY, TIMER, POLICY, OBSERVERs...>,
                              power_role::sink,
                              pe::pe_sink_table,
-                             TCPC,
+                             PHY,
                              TIMER,
                              POLICY,
                              OBSERVERs...> {
@@ -944,7 +944,7 @@ class SinkPolicyEngine : public pe::PolicyEngineBase<
         SinkPolicyEngine,
         power_role::sink,
         pe::pe_sink_table,
-        TCPC,
+        PHY,
         TIMER,
         POLICY,
         OBSERVERs...>;
@@ -957,7 +957,7 @@ public:
     // pe_timer runs the engine's states, swap_timer the sub-states of a
     // swap exchange (never armed without a swap feature)
     SinkPolicyEngine(
-        TCPC& tcpc,
+        PHY& phy,
         TIMER& prl_timer,
         TIMER& pe_timer,
         TIMER& swap_timer,
@@ -965,20 +965,26 @@ public:
         POLICY& policy,
         OBSERVERs&... observers
     )
-        : base(tcpc, prl_timer, pe_timer, swap_timer, observers...), policy_(policy),
+        : base(phy, prl_timer, pe_timer, swap_timer, observers...), policy_(policy),
           sm_(this->timed_, this->prl_, gates_, policy_, observers...)
     {
         this->sink_capabilities_ = capabilities;
         sm_.process(pe::event::started{}); // rest in Discovery until VBUS
     }
 
-    // The Type-C layer reports attach: for a sink, VBUS is present
-    void vbusPresent() { sm_.process(pe::event::vbus_present{}); }
+    // The Type-C layer reports attach: for a sink, VBUS is present; the
+    // engine goes live and its protocol layer takes the PHY
+    void vbusPresent()
+    {
+        this->prl_.claimPhy();
+        sm_.process(pe::event::vbus_present{});
+    }
 
     // ... and detach: negotiation state is gone, back to Discovery;
     // the next partner negotiates its own revision
     void vbusRemoved()
     {
+        this->prl_.releasePhy();
         this->prl_.resetRevision();
         this->setBistTestData(false); // the test mode ends with the partner
         pending_sequence_.reset();
@@ -1034,6 +1040,7 @@ public:
     {
         this->prl_.seedRevision(revision);
         this->prl_.seedMessageIds(ids);
+        this->prl_.claimPhy();
         sm_.process(pe::event::swap_wait_source_on{role});
     }
 
@@ -1224,7 +1231,7 @@ private:
         fsm::inline_work,
         fsm::no_lock,
         typename base::timeouts,
-        ProtocolLayer<TCPC, TIMER, OBSERVERs...>,
+        ProtocolLayer<PHY, TIMER, OBSERVERs...>,
         gate_watch,
         POLICY,
         OBSERVERs...>
