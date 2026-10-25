@@ -744,9 +744,9 @@ public:
 
     // Data role swap directed by the layer above (an agreed USB PD
     // DR_Swap): no termination changes, only the context's data role
-    // flips. The flip is an internal transition without machine hooks,
-    // so the new role is forwarded to the observers providing
-    // onDataRole(data_role). False while not attached
+    // flips, by an internal transition - observers hear the flip from
+    // the engine's pe::data_role_changed, the role at attach from
+    // tc::attached_data_role. False while not attached
     bool swapDataRole()
     {
         if (!dataRole()) {
@@ -766,11 +766,6 @@ public:
             return false;
         }
         sm_.process(tc::event::swap_data_role{});
-        auto const swapped = *dataRole();
-        std::apply(
-            [&](auto&... observer) { (forwardDataRole(observer, swapped), ...); },
-            observers_
-        );
         return true;
     }
 
@@ -823,13 +818,6 @@ private:
     bool inSwapStandby() const
     {
         return sm_.template annotation<tc::drp::swap_standby>().has_value();
-    }
-
-    static void forwardDataRole(auto& observer, data_role role)
-    {
-        if constexpr (requires { observer.onDataRole(role); }) {
-            observer.onDataRole(role);
-        }
     }
 
     static bool allowsSourcing(auto& observer)

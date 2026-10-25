@@ -159,14 +159,23 @@ enum class attach_origin : std::uint8_t {
     completed_power_role_swap,
 };
 
+// The data role this port holds in the connection, an instance value
+// of the Attached states delivered on every entry (a fresh attach
+// resolves it, a resume and a completed power role swap keep it). An
+// agreed DR_Swap flips it in place, so the flip itself is heard from
+// the engine's pe::data_role_changed, not from here
+struct attached_data_role {
+    data_role role;
+    constexpr bool operator==(attached_data_role const&) const = default;
+};
+
 // The partner as the attach resolved it, an instance value of the
 // Attached states delivered on every entry: what brought the port
-// here, the data role this port holds and the CC status the attach
-// rests on - a sink reads the source's Rp from it (SinkTxOk/SinkTxNG,
-// PD3 collision avoidance), a source whether the cable presents Ra
+// here and the CC status the attach rests on - a sink reads the
+// source's Rp from it (SinkTxOk/SinkTxNG, PD3 collision avoidance), a
+// source whether the cable presents Ra
 struct attached_partner {
     attach_origin origin;
-    data_role data;
     cc_status cc;
 };
 

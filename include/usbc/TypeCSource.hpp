@@ -180,16 +180,18 @@ struct attached_src {
         cc_debounce{.termination = debounce_time::at_once, .open = debounce_time::t_src_disconnect}
     );
 
-    // the plug orientation and the partner, observed as instance
-    // values: clients consume the orientation (a source reports no
-    // more), the PD layer above selects the PHY's CC line from it and
-    // acts on the partner (what brought the port here, data role, the
-    // cable's Ra)
+    // the plug orientation, the data role and the partner, observed as
+    // instance values: clients and an application's mux consume the
+    // orientation and the data role (a source reports no more), the PD
+    // layer above selects the PHY's CC line from the orientation,
+    // stamps the data role into the header and acts on the partner
+    // (what brought the port here, the cable's Ra)
     auto values() const
     {
         return fsm::annotate(
             attached.orientation,
-            attached_partner{.origin = origin_, .data = attached.data, .cc = attached.detected}
+            attached_data_role{attached.data},
+            attached_partner{.origin = origin_, .cc = attached.detected}
         );
     }
 

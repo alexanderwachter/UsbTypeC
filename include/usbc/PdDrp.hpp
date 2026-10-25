@@ -274,9 +274,13 @@ private:
         // of the role accepts, relinquishing needs no capability
         bool check(pe::vconn_source_role_held) { return port.vconn_.isVconnSource(); }
 
-        // an agreed DR_Swap only touches the header and the Type-C
-        // context
-        void notifyEntry(pe::data_role_changed) { port.drp_.applyDataRoleSwap(); }
+        // an agreed DR_Swap only touches the Type-C context and the
+        // header
+        void notifyEntry(pe::data_role_changed changed)
+        {
+            port.drp_.applyDataRoleSwap();
+            port.router_.dataRoleChanged(changed.role);
+        }
         // the swap is agreed: the standby suspends detach detection
         // while the old source collapses VBUS, and its tPSSourceOff
         // timeout restarts resolution if the PS_RDY never comes; the
@@ -348,6 +352,7 @@ private:
             tc::attached_role,
             tc::drp::swap_standby,
             plug_orientation,
+            tc::attached_data_role,
             tc::attached_partner>;
 
         PHY& phy;
@@ -401,12 +406,15 @@ private:
         // is selected before the engine's first transmission
         void notifyEntry(plug_orientation line) { phy.selectCcLine(line); }
 
+        // the data role the connection holds, ahead of the partner
+        // value (set order), so the header is stamped right
+        void notifyEntry(tc::attached_data_role attached) { data = attached.role; }
+
         // An Attached state entered, the live engine acts: a fresh
         // attach or the resume after a hard-reset window starts its
         // negotiation, the completion of a power swap continues it
         void notifyEntry(tc::attached_partner const& partner)
         {
-            data = partner.data;
             bool const completing = partner.origin == tc::attach_origin::completed_power_role_swap;
             if (active == active_role::sink) {
                 header(power_role::sink);
@@ -453,9 +461,9 @@ private:
             return cc.cc1 == cc_state::src_ra || cc.cc2 == cc_state::src_ra;
         }
 
-        // No allowSwap here: the enabling observers are the sole
-        // arbitration voice, asked through the connection layer
-        void onDataRole(data_role role)
+        // an agreed DR_Swap, from the engine through the swap watch:
+        // the header follows
+        void dataRoleChanged(data_role role)
         {
             data = role;
             header(active == active_role::source ? power_role::source : power_role::sink);

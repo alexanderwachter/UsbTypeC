@@ -54,12 +54,14 @@ static_assert(fsm::concepts::timer<manual_timer>);
 // --- user observer test double ----------------------------------------------
 // Watches both attached states: their attached_role annotation says
 // which role attached and its exit is the detach; both deliver the
-// plug orientation, the sink its attach info with the advertisement
+// plug orientation and the data role, the sink its attach info with
+// the advertisement
 struct mock_drp_client : fsm::observing<mock_drp_client> {
     int attached_snk = 0;
     int attached_src = 0;
     int detached = 0;
     usbc::plug_orientation orientation = usbc::plug_orientation::cc1;
+    std::optional<usbc::data_role> data{};
     usbc::rp_value advertisement = usbc::rp_value::usb_default;
 
     void notifyEntry(usbc::tc::attached_role attached)
@@ -72,6 +74,7 @@ struct mock_drp_client : fsm::observing<mock_drp_client> {
     }
     void notifyExit(usbc::tc::attached_role) { ++detached; }
     void notifyEntry(usbc::plug_orientation o) { orientation = o; }
+    void notifyEntry(usbc::tc::attached_data_role attached) { data = attached.role; }
     void notifyEntry(usbc::tc::attach_info info) { advertisement = info.advertisement; }
 };
 
@@ -120,13 +123,6 @@ struct fixture {
     void ccAlert() { cc.report(); }
 };
 
-// An observer hearing the data role flips
-struct mock_data_role_listener {
-    std::optional<usbc::data_role> data_seen{};
-
-    void onDataRole(usbc::data_role role) { data_seen = role; }
-};
-
 // The role lock: answers the table's sourcing_allowed question
 struct mock_role_lock {
     bool sourcing = true;
@@ -134,7 +130,7 @@ struct mock_role_lock {
 };
 static_assert(fsm::concepts::answers_stateless_guard<mock_role_lock, usbc::sourcing_allowed>);
 static_assert(
-    !fsm::concepts::answers_stateless_guard<mock_data_role_listener, usbc::sourcing_allowed>
+    !fsm::concepts::answers_stateless_guard<mock_drp_client, usbc::sourcing_allowed>
 );
 static_assert(usbc::sourcing_allowed::check()); // the default without a lock
 
@@ -843,11 +839,9 @@ int typeCDrpSwapTests()
             manual_timer,
             timing,
             usbc::drp_preference::none,
-            mock_drp_client,
-            mock_data_role_listener>;
+            mock_drp_client>;
         fixture f;
-        mock_data_role_listener listener;
-        drp tc{f.cc, f.vbus, f.timer, f.cc_timer, f.client, listener};
+        drp tc{f.cc, f.vbus, f.timer, f.cc_timer, f.client};
         tc.start();
 
         // not attached: refused, and there is no standby to complete
@@ -862,13 +856,15 @@ int typeCDrpSwapTests()
         f.cc_timer.expire();
         check(f.vbus.sinking() && f.client.attached_snk == 1);
         check(f.client.orientation == usbc::plug_orientation::cc2);
+        check(f.client.data == usbc::data_role::ufp); // the attach's data role is delivered
 
-        // data role swap: only the context's data role flips, forwarded
-        // to the observers - no attach/detach seen
+        // data role swap: only the context's data role flips - no
+        // attach/detach seen, and no delivery (the flip is heard from
+        // the engine's pe::data_role_changed)
         check(tc.dataRole() == usbc::data_role::ufp);
         check(tc.swapDataRole());
         check(tc.dataRole() == usbc::data_role::dfp);
-        check(listener.data_seen == usbc::data_role::dfp);
+        check(f.client.data == usbc::data_role::ufp);
         check(f.vbus.sinking() && f.client.detached == 0);
 
         // allowed: standby with the power paths off, Rd presented, the
@@ -889,6 +885,7 @@ int typeCDrpSwapTests()
         check(f.client.attached_src == 1);
         check(f.client.orientation == usbc::plug_orientation::cc2);
         check(tc.dataRole() == usbc::data_role::dfp);
+        check(f.client.data == usbc::data_role::dfp); // Attached.SRC delivers the swapped role
         f.vbus.setVoltage(5000); // we source now
 
         // and back: standby waits for the new source's PS_RDY
