@@ -6,7 +6,7 @@
 
 #include "mocks.hpp"
 
-#include <usbc/SourcePolicyEngine.hpp>
+#include <usbc/layer/SourcePolicyEngine.hpp>
 
 #include <array>
 #include <chrono>

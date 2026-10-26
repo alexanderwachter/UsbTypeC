@@ -1,7 +1,7 @@
 /*
  * The stack's compile-time compliance checks, gathered in one
  * dedicated translation unit: every transition table's timeout bounds
- * (against the spec ranges in usbc/Spec.hpp) and reachability, for
+ * (against the spec ranges in usbc/spec/Parameters.hpp) and reachability, for
  * every variant the library can instantiate. Keeping them here means
  * ordinary translation units pay only for the machines they build,
  * while a clean compile of this file IS the passing verification.
@@ -12,13 +12,13 @@
  */
 
 #include <usbc/PdDrp.hpp>
-#include <usbc/ProtocolLayer.hpp>
-#include <usbc/SinkPolicyEngine.hpp>
-#include <usbc/SourcePolicyEngine.hpp>
-#include <usbc/TypeCDrp.hpp>
-#include <usbc/TypeCSink.hpp>
-#include <usbc/TypeCSource.hpp>
-#include <usbc/Vconn.hpp>
+#include <usbc/state/ProtocolLayer.hpp>
+#include <usbc/state/SinkPolicyEngine.hpp>
+#include <usbc/state/SourcePolicyEngine.hpp>
+#include <usbc/state/TypeCDrp.hpp>
+#include <usbc/state/TypeCSink.hpp>
+#include <usbc/state/TypeCSource.hpp>
+#include <usbc/state/Vconn.hpp>
 
 #include <mtl/Typelist.hpp>
 #include <mtl/TypelistAlgorithms.hpp>

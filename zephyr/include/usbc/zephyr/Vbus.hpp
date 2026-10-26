@@ -22,7 +22,7 @@
 
 #pragma once
 
-#include <usbc/Vbus.hpp>
+#include <usbc/interface/Vbus.hpp>
 
 #include <mtl/StateMachine.hpp>
 

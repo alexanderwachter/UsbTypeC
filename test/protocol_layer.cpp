@@ -6,8 +6,8 @@
 
 #include "mocks.hpp"
 
-#include <usbc/Message.hpp>
-#include <usbc/ProtocolLayer.hpp>
+#include <usbc/layer/ProtocolLayer.hpp>
+#include <usbc/spec/Message.hpp>
 
 #include <chrono>
 #include <print>

@@ -13,7 +13,7 @@
 
 #pragma once
 
-#include <usbc/Units.hpp>
+#include <usbc/spec/Units.hpp>
 
 #include <mtl/StateMachine.hpp>
 

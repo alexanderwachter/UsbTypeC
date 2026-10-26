@@ -15,8 +15,8 @@
 
 #pragma once
 
-#include <usbc/Message.hpp>
-#include <usbc/Units.hpp>
+#include <usbc/spec/Message.hpp>
+#include <usbc/spec/Units.hpp>
 
 #include <cstdint>
 

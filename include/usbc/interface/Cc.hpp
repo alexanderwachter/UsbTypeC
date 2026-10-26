@@ -6,7 +6,7 @@
  * driver applies it, pulling up with the Rp advertisement the port set
  * through setRp(). What the pins read reaches the stack through the
  * registered callback on every change, undebounced: the CcWatcher
- * (TypeC.hpp) debounces by the state's rule, which is the connection
+ * (layer/TypeC.hpp) debounces by the state's rule, which is the connection
  * layer's business, not the hardware's. readCcStatus() is one
  * measurement, taken at start() for a partner plugged in before - that
  * line changes nothing, so nothing announces it.

@@ -6,10 +6,10 @@
 
 #pragma once
 
-#include <usbc/Cc.hpp>
-#include <usbc/PdPhy.hpp>
-#include <usbc/Spec.hpp>
-#include <usbc/Vbus.hpp>
+#include <usbc/interface/Cc.hpp>
+#include <usbc/interface/PdPhy.hpp>
+#include <usbc/interface/Vbus.hpp>
+#include <usbc/spec/Parameters.hpp>
 
 #include <mtl/StateMachine.hpp>
 

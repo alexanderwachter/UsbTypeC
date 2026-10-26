@@ -1,16 +1,15 @@
 /*
- * Common ground of the USB PD policy engines: the specification's
- * per-state Power/PD notation (rendered into the DOT diagrams and
- * driving the contract-apply edges), the shared action and observation
- * types, the timers and levels both roles use, the events the protocol
- * layer feeds into either engine, the message builders, the connection
- * context, the states both engines share (the spec's role-neutral
- * PE_DRS_/PE_PRS_/PE_VCS_ states and the resets and service states
- * whose PE_SNK_/PE_SRC_ twins differ in nothing but the role in the
- * messages they build), the power observers, and the engine base
- * carrying the facade machinery both roles run (protocol-layer port,
- * message dispatch, BIST, capability answers). The sink and source
- * engines live in SinkPolicyEngine.hpp and SourcePolicyEngine.hpp.
+ * Common ground of the USB PD policy engines' tables: the timers both
+ * roles use, the events the protocol layer feeds into either engine,
+ * the message builders, the connection context, the states both
+ * engines share (the spec's role-neutral PE_DRS_/PE_PRS_/PE_VCS_
+ * states and the resets and service states whose PE_SNK_/PE_SRC_ twins
+ * differ in nothing but the role in the messages they build) with the
+ * swap exchanges' sub-tables, and the guards both tables ask. The
+ * facts the states publish live in annotation/PolicyEngine.hpp, the
+ * questions they ask in interface/Questions.hpp, the engine base in
+ * layer/PolicyEngine.hpp; the sink and source tables are
+ * SinkPolicyEngine.hpp and SourcePolicyEngine.hpp next to this file.
  *
  * Events carry facts, states build messages: an event names the
  * message type or the contract terms, and the entered state builds the
@@ -23,13 +22,15 @@
 
 #pragma once
 
-#include <usbc/Message.hpp>
-#include <usbc/PdPhy.hpp>
-#include <usbc/Pdo.hpp>
-#include <usbc/ProtocolLayer.hpp>
-#include <usbc/Spec.hpp>
-#include <usbc/TypeC.hpp>
-#include <usbc/Units.hpp>
+#include <usbc/annotation/PolicyEngine.hpp>
+#include <usbc/annotation/ProtocolLayer.hpp>
+#include <usbc/annotation/TypeC.hpp>
+#include <usbc/interface/Policy.hpp>
+#include <usbc/interface/Questions.hpp>
+#include <usbc/spec/Message.hpp>
+#include <usbc/spec/Parameters.hpp>
+#include <usbc/spec/Pdo.hpp>
+#include <usbc/spec/Units.hpp>
 
 #include <mtl/StateMachine.hpp>
 
@@ -37,20 +38,12 @@
 #include <array>
 #include <chrono>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <span>
 #include <string_view>
-#include <type_traits>
 
 namespace usbc {
-
-// One contract the sink side can accept, and the Sink_Capabilities
-// content (also answered by a DRP asked while sourcing)
-struct sink_capability {
-    millivolt voltage;
-    milliamp current;
-};
 
 namespace concepts {
 
@@ -72,9 +65,6 @@ inline constexpr auto t_bist_cont_mode = std::chrono::milliseconds{45}; // tBIST
 inline constexpr auto t_pr_swap_wait = std::chrono::milliseconds{150};  // tPRSwapWait
 inline constexpr auto t_dr_swap_wait = std::chrono::milliseconds{150};  // tDRSwapWait
 
-inline constexpr millivolt v_safe_5v = spec::v_safe_5v_nom;
-inline constexpr milliamp i_default_current = spec::i_usb_default; // implicit vSafe5V contract
-
 // The data role a port takes on attach: a sink attaches as UFP, a
 // source as DFP
 constexpr data_role defaultDataRole(power_role role)
@@ -91,64 +81,6 @@ struct pe_connection {
     data_role data = data_role::ufp;     // flipped by an agreed DR_Swap
     std::uint8_t hard_reset_counter = 0; // HardResetCounter
     bool attached = false; // the source's restore asks whether the sink is still there
-};
-
-// The specification's per-state notation, carried as annotations: the
-// power level on every root state, the PD status - whether the port
-// partners are actively communicating, lost with a Hard Reset - only on
-// the states the spec marks definitively. A state the spec marks
-// "Connected/not Connected" carries none, so an observer of pd_status
-// sees it change exactly where the spec says it does, and the machine's
-// annotation query answers nothing there
-enum class power_level : std::uint8_t {
-    default_power,
-    contract_or_default, // "Default/implicit or explicit contract"
-    transition,
-    explicit_contract,
-};
-enum class pd_status : std::uint8_t { not_connected, connected };
-
-// Observations; each type selects its notify hook. The PRL-directed
-// commands (prl::reset_action, prl::hard_reset_action) live with the
-// protocol layer; the power-directed one is defined here. Action types
-// carry their diagram note, so the rendered state machine shows
-// exactly what entering the state does
-struct restore_default_action {
-    static constexpr std::string_view note = "restores default power";
-    // restoring already restored defaults changes nothing (the power
-    // observers guard on an active contract): a wildcard's entry may
-    // re-notify it
-    constexpr bool operator==(restore_default_action const&) const = default;
-};
-struct active_contract {
-    millivolt voltage = v_safe_5v;
-    milliamp current = i_default_current;
-};
-
-// The engine's facts for the port: what the PD layer directs the
-// connection layer to do lives there (tc::request_error_recovery and
-// kin, TypeC.hpp, the engines' states carry them); the data role flip
-// and the VCONN_Swap's progress are declared here. data_role_changed
-// carries the runtime role as an instance value, the rest are
-// compile-time facts of their states in the static annotation sets
-// (comparable for the sets' change suppression)
-struct data_role_changed { // an agreed DR_Swap: both sides flipped
-    data_role role;
-};
-struct request_hard_reset { // e.g. a VCONN_Swap hand-off timed out
-    constexpr bool operator==(request_hard_reset const&) const = default;
-};
-struct vconn_swap_agreed { // VCONN_Swap accepted: the vconn machine takes over
-    constexpr bool operator==(vconn_swap_agreed const&) const = default;
-};
-struct vconn_partner_on { // the new VCONN source's PS_RDY arrived
-    constexpr bool operator==(vconn_partner_on const&) const = default;
-};
-struct vconn_ps_rdy_sent { // our VCONN PS_RDY is on the wire
-    constexpr bool operator==(vconn_ps_rdy_sent const&) const = default;
-};
-struct announce_vconn_on { // vconn machine: transmit our PS_RDY
-    constexpr bool operator==(announce_vconn_on const&) const = default;
 };
 
 namespace event {
@@ -195,7 +127,7 @@ struct hand_off_failed {}; // the VCONN PS_RDY never left: hard reset
 struct bist_carrier {};    // BIST Carrier Mode 2 requested (vSafe5V)
 
 // VCONN_Swap messaging, shared by both engine roles; the role and
-// switch choreography lives in the vconn machine (Vconn.hpp)
+// switch choreography lives in the vconn machine (state/Vconn.hpp)
 struct send_vconn_swap {};   // our VCONN_Swap goes out
 struct vconn_swap_received { // the partner's VCONN_Swap
     control_message_type refusal;
@@ -213,36 +145,6 @@ struct send_sink_capabilities {
 };
 
 } // namespace event
-
-// The tables' arbitration questions - fsm::guard tags without a static
-// check, answered by the policy injected into the engine's machine:
-// bool check(pe::pr_swap_allowed) - may this port take the other
-// power role? - and likewise the other data role and the VCONN source
-// role
-struct pr_swap_allowed {};
-struct dr_swap_allowed {};
-struct vconn_swap_allowed {};
-// Does this port hold the VCONN Source role? Answered by the port
-// from its vconn machine: a holder accepts the partner's VCONN_Swap,
-// giving the role up needs no capability
-struct vconn_source_role_held {};
-
-// The optional features, as tags - the fsm library's feature mechanism:
-// a state declares the feature it belongs to (`using feature =
-// pe::..._feature;`), and the tag names the question that enables it:
-// a policy answering it is exactly what brings the feature's states
-// in, and the machine leaves a disabled feature's states - and every
-// entry touching them - out at compile time. The answering policy must
-// satisfy the feature's contract (checked where it is detected)
-struct pr_swap_feature { // contract: allowSwap(power_role)
-    using enabled_by = pr_swap_allowed;
-};
-struct dr_swap_feature { // contract: allowSwap(data_role)
-    using enabled_by = dr_swap_allowed;
-};
-struct vconn_feature { // contract: concepts::vconn_port (the answerer observes the switch)
-    using enabled_by = vconn_swap_allowed;
-};
 
 // The Atomic Message Sequences (the spec's AMS: a request and its
 // replies, during which nothing else may start) an engine initiates
@@ -941,276 +843,6 @@ struct hard_resets_left {
 // An explicit contract is in place (the negotiation context says so)
 struct explicit_contract_holds {
     static bool check(auto const& state) { return state.negotiation.explicit_contract; }
-};
-
-// --- the engine base ----------------------------------------------------------
-
-// What both engine facades run alike, behind the role-specific
-// SinkPolicyEngine / SourcePolicyEngine (CRTP): the port on the
-// port's protocol layer (the engine is the layer's client while
-// live), the message dispatch with the role's own messages left to
-// the derived engine (dispatchRole), the BIST entry, the Get_Sink_Cap
-// answer, the swap and VCONN requests, and the machine's timers - one
-// per level: the engine's states, and the sub-states of the swap
-// exchanges where the policy brings a swap feature in. The derived
-// engine owns the machine (its observers are the role's) and
-// befriends this base to let it drive the machine
-template<
-    typename DERIVED,
-    power_role ROLE,
-    fsm::concepts::transition_table TABLE,
-    concepts::protocol_layer PRL,
-    fsm::concepts::timer TIMER,
-    typename POLICY,
-    typename... OBSERVERs>
-class PolicyEngineBase {
-public:
-    using protocol_layer = PRL;
-
-    // VCONN_Swap: request the swap (the application's decision),
-    // transmit our PS_RDY once the switch is on, and escalate a failed
-    // hand-off - the last two are the vconn machine's directions, the
-    // port executes them on the live engine
-    bool requestVconnSwap() { return derived().sm_.process(event::send_vconn_swap{}); }
-    bool sendVconnPsRdy() { return derived().sm_.process(event::send_vconn_ps_rdy{}); }
-    bool hardReset() { return derived().sm_.process(event::hard_reset_request{}); }
-
-    // Live: the engine is the protocol layer's client - from its
-    // role's attach to its retirement
-    bool isLive() const { return prl_.clientIs(port_); }
-
-protected:
-    // The optional features follow the injected objects: the machine
-    // keeps a feature's states exactly when the policy or an injected
-    // observer answers the feature's question; the engine's own
-    // branches ask the library the same thing
-    static constexpr bool pr_swap_capable =
-        fsm::feature_enabled_v<pr_swap_feature, POLICY, std::remove_cvref_t<OBSERVERs>...>;
-    static constexpr bool dr_swap_capable =
-        fsm::feature_enabled_v<dr_swap_feature, POLICY, std::remove_cvref_t<OBSERVERs>...>;
-    static constexpr bool vconn_capable =
-        fsm::feature_enabled_v<vconn_feature, POLICY, std::remove_cvref_t<OBSERVERs>...>;
-
-    // The machine's levels: the swap exchanges are composite states,
-    // the second level is theirs (its timer idles while the policy
-    // brings no swap feature in)
-    using queued_timer = fsm::QueuedTimer<TIMER>;
-    using timeouts = fsm::timed<queued_timer&, fsm::levels_v<TABLE>>;
-
-    // swap_timer runs the timeouts inside a swap exchange
-    PolicyEngineBase(protocol_layer& prl, TIMER& pe_timer, TIMER& swap_timer)
-        : prl_(prl), pe_timer_(pe_timer), swap_timer_(swap_timer), timed_(pe_timer_, swap_timer_)
-    {
-    }
-
-    // Going live: the layer reports to this engine and stamps its
-    // roles into the header, the data role as the connection holds it
-    void takeLayer(data_role data_role) { prl_.setClient(port_, ROLE, data_role); }
-    void leaveLayer() { prl_.clearClient(port_); }
-
-    // The partner's swap request is the table's question (the Ready
-    // rows on the *_swap_received events): the injected policy's
-    // answer accepts, the catch-all refuses - Reject where the
-    // feature exists, the non-DRP Not_Supported where it does not. A
-    // request outside Ready is discarded (another Atomic Message
-    // Sequence is running)
-    template<bool CAPABLE>
-    static constexpr control_message_type refusal =
-        CAPABLE ? control_message_type::reject : control_message_type::not_supported;
-
-    DERIVED& derived() { return static_cast<DERIVED&>(*this); }
-    DERIVED const& derived() const { return static_cast<DERIVED const&>(*this); }
-
-    data_role dataRole() const { return derived().sm_.template context<pe_connection>().data; }
-
-    // The engine's port on the protocol layer: the layer's client,
-    // forwarding its reports into the engine, and the observer of the
-    // engine's machine executing the states' layer actions - for the
-    // layer's client only, so a retiring engine's Startup does not
-    // reset the connection's MessageIDs the relieving engine continues
-    // (a PR_Swap is no reset trigger, 6.7.1). The observing contract
-    // delivers the static set before the instance values, so a state
-    // carrying both resets first and its message goes out with
-    // MessageID 0
-    struct PrlPort : fsm::observing<PrlPort> {
-        explicit PrlPort(PolicyEngineBase& engine_ref) : engine(engine_ref) {}
-
-        PolicyEngineBase& engine;
-
-        void notifyEntry(prl::reset_action)
-        {
-            if (engine.isLive()) {
-                engine.prl_.reset(sop_type::sop);
-            }
-        }
-        void notifyEntry(prl::hard_reset_action)
-        {
-            if (engine.isLive()) {
-                engine.prl_.transmitHardReset();
-            }
-        }
-        void notifyEntry(pd_message const& message)
-        {
-            if (engine.isLive()) {
-                engine.prl_.transmit(message);
-            }
-        }
-        // an agreed DR_Swap: the header follows
-        void notifyEntry(data_role_changed changed)
-        {
-            if (engine.isLive()) {
-                engine.prl_.setDataRole(changed.role);
-            }
-        }
-
-        void onMessage(pd_message const& message) { engine.dispatch(message); }
-        void onTxDone() { engine.derived().sm_.process(event::message_sent{}); }
-        void onTxDiscarded() {} // the preempting message drives the engine
-        void onTxError() { engine.derived().sm_.process(event::protocol_error{}); }
-        void onHardReset()
-        {
-            engine.setBistTestData(false); // a hard reset ends the test mode
-            engine.derived().sm_.process(event::hard_reset_received{});
-            engine.derived().afterHardReset();
-        }
-        void onHardResetSent()
-        {
-            engine.setBistTestData(false);
-            engine.derived().sm_.process(event::hard_reset_complete{});
-            engine.derived().afterHardReset();
-        }
-    };
-
-    // Hook: what follows a hard reset in the machine, if anything (the
-    // sink pumps its transients, the source's supply drives them)
-    void afterHardReset() {}
-
-    // A received message becomes the engine's event: the role's own
-    // messages (capabilities, Request, Get_Source_Cap) go to the
-    // derived engine first, everything else is common to both roles
-    void dispatch(pd_message const& message)
-    {
-        if (bist_test_data_) {
-            return; // BIST test data mode: deaf until hard reset/detach
-        }
-        auto const header = pd_header::decode(message.header);
-        if (header.extended) {
-            auto const extended = extended_header::decode(
-                static_cast<std::uint16_t>(message.payload[0]) |
-                (static_cast<std::uint16_t>(message.payload[1]) << 8u)
-            );
-            if (extended.chunked) {
-                derived().sm_.process(event::chunked_message{});
-            } else {
-                derived().sm_.process(event::unsupported{});
-            }
-            return;
-        }
-        if (derived().dispatchRole(header, message)) {
-            return;
-        }
-        if (header.num_data_objects > 0) {
-            if (header.message_type == static_cast<std::uint8_t>(data_message_type::bist)) {
-                enterBist(dataObjectAt(message, 0));
-            } else {
-                derived().sm_.process(event::unsupported{});
-            }
-            return;
-        }
-        switch (static_cast<control_message_type>(header.message_type)) {
-        case control_message_type::accept: derived().sm_.process(event::accept{}); break;
-        case control_message_type::reject: derived().sm_.process(event::reject{}); break;
-        case control_message_type::wait: derived().sm_.process(event::wait{}); break;
-        case control_message_type::ps_rdy: derived().sm_.process(event::ps_rdy{}); break;
-        case control_message_type::dr_swap:
-            derived().sm_.process(
-                event::dr_swap_received{
-                    .refusal = refusal<dr_swap_capable>,
-                    .to_take = otherDataRole(dataRole()),
-                }
-            );
-            break;
-        case control_message_type::pr_swap:
-            derived().sm_.process(
-                event::pr_swap_received{
-                    .refusal = refusal<pr_swap_capable>,
-                    .to_take = otherPowerRole(ROLE),
-                }
-            );
-            break;
-        case control_message_type::vconn_swap:
-            derived().sm_.process(event::vconn_swap_received{.refusal = refusal<vconn_capable>});
-            break;
-        case control_message_type::get_sink_cap: sendSinkCapabilities(); break;
-        case control_message_type::soft_reset:
-            derived().sm_.process(event::soft_reset_received{});
-            break;
-        case control_message_type::good_crc:
-        case control_message_type::ping: break;
-        default:
-            // answered from Ready only; ignored while negotiating
-            derived().sm_.process(event::unsupported{});
-        }
-    }
-
-    // Get_Sink_Cap: the sink-role capabilities, which a sink has and a
-    // DRP sourcing provides - a source-only port answers Not_Supported
-    void sendSinkCapabilities()
-    {
-        if (sink_capabilities_.empty()) {
-            derived().sm_.process(event::unsupported{});
-            return;
-        }
-        derived().sm_.process(
-            event::send_sink_capabilities{
-                makeSinkCapabilitiesMessage(ROLE, dataRole(), sink_capabilities_)
-            }
-        );
-    }
-
-    // BIST entry, honored only under an explicit vSafe5V contract
-    // (spec): Carrier Mode 2 transmits the test carrier for
-    // tBISTContMode; Test Data silences the engine until a hard reset
-    // or detach while the PHY keeps answering GoodCRC
-    void enterBist(std::uint32_t bdo)
-    {
-        auto const contract_voltage = derived().contractVoltage();
-        if (contract_voltage != v_safe_5v) {
-            return;
-        }
-        switch (bist::modeOf(bdo)) {
-        case bist::mode::carrier_mode_2:
-            if (derived().sm_.process(event::bist_carrier{})) {
-                prl_.transmit(transmit_signal::bist_carrier_mode_2);
-            }
-            break;
-        case bist::mode::test_data:
-            if (derived().sm_.template annotation<ready_for_atomic_message_sequence>()) {
-                setBistTestData(true);
-            }
-            break;
-        default: break; // other modes are not supported
-        }
-    }
-
-    void setBistTestData(bool enable)
-    {
-        bist_test_data_ = enable;
-        prl_.setBistTestData(enable); // hardware may discard for us
-    }
-
-    // the capability lists: the own role's from construction, the other
-    // role's provided by a DRP (empty: not a DRP, Get_*_Cap answers
-    // Not_Supported)
-    std::span<sink_capability const> sink_capabilities_{};
-    std::span<std::uint32_t const> source_capabilities_{};
-    bool bist_test_data_ = false;
-    PrlPort port_{*this};
-    // the port's one protocol layer, shared by a DRP's two engines
-    protocol_layer& prl_;
-    queued_timer pe_timer_;
-    queued_timer swap_timer_;
-    timeouts timed_;
 };
 
 } // namespace pe

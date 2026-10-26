@@ -35,9 +35,9 @@
 
 #pragma once
 
-#include <usbc/Cc.hpp>
-#include <usbc/Flags.hpp>
-#include <usbc/Message.hpp>
+#include <usbc/interface/Cc.hpp>
+#include <usbc/spec/Flags.hpp>
+#include <usbc/spec/Message.hpp>
 
 #include <concepts>
 #include <cstdint>

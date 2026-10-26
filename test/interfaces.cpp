@@ -6,12 +6,11 @@
 
 #include "mocks.hpp"
 
-#include <usbc/Cc.hpp>
-#include <usbc/Interfaces.hpp>
-#include <usbc/PdPhy.hpp>
-#include <usbc/SinkLoad.hpp>
-#include <usbc/SourceSupply.hpp>
-#include <usbc/Vbus.hpp>
+#include <usbc/interface/Cc.hpp>
+#include <usbc/interface/PdPhy.hpp>
+#include <usbc/interface/Power.hpp>
+#include <usbc/interface/Vbus.hpp>
+#include <usbc/interface/Virtual.hpp>
 
 #include <mtl/StateMachine.hpp>
 
@@ -52,7 +51,7 @@ struct mock_supply : usbc::SourceSupply<mock_supply> {
     }
 };
 
-// --- mock sink load ---------------------------------------------------------
+// --- mock sink power client -------------------------------------------------
 struct mock_sink_load {
     usbc::millivolt expected_mv = 5000;
     usbc::milliamp limit_ma = 0;
@@ -63,6 +62,8 @@ struct mock_sink_load {
         limit_ma = max_current;
         return true;
     }
+    void onContract(usbc::millivolt, usbc::milliamp) {}
+    void onContractLost() {}
 };
 
 // --- compile-time checks ----------------------------------------------------
@@ -143,14 +144,14 @@ struct silent_check : fsm::observing<silent_check> {
 static_assert(!usbc::concepts::vbus<silent_check>);
 
 static_assert(usbc::concepts::source_supply<mock_supply>);
-static_assert(usbc::concepts::sink_load<mock_sink_load>);
+static_assert(usbc::concepts::sink_power_client<mock_sink_load>);
 
 // a current-only limit is not enough: the load must also know the
 // input voltage to expect
 struct current_only : mock_sink_load {
     bool setLimit(usbc::milliamp) { return true; }
 };
-static_assert(!usbc::concepts::sink_load<current_only>);
+static_assert(!usbc::concepts::sink_power_client<current_only>);
 
 // a voltage-only setter is not enough: the contract's current limit
 // must be programmable too
@@ -160,8 +161,8 @@ struct voltage_only : mock_supply {
 static_assert(!usbc::concepts::source_supply_client<voltage_only>);
 
 // a driver written against the inheritance facade: the interface types
-// satisfy the concepts (Interfaces.hpp asserts it), the driver fills
-// in the virtuals
+// satisfy the concepts (interface/Virtual.hpp asserts it), the driver
+// fills in the virtuals
 struct virtual_driver : usbc::CcInterface, usbc::PdPhyInterface {
     int transmitted = 0;
     usbc::rp_value rp = usbc::rp_value::usb_default;
@@ -221,7 +222,7 @@ bool requestOutput(SUPPLY& supply, usbc::millivolt voltage, usbc::milliamp curre
     return supply.setOutput(voltage, current_limit);
 }
 
-template<usbc::concepts::sink_load LOAD>
+template<usbc::concepts::sink_power_client LOAD>
 bool applyLimit(LOAD& load, usbc::millivolt expected_voltage, usbc::milliamp max_current)
 {
     return load.setLimit(expected_voltage, max_current);

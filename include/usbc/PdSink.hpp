@@ -26,15 +26,21 @@
 
 #pragma once
 
-#include <usbc/ProtocolLayer.hpp>
-#include <usbc/SinkPolicyEngine.hpp>
 #include <usbc/TypeCSink.hpp>
+#include <usbc/annotation/TypeC.hpp>
+#include <usbc/interface/Cc.hpp>
+#include <usbc/interface/PdPhy.hpp>
+#include <usbc/interface/Policy.hpp>
+#include <usbc/interface/Questions.hpp>
+#include <usbc/interface/Vbus.hpp>
+#include <usbc/layer/ProtocolLayer.hpp>
+#include <usbc/layer/SinkPolicyEngine.hpp>
 
 #include <mtl/StateMachine.hpp>
-#include <mtl/Typelist.hpp>
 
 #include <cstdint>
 #include <span>
+#include <type_traits>
 
 namespace usbc {
 

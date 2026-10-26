@@ -55,15 +55,21 @@
 
 #pragma once
 
-#include <usbc/ProtocolLayer.hpp>
-#include <usbc/SinkPolicyEngine.hpp>
-#include <usbc/SourcePolicyEngine.hpp>
 #include <usbc/TypeCDrp.hpp>
-#include <usbc/Vconn.hpp>
+#include <usbc/annotation/PolicyEngine.hpp>
+#include <usbc/annotation/TypeC.hpp>
+#include <usbc/interface/Cc.hpp>
+#include <usbc/interface/PdPhy.hpp>
+#include <usbc/interface/Policy.hpp>
+#include <usbc/interface/Power.hpp>
+#include <usbc/interface/Questions.hpp>
+#include <usbc/interface/Vbus.hpp>
+#include <usbc/layer/ProtocolLayer.hpp>
+#include <usbc/layer/SinkPolicyEngine.hpp>
+#include <usbc/layer/SourcePolicyEngine.hpp>
+#include <usbc/layer/Vconn.hpp>
 
 #include <mtl/StateMachine.hpp>
-#include <mtl/Typelist.hpp>
-#include <mtl/TypelistAlgorithms.hpp>
 
 #include <cstdint>
 #include <optional>

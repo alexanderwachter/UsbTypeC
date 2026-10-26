@@ -26,8 +26,8 @@
 
 #pragma once
 
-#include <usbc/Cc.hpp>
-#include <usbc/PdPhy.hpp>
+#include <usbc/interface/Cc.hpp>
+#include <usbc/interface/PdPhy.hpp>
 
 #include <mtl/StateMachine.hpp>
 

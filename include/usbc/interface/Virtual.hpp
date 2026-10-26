@@ -19,9 +19,9 @@
 
 #pragma once
 
-#include <usbc/Cc.hpp>
-#include <usbc/PdPhy.hpp>
-#include <usbc/Vbus.hpp>
+#include <usbc/interface/Cc.hpp>
+#include <usbc/interface/PdPhy.hpp>
+#include <usbc/interface/Vbus.hpp>
 
 #include <mtl/StateMachine.hpp>
 

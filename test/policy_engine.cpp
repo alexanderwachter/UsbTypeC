@@ -6,8 +6,8 @@
 
 #include "mocks.hpp"
 
-#include <usbc/Pdo.hpp>
-#include <usbc/SinkPolicyEngine.hpp>
+#include <usbc/layer/SinkPolicyEngine.hpp>
+#include <usbc/spec/Pdo.hpp>
 
 #include <array>
 #include <chrono>

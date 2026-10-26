@@ -27,9 +27,11 @@ What belongs in this repository:
     for contract/state changes)
 - **Integration interface** — abstractions the user implements to bind the
   stack to their hardware and OS: the CC block, the PD PHY and the VBUS
-  block as observers of the state machines (`usbc/Cc.hpp`,
-  `usbc/PdPhy.hpp`, `usbc/Vbus.hpp`), timers, and an execution context
-  for event processing.
+  block as observers of the state machines (`usbc/interface/Cc.hpp`,
+  `usbc/interface/PdPhy.hpp`, `usbc/interface/Vbus.hpp`), the power
+  side and the policies (`usbc/interface/Power.hpp`,
+  `usbc/interface/Policy.hpp`), timers, and an execution context for
+  event processing.
 - **Zephyr module glue** — build files so the library plugs into a Zephyr
   application via the module system.
 
@@ -42,8 +44,12 @@ workspace at `modules/lib/mtl` by `west update`.
 
 | Directory | Content |
 |---|---|
-| `include/` | Public headers (`include/usbc/...`) |
-| `src/` | Library sources |
+| `include/usbc/` | The ports an application instantiates (`PdSink`, `PdSource`, `PdDrp`, `TypeCSink`, `TypeCSource`, `TypeCDrp`) |
+| `include/usbc/interface/` | What one injected object provides: the hardware blocks, the power side, the policies, the questions the tables ask |
+| `include/usbc/annotation/` | The facts the machines publish, what any observer hears |
+| `include/usbc/state/` | The states, guards and transition tables, what the compliance checks and the DOT graphs look at |
+| `include/usbc/layer/` | The machines the ports compose: a table in a queued machine behind a port API |
+| `include/usbc/spec/` | The specifications' parameters and wire formats |
 | `test/` | Host-side unit tests for the state machines |
 | `boards/shields/` | Zephyr shields for Type-C expansion boards (`x_nucleo_usbpdm1`, `x_nucleo_drp1m1`) |
 | `zephyr/` | Zephyr module definition (`module.yml`, Kconfig, CMake glue) and the module's own drivers (TCPP03-M20 power path controller) |

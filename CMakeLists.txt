@@ -22,16 +22,15 @@ if(NOT EXISTS ${MTL_ROOT}/CMakeLists.txt)
 endif()
 add_subdirectory(${MTL_ROOT} mtl)
 
-add_library(${TARGET_NAME} STATIC
-    ${CMAKE_CURRENT_LIST_DIR}/src/UsbTypeC.cpp
-)
-target_compile_features(${TARGET_NAME} PUBLIC cxx_std_20)
+# Header-only: every machine is a template over the integrator's types
+add_library(${TARGET_NAME} INTERFACE)
+target_compile_features(${TARGET_NAME} INTERFACE cxx_std_20)
 
-target_include_directories(${TARGET_NAME} PUBLIC
+target_include_directories(${TARGET_NAME} INTERFACE
     ${CMAKE_CURRENT_LIST_DIR}/include
 )
 
-target_link_libraries(${TARGET_NAME} PUBLIC mtl)
+target_link_libraries(${TARGET_NAME} INTERFACE mtl)
 
 if(ENABLE_TESTING)
     enable_testing()
